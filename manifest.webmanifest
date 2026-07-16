@@ -1,0 +1,17 @@
+{
+  "name": "SplitWisely",
+  "short_name": "SplitWisely",
+  "description": "Grupos, eventos e despesas partilhadas — quem pagou o quê e quem deve a quem.",
+  "lang": "pt",
+  "start_url": "./index.html#/",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f4f6f8",
+  "theme_color": "#0f9d76",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

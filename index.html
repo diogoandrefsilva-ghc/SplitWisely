@@ -2,9 +2,16 @@
 <html lang="pt">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
   <title>SplitWisely — Despesas partilhadas</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💸</text></svg>" />
+  <meta name="theme-color" content="#0f9d76" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icons/icon-192.png" />
+  <link rel="apple-touch-icon" href="icons/icon-192.png" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="SplitWisely" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -23,5 +30,13 @@
   <script src="config.js" onerror="void 0"></script>
   <script src="vendor/supabase.js"></script>
   <script src="app.js"></script>
+  <script>
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("sw.js").catch(() => {});
+    }
+    // iOS Safari ignora "user-scalable=no": bloquear o pinch-zoom
+    // (o double-tap zoom é tratado pelo touch-action: manipulation no CSS)
+    document.addEventListener("gesturestart", (e) => e.preventDefault());
+  </script>
 </body>
 </html>

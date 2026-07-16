@@ -9,6 +9,7 @@ App web estilo Splitwise para gerir despesas partilhadas, feita em HTML/JS puro 
 - **Despesas flexíveis** — pagas por **uma ou mais** pessoas e divididas por **uma ou várias**, em partes iguais, por proporção ou valores exatos.
 - **Defaults por grupo** — cada membro tem um *peso* default (a proporção com que entra nas divisões) e pode ser marcado como *pagador default*; as novas despesas vêm pré-preenchidas com isso.
 - **Saldos e acerto de contas** — quem deve a quem, com sugestões de pagamentos mínimos.
+- **PWA para telemóvel** — instalável no ecrã inicial (Android e iOS), abre em ecrã inteiro sem barra do browser, funciona offline para consulta e tem o zoom bloqueado.
 
 ## Configuração (uma vez)
 
@@ -51,6 +52,15 @@ python3 -m http.server 8000
 
 ou publica no GitHub Pages, Netlify, Vercel, etc. (lembra-te de atualizar o *Site URL* no Supabase).
 
+> **Nota PWA:** o service worker (offline + instalação) só funciona em **HTTPS** ou em `localhost`. Em produção usa sempre HTTPS.
+
+### 5. Instalar no telemóvel
+
+- **Android (Chrome):** abre o site → menu ⋮ → **Adicionar ao ecrã principal** (ou aceita o aviso de instalação).
+- **iPhone (Safari):** abre o site → botão de partilha → **Adicionar ao ecrã principal**.
+
+A app abre depois como qualquer outra, em ecrã inteiro e com o ícone próprio.
+
 ## Como usar
 
 1. Entra com Google.
@@ -67,4 +77,7 @@ ou publica no GitHub Pages, Netlify, Vercel, etc. (lembra-te de atualizar o *Sit
 | `app.js` | toda a lógica (auth, grupos, despesas, saldos) |
 | `styles.css` | estilos (tema claro/escuro automático) |
 | `config.example.js` | modelo de configuração |
+| `manifest.webmanifest` | manifesto PWA (nome, ícones, ecrã inteiro) |
+| `sw.js` | service worker (cache offline) |
+| `icons/` | ícones da app |
 | `supabase/schema.sql` | tabelas, triggers e políticas RLS |

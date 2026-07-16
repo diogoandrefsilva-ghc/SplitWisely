@@ -26,12 +26,22 @@
 
 * { box-sizing: border-box; }
 
+html {
+  /* impedir que o iOS/Android aumentem o texto por conta própria */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
 body {
   margin: 0;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   background: var(--bg);
   color: var(--text);
   line-height: 1.5;
+  /* remove o double-tap zoom e o atraso de 300ms no toque */
+  touch-action: manipulation;
+  overscroll-behavior-y: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .topbar {
@@ -39,6 +49,10 @@ body {
   justify-content: space-between;
   align-items: center;
   padding: .7rem 1.2rem;
+  /* respeitar o notch/status bar quando instalada como PWA */
+  padding-top: calc(.7rem + env(safe-area-inset-top));
+  padding-left: calc(1.2rem + env(safe-area-inset-left));
+  padding-right: calc(1.2rem + env(safe-area-inset-right));
   background: var(--card);
   border-bottom: 1px solid var(--border);
   position: sticky;
@@ -72,6 +86,7 @@ main {
   box-shadow: var(--shadow);
   padding: 1.1rem 1.2rem;
   margin-bottom: 1rem;
+  overflow-x: auto; /* tabelas largas fazem scroll dentro do cartão no telemóvel */
 }
 
 h1 { font-size: 1.4rem; margin: .2rem 0 1rem; }
@@ -104,6 +119,8 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 
 input, select {
   font: inherit;
+  /* nunca abaixo de 16px: evita o zoom automático do iOS ao focar um campo */
+  font-size: 16px;
   padding: .45rem .6rem;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -213,3 +230,14 @@ table.split-table input[type="checkbox"] { width: auto; }
 .hidden { display: none; }
 
 .empty { color: var(--muted); text-align: center; padding: 1.4rem 0; font-size: .92rem; }
+
+/* ---------------- telemóvel ---------------- */
+@media (max-width: 520px) {
+  main { padding: .8rem .7rem calc(.8rem + env(safe-area-inset-bottom)); }
+  .card { padding: .9rem .8rem; }
+  h1 { font-size: 1.25rem; }
+  button, .btn { padding: .6rem 1rem; } /* alvos de toque maiores */
+  .list li { padding: .75rem .1rem; }
+  table.split-table input[type="number"] { max-width: 92px; }
+  .topbar .user-name { display: none; } /* poupa espaço na barra */
+}
