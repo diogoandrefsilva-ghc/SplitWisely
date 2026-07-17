@@ -740,6 +740,69 @@ table.split-table input[type="number"] {
 }
 table.split-table input[type="checkbox"] { width: 1.1rem; }
 
+/* ================================================================ categorias */
+/* ícone redondo da categoria nas linhas de despesa */
+.cat-ico {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--card-inner);
+  border: 1px solid var(--border-soft);
+  border-radius: 50%;
+  font-size: 1.05rem;
+  line-height: 1;
+}
+/* despesa sem categoria: etiqueta apagada, a pedir para ser preenchida */
+.cat-ico.none { opacity: .35; border-style: dashed; filter: grayscale(1); }
+
+/* fila de chips com scroll horizontal (picker no formulário e filtros) */
+.cat-row, .cat-strip {
+  position: relative; /* offsetLeft dos chips relativo à fila (auto-scroll) */
+  display: flex;
+  gap: .4rem;
+  overflow-x: auto;
+  padding: .15rem 0 .35rem;
+  scroll-behavior: smooth;
+  scrollbar-width: none;
+}
+.cat-row::-webkit-scrollbar, .cat-strip::-webkit-scrollbar { display: none; }
+.cat-strip { margin-bottom: .8rem; padding: .1rem .1rem .2rem; }
+
+.cat-chip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+  background: var(--card);
+  color: var(--text);
+  border: 1px solid var(--border);
+  box-shadow: none;
+  border-radius: 999px;
+  padding: .32rem .7rem;
+  font-size: .84rem;
+  font-weight: 500;
+}
+.cat-chip:hover { filter: none; background: var(--card-inner); }
+.cat-chip.active {
+  background: var(--chip-pos-bg);
+  border-color: var(--primary);
+  color: var(--primary);
+  font-weight: 650;
+}
+.cat-chip .cat-total {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  font-size: .78rem;
+  color: var(--muted);
+}
+.cat-chip.active .cat-total { color: var(--primary); }
+
+/* «sugerida automaticamente» ao lado do label Categoria */
+.cat-hint { font-weight: 500; text-transform: none; color: var(--primary); }
+
 /* ================================================================ saldos / acertos */
 .settle-line {
   display: flex;
