@@ -121,6 +121,9 @@ language plpgsql security definer
 set search_path = splitwisely
 as $$
 begin
+  -- auth.uid() null = escrita administrativa direta (SQL Editor /
+  -- service_role), fora do alcance dos utilizadores da app — passa.
+  if auth.uid() is null then return new; end if;
   if (new.is_admin is distinct from old.is_admin
       or new.is_approved is distinct from old.is_approved)
      and not splitwisely.is_admin() then
@@ -272,10 +275,15 @@ create policy "profiles_update_own" on splitwisely.profiles
   using (id = auth.uid()) with check (id = auth.uid());
 
 -- Grupos
+-- NOTA: o SELECT verifica created_by diretamente na linha (além de
+-- has_group_access) porque o INSERT ... RETURNING da app também passa
+-- por esta política — e has_group_access(), sendo STABLE, ainda não
+-- "vê" o grupo acabado de inserir no mesmo statement.
 drop policy if exists "groups_select" on splitwisely.groups;
 create policy "groups_select" on splitwisely.groups
   for select to authenticated
-  using (splitwisely.can_use() and splitwisely.has_group_access(id));
+  using (splitwisely.can_use()
+         and (created_by = auth.uid() or splitwisely.has_group_access(id)));
 
 drop policy if exists "groups_insert" on splitwisely.groups;
 create policy "groups_insert" on splitwisely.groups
