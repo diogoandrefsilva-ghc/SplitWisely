@@ -639,12 +639,11 @@ function renderExpenseForm(slot, ctx, existing, onClose) {
   const close = onClose || (() => { slot.innerHTML = ""; });
   const useWeights = !!group.use_weights; // opção do grupo: divisão por proporções
 
-  // estado inicial: defaults do grupo ou valores da despesa em edição
-  const defaultPayers = members.filter(m => m.is_default_payer).map(m => m.id);
+  // estado inicial: quem insere a despesa é o pagador pré-selecionado
   const myMember = members.find(m => m.user_id === session.user.id);
   const initPayers = existing
     ? existing.expense_payers.map(p => p.member_id)
-    : (defaultPayers.length ? defaultPayers : (myMember ? [myMember.id] : [members[0].id]));
+    : [myMember ? myMember.id : members[0].id];
 
   const initPayerAmounts = {};
   if (existing) existing.expense_payers.forEach(p => { initPayerAmounts[p.member_id] = toCents(p.amount); });
@@ -758,6 +757,34 @@ function renderExpenseForm(slot, ctx, existing, onClose) {
         </table>`,
     };
 
+    // frase-resumo do que vai ser gravado: quem pagou e como se divide
+    const nameOf = id => shortName(members.find(m => m.id === id)?.name || "?");
+    const joinNames = arr => arr.length <= 1 ? arr.join("")
+      : `${arr.slice(0, -1).join(", ")} e ${arr[arr.length - 1]}`;
+    let summary = "";
+    if (state.totalCents > 0 && state.payers.size > 0) {
+      const payerIds = [...state.payers];
+      const paidTxt = joinNames(payerIds.map(id =>
+        `<strong>${esc(nameOf(id))}</strong> pagou ${fmtMoney(state.payerAmounts[id] || 0, cur)}`));
+      const shareIds = Object.keys(shares);
+      let divTxt = "";
+      if (shareIds.length > 0) {
+        let modeTxt = state.mode === "equal" ? "em partes iguais"
+          : state.mode === "weights" ? "por proporção" : "em valores exatos";
+        // despesa em edição fica em modo "exatos", mas se as partes forem
+        // todas iguais (± arredondamento) a frase natural é "partes iguais"
+        if (state.mode === "exact") {
+          const vals = Object.values(shares);
+          if (vals.length > 1 && vals.every(v => Math.abs(v - vals[0]) <= 1)) modeTxt = "em partes iguais";
+        }
+        const who = shareIds.length === members.length
+          ? "todos os elementos do grupo"
+          : joinNames(shareIds.map(id => `<strong>${esc(nameOf(id))}</strong>`));
+        divTxt = `, dividido ${modeTxt} por ${who}`;
+      }
+      summary = `<p class="form-summary">${paidTxt}${divTxt}.</p>`;
+    }
+
     const secTab = (id, label, ok) =>
       `<button data-sec="${id}" class="${state.section === id ? "active" : ""}">${label}${ok ? ' <span class="tab-ok">✓</span>' : ""}</button>`;
 
@@ -773,6 +800,7 @@ function renderExpenseForm(slot, ctx, existing, onClose) {
         ${secTab("divide", "Divisão", okShare)}
       </div>
       <div class="form-section">${sections[state.section]}</div>
+      ${summary}
       <div class="form-actions">
         <button id="x-save">${existing ? "Guardar alterações" : "Adicionar despesa"}</button>
         ${existing ? `<button class="danger" id="x-del">Apagar</button>` : ""}
@@ -1095,19 +1123,17 @@ function renderMembersTab($c, ctx) {
 
   const hint = useWeights
     ? `<p>O <strong>peso</strong> define a proporção default na divisão das despesas
-       (0 = não entra por defeito). O <strong>pagador default</strong> fica pré-selecionado
-       nas novas despesas. Se indicares um email, a pessoa fica ligada à conta dela
-       quando entrar com Google.</p>`
-    : `<p>O <strong>pagador default</strong> fica pré-selecionado nas novas despesas.
-       Se indicares um email, a pessoa fica ligada à conta dela quando entrar com Google.
-       As despesas dividem-se em partes iguais — podes ativar a divisão por proporções
-       nas Definições do grupo.</p>`;
+       (0 = não entra por defeito). Se indicares um email, a pessoa fica ligada à
+       conta dela quando entrar com Google.</p>`
+    : `<p>Se indicares um email, a pessoa fica ligada à conta dela quando entrar
+       com Google. As despesas dividem-se em partes iguais — podes ativar a divisão
+       por proporções nas Definições do grupo.</p>`;
 
   $c.innerHTML = `
     <div class="card">
       <h2>Membros ${members.length ? `<span class="muted">· ${members.length}</span>` : ""}</h2>
       <details class="hint">
-        <summary>${useWeights ? "O que são o peso e o pagador default?" : "O que é o pagador default?"}</summary>
+        <summary>${useWeights ? "Para que serve o peso?" : "Como funcionam os convites por email?"}</summary>
         ${hint}
       </details>
       ${members.length === 0 ? `<p class="empty">Ainda sem membros.</p>` : `
@@ -1123,8 +1149,6 @@ function renderMembersTab($c, ctx) {
             <div class="member-controls">
               ${useWeights ? `<label class="ctl"><span>Peso</span>
                 <input type="number" step="0.1" min="0" data-mw="${m.id}" value="${m.default_weight}" /></label>` : ""}
-              <label class="ctl"><span>Pagador</span>
-                <input type="checkbox" data-mp="${m.id}" ${m.is_default_payer ? "checked" : ""} /></label>
               <button class="ghost small" data-mdel="${m.id}" title="Remover pessoa">✕</button>
             </div>
           </li>`).join("")}
@@ -1149,14 +1173,6 @@ function renderMembersTab($c, ctx) {
         .update({ default_weight: parseFloat(inp.value) || 0 })
         .eq("id", inp.dataset.mw);
       error ? toast(error.message, true) : toast("Peso atualizado");
-    };
-  });
-  $c.querySelectorAll("[data-mp]").forEach(cb => {
-    cb.onchange = async () => {
-      const { error } = await sb.from("group_members")
-        .update({ is_default_payer: cb.checked })
-        .eq("id", cb.dataset.mp);
-      error ? toast(error.message, true) : toast("Default atualizado");
     };
   });
   $c.querySelectorAll("[data-mdel]").forEach(b => {

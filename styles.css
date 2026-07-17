@@ -561,6 +561,17 @@ details.hint p { margin: .4rem 0 0; font-size: .8rem; color: var(--muted); line-
   display: inline-block;
 }
 .form-status.neutral { color: var(--muted); background: var(--chip-zero-bg); }
+
+/* resumo do que vai ser gravado (quem pagou, como se divide) */
+.form-summary {
+  margin: .8rem 0 0;
+  padding: .55rem .7rem;
+  background: var(--chip-pos-bg);
+  border-radius: 10px;
+  font-size: .82rem;
+  line-height: 1.45;
+}
+.form-summary strong { font-weight: 650; }
 .form-actions {
   display: flex;
   gap: .6rem;
