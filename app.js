@@ -22,6 +22,14 @@ let session = null;     // sessão atual
 let profile = null;     // perfil splitwisely (is_admin / is_approved)
 let cache = { groups: null };
 
+// Dados do grupo aberto, para trocar de separador sem voltar a pedir tudo
+// ao servidor (e sem o ecrã "A carregar grupo…" a piscar).
+let groupCache = { id: null, data: null };
+function invalidateGroupCache() { groupCache = { id: null, data: null }; }
+
+// Depois de gravar/apagar algo: deita fora a cache e volta a desenhar a vista.
+function refresh() { invalidateGroupCache(); route(); }
+
 // ---------------------------------------------------------------- helpers
 function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, c =>
@@ -304,40 +312,63 @@ async function renderAdmin() {
 
 // ---------------------------------------------------------------- vista: grupos
 
-// Saldo do utilizador em cada grupo onde é membro (para o resumo da home).
+// Saldo do utilizador em cada grupo onde é membro e última atividade
+// (despesa/pagamento mais recente) de cada grupo, para o resumo da home.
 // 3 queries no total, a RLS filtra pelos grupos a que tem acesso.
 async function fetchMyGroupBalances() {
   const uid = session.user.id;
   const [m, e, p] = await Promise.all([
     sb.from("group_members").select("id, group_id, user_id"),
-    sb.from("expenses").select("group_id, expense_payers(member_id, amount), expense_shares(member_id, amount)"),
-    sb.from("payments").select("group_id, from_member, to_member, amount"),
+    sb.from("expenses").select("group_id, created_at, expense_payers(member_id, amount), expense_shares(member_id, amount)"),
+    sb.from("payments").select("group_id, created_at, from_member, to_member, amount"),
   ]);
-  if (m.error || e.error) return {};
+  if (m.error || e.error) return { balances: {}, activity: {} };
+  const pays = p.error ? [] : p.data;
+
+  const activity = {};
+  const bump = (gid, ts) => {
+    const t = Date.parse(ts) || 0;
+    if (t > (activity[gid] || 0)) activity[gid] = t;
+  };
+  for (const x of e.data) bump(x.group_id, x.created_at);
+  for (const pay of pays) bump(pay.group_id, pay.created_at);
+
   const mine = new Map(); // member_id -> group_id (os "eus" de cada grupo)
   for (const mem of m.data) if (mem.user_id === uid) mine.set(mem.id, mem.group_id);
-  if (mine.size === 0) return {};
 
-  const bal = {};
-  for (const gid of mine.values()) bal[gid] = 0;
+  const balances = {};
+  for (const gid of mine.values()) balances[gid] = 0;
   const add = (memberId, cents) => {
     const gid = mine.get(memberId);
-    if (gid !== undefined) bal[gid] += cents;
+    if (gid !== undefined) balances[gid] += cents;
   };
   for (const x of e.data) {
     for (const pp of x.expense_payers) add(pp.member_id, toCents(pp.amount));
     for (const ss of x.expense_shares) add(ss.member_id, -toCents(ss.amount));
   }
-  for (const pay of (p.error ? [] : p.data)) {
+  for (const pay of pays) {
     add(pay.from_member, toCents(pay.amount));
     add(pay.to_member, -toCents(pay.amount));
   }
-  return bal;
+  return { balances, activity };
+}
+
+// Grupos favoritos (máx. 4), guardados por utilizador neste browser.
+function favsKey() { return `splitwisely_favs_${session.user.id}`; }
+function getFavs() {
+  try {
+    const a = JSON.parse(localStorage.getItem(favsKey()));
+    return Array.isArray(a) ? a : [];
+  } catch (_) { return []; }
 }
 
 async function renderGroups() {
+  invalidateGroupCache();
   $app.innerHTML = `<div class="loading">A carregar grupos…</div>`;
-  const [groups, balances] = await Promise.all([fetchGroups(), fetchMyGroupBalances()]);
+  const [groups, { balances, activity }] = await Promise.all([fetchGroups(), fetchMyGroupBalances()]);
+  let othersOpen = false;
+
+  const lastAct = (g) => activity[g.id] || Date.parse(g.created_at) || 0;
 
   // saldo à direita de cada grupo: valor em cima, verbo por baixo (compacto)
   const balanceHtml = (g) => {
@@ -346,6 +377,14 @@ async function renderGroups() {
     if (b === 0) return `<span class="item-amount zero">em dia</span>`;
     return `<span class="item-amount ${b > 0 ? "positive" : "negative"}">${fmtMoney(Math.abs(b), g.currency)}</span>
       <span class="bal-label">${b > 0 ? "recebes" : "deves"}</span>`;
+  };
+
+  // saldo no rodapé de um card: chip colorido
+  const chipBalance = (g) => {
+    const b = balances[g.id];
+    if (b === undefined) return "";
+    if (b === 0) return `<span class="chip zero">✓ em dia</span>`;
+    return `<span class="chip ${b > 0 ? "positive" : "negative"}">${b > 0 ? "recebes" : "deves"} ${fmtMoney(Math.abs(b), g.currency)}</span>`;
   };
 
   // resumo global (soma apenas grupos na mesma moeda, a do 1.º com saldo)
@@ -369,30 +408,98 @@ async function renderGroups() {
       </div>
     </div>`;
 
-  $app.innerHTML = `
-    <div class="header-row">
-      <h1>Os meus grupos</h1>
-      <button id="btn-new-group">+ Novo grupo</button>
-    </div>
-    <div id="new-group-slot"></div>
-    ${statStrip}
-    <div class="card">
-      ${groups.length === 0
-        ? `<p class="empty">Ainda não tens grupos. Cria o primeiro no botão «+ Novo grupo» 👆</p>`
-        : `<ul class="list">${groups.map(g => `
-            <li class="group-row">
-              <a class="item-link" href="#/g/${g.id}">
-                ${avatarHtml(g.name)}
-                <span class="item-main">
-                  <span class="item-title">${esc(g.name)}</span>
-                  ${g.description ? `<span class="item-sub">${esc(g.description)}</span>` : ""}
-                </span>
-                <span class="item-end">${balanceHtml(g)}</span>
-                <span class="chevron">›</span>
-              </a>
-            </li>`).join("")}</ul>`}
-    </div>`;
+  function draw() {
+    // até 4 cards em destaque: primeiro os favoritos, depois os grupos
+    // com movimentos mais recentes; o resto fica atrás de «Outros grupos»
+    const favs = getFavs().filter(id => groups.some(g => g.id === id));
+    const byActivity = [...groups].sort((a, b) => lastAct(b) - lastAct(a));
+    const featured = favs.map(id => groups.find(g => g.id === id));
+    for (const g of byActivity) {
+      if (featured.length >= 4) break;
+      if (!featured.includes(g)) featured.push(g);
+    }
+    const others = byActivity.filter(g => !featured.includes(g));
 
+    const starBtn = (g, extra = "") => {
+      const isFav = favs.includes(g.id);
+      return `<button class="fav-btn ${extra} ${isFav ? "active" : ""}" data-fav="${g.id}"
+        title="${isFav ? "Tirar dos favoritos" : "Marcar como favorito"}">${isFav ? "★" : "☆"}</button>`;
+    };
+
+    const card = (g) => `
+      <div class="group-card" data-goto="${g.id}">
+        ${starBtn(g)}
+        <div class="group-card-head">
+          ${avatarHtml(g.name)}
+          <span class="group-card-name">${esc(g.name)}</span>
+        </div>
+        ${g.description ? `<span class="group-card-desc">${esc(g.description)}</span>` : ""}
+        <div class="group-card-foot">${chipBalance(g)}</div>
+      </div>`;
+
+    const row = (g) => `
+      <li class="group-row">
+        <a class="item-link" href="#/g/${g.id}">
+          ${avatarHtml(g.name)}
+          <span class="item-main">
+            <span class="item-title">${esc(g.name)}</span>
+            ${g.description ? `<span class="item-sub">${esc(g.description)}</span>` : ""}
+          </span>
+          <span class="item-end">${balanceHtml(g)}</span>
+        </a>
+        ${starBtn(g, "in-list")}
+      </li>`;
+
+    $app.innerHTML = `
+      <div class="header-row">
+        <h1>Os meus grupos</h1>
+        <button id="btn-new-group">+ Novo grupo</button>
+      </div>
+      <div id="new-group-slot"></div>
+      ${statStrip}
+      ${groups.length === 0
+        ? `<div class="card"><p class="empty">Ainda não tens grupos. Cria o primeiro no botão «+ Novo grupo» 👆</p></div>`
+        : `<div class="group-grid">${featured.map(card).join("")}</div>
+          ${others.length ? `
+            <button class="secondary others-toggle" id="btn-others">
+              Outros grupos (${others.length}) <span class="others-arrow">${othersOpen ? "▴" : "▾"}</span>
+            </button>
+            <div class="card ${othersOpen ? "" : "hidden"}" id="others-card">
+              <ul class="list">${others.map(row).join("")}</ul>
+            </div>` : ""}`}`;
+
+    // navegação dos cards (a estrela dentro do card não navega)
+    $app.querySelectorAll("[data-goto]").forEach(c => {
+      c.onclick = (e) => {
+        if (e.target.closest(".fav-btn")) return;
+        location.hash = `#/g/${c.dataset.goto}`;
+      };
+    });
+
+    $app.querySelectorAll("[data-fav]").forEach(b => {
+      b.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const id = b.dataset.fav;
+        let next = getFavs();
+        if (next.includes(id)) next = next.filter(x => x !== id);
+        else if (favs.length >= 4) return toast("Só podes ter 4 grupos favoritos — tira um primeiro", true);
+        else next.push(id);
+        localStorage.setItem(favsKey(), JSON.stringify(next));
+        draw();
+      };
+    });
+
+    $app.querySelector("#btn-others")?.addEventListener("click", () => {
+      othersOpen = !othersOpen;
+      $app.querySelector("#others-card").classList.toggle("hidden", !othersOpen);
+      $app.querySelector(".others-arrow").textContent = othersOpen ? "▴" : "▾";
+    });
+
+    bindNewGroup();
+  }
+
+  function bindNewGroup() {
   const slot = document.getElementById("new-group-slot");
   const $btnNew = document.getElementById("btn-new-group");
 
@@ -468,26 +575,39 @@ async function renderGroups() {
         });
         if (e2) toast(e2.message, true);
       }
-      location.hash = `#/g/${group.id}/membros`;
+      location.hash = `#/g/${group.id}/definicoes`;
     };
   };
+  }
+
+  draw();
 }
 
 // ---------------------------------------------------------------- vista: grupo
 async function renderGroup(groupId, tab) {
-  $app.innerHTML = `<div class="loading">A carregar grupo…</div>`;
-  const { group, members, expenses, payments, paymentsReady } = await fetchGroupBundle(groupId);
+  if (tab === "membros") tab = "definicoes"; // aba antiga: os membros vivem agora nas definições
+
+  let bundle = groupCache.id === groupId ? groupCache.data : null;
+  if (!bundle) {
+    // só mostra o ecrã de carregamento quando ainda não estamos dentro do
+    // grupo — trocar de separador não deve fazer a página "piscar"
+    if (!$app.querySelector(`[data-group-shell="${groupId}"]`)) {
+      $app.innerHTML = `<div class="loading">A carregar grupo…</div>`;
+    }
+    bundle = await fetchGroupBundle(groupId);
+    groupCache = { id: groupId, data: bundle };
+  }
+  const { group, members, expenses, payments, paymentsReady } = bundle;
   const isOwner = group.created_by === session.user.id;
 
   const tabs = [
     ["despesas", "Despesas"],
     ["saldos", "Saldos"],
-    ["membros", "Membros"],
     ["definicoes", "Definições"],
   ];
 
   $app.innerHTML = `
-    <div class="page-head">
+    <div class="page-head" data-group-shell="${group.id}">
       <a class="back-link" href="#/">← Todos os grupos</a>
       <div class="header-row">
         <div class="title-line">
@@ -511,7 +631,6 @@ async function renderGroup(groupId, tab) {
   const $c = document.getElementById("tab-content");
   if (tab === "despesas") renderExpensesTab($c, ctx);
   else if (tab === "saldos") renderBalancesTab($c, ctx);
-  else if (tab === "membros") renderMembersTab($c, ctx);
   else renderSettingsTab($c, ctx);
 }
 
@@ -600,7 +719,7 @@ function renderExpensesTab($c, ctx) {
         <h2 style="margin:0;">Despesas ${expenses.length ? `<span class="muted">· ${expenses.length}</span>` : ""}</h2>
         <button id="btn-add-expense" ${members.length === 0 ? "disabled" : ""}>+ Nova despesa</button>
       </div>
-      ${members.length === 0 ? `<p class="empty">Adiciona primeiro membros na aba «Membros».</p>` : ""}
+      ${members.length === 0 ? `<p class="empty">Adiciona primeiro membros no separador «Definições».</p>` : ""}
       <div id="expense-form-slot"></div>
       <div id="expense-list">
       ${expenses.length === 0 && members.length > 0
@@ -867,7 +986,7 @@ function renderExpenseForm(slot, ctx, existing, onClose) {
       const { error } = await sb.from("expenses").delete().eq("id", existing.id);
       if (error) return toast(error.message, true);
       toast("Despesa apagada");
-      route();
+      refresh();
     });
 
     slot.querySelector("#x-save").onclick = async () => {
@@ -917,7 +1036,7 @@ function renderExpenseForm(slot, ctx, existing, onClose) {
       if (i1.error || i2.error) return toast((i1.error || i2.error).message, true);
 
       toast(existing ? "Despesa atualizada" : "Despesa adicionada");
-      route();
+      refresh();
     };
   }
 
@@ -1111,7 +1230,7 @@ function renderBalancesTab($c, ctx) {
       });
       if (error) return toast(error.message, true);
       toast("Pagamento registado 💸");
-      route();
+      refresh();
     };
   }
 
@@ -1128,13 +1247,13 @@ function renderBalancesTab($c, ctx) {
       const { error } = await sb.from("payments").delete().eq("id", b.dataset.pdel);
       if (error) return toast(error.message, true);
       toast("Pagamento apagado");
-      route();
+      refresh();
     };
   });
 }
 
-// ------------------------------------------------ tab: membros
-function renderMembersTab($c, ctx) {
+// ------------------------------------------------ secção: membros (dentro das definições)
+function renderMembersSection($c, ctx) {
   const { members } = ctx;
   const useWeights = !!ctx.group.use_weights;
 
@@ -1145,7 +1264,7 @@ function renderMembersTab($c, ctx) {
        conta dela quando entrar com Google.</p>`
     : `<p>Se indicares um email, a pessoa fica ligada à conta dela quando entrar
        com Google. As despesas dividem-se em partes iguais — podes ativar a divisão
-       por proporções nas Definições do grupo.</p>`;
+       por proporções na opção «Divisão por proporções» acima.</p>`;
 
   $c.innerHTML = `
     <div class="card">
@@ -1191,6 +1310,10 @@ function renderMembersTab($c, ctx) {
         .update({ default_weight: parseFloat(inp.value) || 0 })
         .eq("id", inp.dataset.mw);
       if (error) return toast(error.message, true);
+      // atualiza também a cache do grupo, para os outros separadores
+      // verem já o peso novo sem ir de novo ao servidor
+      const mem = members.find(m => m.id === inp.dataset.mw);
+      if (mem) mem.default_weight = parseFloat(inp.value) || 0;
       // feedback visível de que o valor ficou logo gravado na BD
       inp.classList.add("saved");
       setTimeout(() => inp.classList.remove("saved"), 1500);
@@ -1203,11 +1326,11 @@ function renderMembersTab($c, ctx) {
       const { error } = await sb.from("group_members").delete().eq("id", b.dataset.mdel);
       if (error) return toast(error.message, true);
       toast("Pessoa removida");
-      route();
+      refresh();
     };
   });
 
-  document.getElementById("new-member").onsubmit = async (e) => {
+  $c.querySelector("#new-member").onsubmit = async (e) => {
     e.preventDefault();
     const f = new FormData(e.target);
     const { error } = await sb.from("group_members").insert({
@@ -1220,7 +1343,7 @@ function renderMembersTab($c, ctx) {
     });
     if (error) return toast(error.message, true);
     toast("Pessoa adicionada");
-    route();
+    refresh();
   };
 }
 
@@ -1252,11 +1375,16 @@ function renderSettingsTab($c, ctx) {
         ${isOwner ? `<button type="submit" style="margin-top:.5rem;">Guardar</button>` : ""}
       </form>
     </div>
+    <div id="members-section"></div>
     ${isOwner ? `
     <div class="card">
       <h2>Zona de perigo</h2>
       <button class="danger" id="btn-del-group">Apagar grupo e todas as despesas</button>
     </div>` : ""}`;
+
+  // os membros gerem-se aqui, logo abaixo das definições — a opção da
+  // divisão por proporções mexe na forma como se definem (o peso)
+  renderMembersSection($c.querySelector("#members-section"), ctx);
 
   if (!isOwner) return;
 
@@ -1278,7 +1406,7 @@ function renderSettingsTab($c, ctx) {
     }
     if (error) return toast(error.message, true);
     toast("Grupo atualizado");
-    route();
+    refresh();
   };
 
   document.getElementById("btn-del-group").onclick = async () => {
