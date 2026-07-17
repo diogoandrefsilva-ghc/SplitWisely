@@ -345,6 +345,21 @@ button.ghost {
 button.ghost:hover { color: var(--danger); filter: none; }
 button:disabled { opacity: .5; cursor: not-allowed; }
 
+/* botão-link de convite (mailto) no detalhe do membro — como .secondary,
+   mas num <a> (o seletor button.secondary não o apanha) */
+a.btn.invite {
+  display: inline-flex;
+  align-items: center;
+  gap: .4rem;
+  text-decoration: none;
+  background: var(--card);
+  color: var(--text);
+  border: 1px solid var(--border);
+  font-weight: 500;
+  box-shadow: none;
+}
+a.btn.invite:hover { background: var(--card-inner); filter: none; }
+
 /* ================================================================ forms */
 input, select {
   font: inherit;
