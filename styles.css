@@ -238,6 +238,7 @@ label { font-size: .85rem; font-weight: 600; display: block; margin-bottom: .25r
   text-overflow: ellipsis;
 }
 .chevron { color: var(--muted); font-size: 1.2rem; line-height: 1; }
+.group-chip { align-self: flex-start; margin-top: .25rem; font-size: .78rem; padding: .12rem .5rem; }
 
 /* avatar redondo com iniciais */
 .avatar {
@@ -317,10 +318,48 @@ label { font-size: .85rem; font-weight: 600; display: block; margin-bottom: .25r
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: .35rem;
+  gap: .15rem;
   flex: none;
 }
 .row-actions { display: flex; gap: .35rem; }
+
+.my-impact { font-size: .78rem; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.my-impact.positive { color: var(--positive); }
+.my-impact.negative { color: var(--negative); }
+
+.list li.clickable { cursor: pointer; border-radius: 10px; transition: background .12s; }
+.list li.clickable:hover { background: var(--card-inner); }
+.list li.clickable:active { background: var(--seg-bg); }
+
+/* detalhe/formulário de despesa */
+.form-head {
+  display: flex;
+  align-items: center;
+  gap: .7rem;
+  margin-bottom: .8rem;
+}
+.form-tabs { width: 100%; }
+.form-tabs button { flex: 1; text-align: center; padding: .42rem .45rem; }
+.tab-ok { color: var(--positive); font-weight: 800; }
+.form-tabs button.active .tab-ok { color: var(--positive); }
+.form-section { min-height: 120px; }
+.form-status {
+  margin: 0 0 .6rem;
+  font-size: .84rem;
+  font-weight: 600;
+  color: var(--negative);
+  background: var(--chip-neg-bg);
+  border-radius: 8px;
+  padding: .35rem .6rem;
+  display: inline-block;
+}
+.form-actions {
+  display: flex;
+  gap: .6rem;
+  margin-top: 1rem;
+  padding-top: .9rem;
+  border-top: 1px solid var(--border);
+}
 
 /* tabs em estilo "segmented control" */
 .tabs {
@@ -344,7 +383,7 @@ label { font-size: .85rem; font-weight: 600; display: block; margin-bottom: .25r
   box-shadow: none;
   font-weight: 600;
   border-radius: 9px;
-  padding: .42rem .9rem;
+  padding: .42rem .75rem;
   white-space: nowrap;
 }
 .tabs button:hover { filter: none; color: var(--text); }
@@ -368,20 +407,28 @@ table.split-table input[type="checkbox"] { width: 1.15rem; }
 .settle-line {
   display: flex;
   align-items: center;
-  gap: .55rem;
-  padding: .55rem .2rem;
+  gap: .7rem;
+  padding: .65rem .2rem;
   border-bottom: 1px solid var(--border);
 }
 .settle-line:last-child { border-bottom: none; }
-.settle-line .amount { margin-left: auto; }
-.settle-line button { flex: none; }
-.settle-who {
-  display: flex;
-  align-items: center;
-  gap: .35rem;
+.settle-avatars { display: flex; flex: none; }
+.settle-avatars .avatar + .avatar {
+  margin-left: -12px;
+  box-shadow: 0 0 0 2px var(--card), inset 0 -6px 12px rgba(0, 0, 0, .12);
+}
+.settle-text {
   flex: 1;
   min-width: 0;
-  flex-wrap: wrap;
+  line-height: 1.35;
+}
+.settle-text .muted { font-size: .82rem; }
+.settle-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: .35rem;
+  flex: none;
 }
 .settle-arrow { color: var(--muted); font-size: .85rem; }
 
@@ -428,4 +475,6 @@ table.split-table input[type="checkbox"] { width: 1.15rem; }
   table.split-table input[type="number"] { max-width: 92px; }
   .topbar .user-name { display: none; } /* poupa espaço na barra */
   .settle-line strong { font-size: .92rem; }
+  /* os 3 separadores do detalhe da despesa têm de caber no ecrã */
+  .form-tabs button, .form-section .tabs button { font-size: .86rem; padding: .42rem .45rem; }
 }

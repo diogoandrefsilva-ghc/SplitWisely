@@ -296,17 +296,58 @@ async function renderAdmin() {
 }
 
 // ---------------------------------------------------------------- vista: grupos
+
+// Saldo do utilizador em cada grupo onde é membro (para o resumo da home).
+// 3 queries no total, a RLS filtra pelos grupos a que tem acesso.
+async function fetchMyGroupBalances() {
+  const uid = session.user.id;
+  const [m, e, p] = await Promise.all([
+    sb.from("group_members").select("id, group_id, user_id"),
+    sb.from("expenses").select("group_id, expense_payers(member_id, amount), expense_shares(member_id, amount)"),
+    sb.from("payments").select("group_id, from_member, to_member, amount"),
+  ]);
+  if (m.error || e.error) return {};
+  const mine = new Map(); // member_id -> group_id (os "eus" de cada grupo)
+  for (const mem of m.data) if (mem.user_id === uid) mine.set(mem.id, mem.group_id);
+  if (mine.size === 0) return {};
+
+  const bal = {};
+  for (const gid of mine.values()) bal[gid] = 0;
+  const add = (memberId, cents) => {
+    const gid = mine.get(memberId);
+    if (gid !== undefined) bal[gid] += cents;
+  };
+  for (const x of e.data) {
+    for (const pp of x.expense_payers) add(pp.member_id, toCents(pp.amount));
+    for (const ss of x.expense_shares) add(ss.member_id, -toCents(ss.amount));
+  }
+  for (const pay of (p.error ? [] : p.data)) {
+    add(pay.from_member, toCents(pay.amount));
+    add(pay.to_member, -toCents(pay.amount));
+  }
+  return bal;
+}
+
 async function renderGroups() {
   $app.innerHTML = `<div class="loading">A carregar grupos…</div>`;
-  const groups = await fetchGroups();
+  const [groups, balances] = await Promise.all([fetchGroups(), fetchMyGroupBalances()]);
+
+  const balanceChip = (g) => {
+    const b = balances[g.id];
+    if (b === undefined) return "";
+    return `<span class="chip group-chip ${b > 0 ? "positive" : b < 0 ? "negative" : "zero"}">
+      ${b === 0 ? "em dia" : (b > 0 ? "recebe " : "deve ") + fmtMoney(Math.abs(b), g.currency)}</span>`;
+  };
 
   $app.innerHTML = `
     <div class="header-row">
       <h1 style="margin:0;">Os meus grupos</h1>
+      <button id="btn-new-group">+ Novo grupo</button>
     </div>
+    <div id="new-group-slot"></div>
     <div class="card">
       ${groups.length === 0
-        ? `<p class="empty">Ainda não tens grupos. Cria o primeiro abaixo 👇</p>`
+        ? `<p class="empty">Ainda não tens grupos. Cria o primeiro no botão «+ Novo grupo» 👆</p>`
         : `<ul class="list">${groups.map(g => `
             <li class="group-row">
               <a class="item-link" href="#/g/${g.id}">
@@ -314,66 +355,78 @@ async function renderGroups() {
                 <span class="group-info">
                   <span class="group-name">${esc(g.name)}</span>
                   ${g.description ? `<span class="group-desc">${esc(g.description)}</span>` : ""}
+                  ${balanceChip(g)}
                 </span>
               </a>
               <span class="badge">${esc(g.currency)}</span>
               <span class="chevron">›</span>
             </li>`).join("")}</ul>`}
-    </div>
-    <div class="card">
-      <h2>Novo grupo / evento</h2>
-      <form id="new-group">
-        <div class="row">
-          <div class="field" style="flex:3;">
-            <label>Nome</label>
-            <input name="name" placeholder="Ex.: Férias Algarve 2026" required />
-          </div>
-          <div class="field" style="flex:1;">
-            <label>Moeda</label>
-            <select name="currency">
-              <option value="EUR" selected>EUR €</option>
-              <option value="USD">USD $</option>
-              <option value="GBP">GBP £</option>
-              <option value="BRL">BRL R$</option>
-              <option value="CHF">CHF</option>
-            </select>
-          </div>
-        </div>
-        <div class="field">
-          <label>Descrição (opcional)</label>
-          <input name="description" placeholder="Ex.: casa alugada + jantares" />
-        </div>
-        <label style="font-weight:400;font-size:.88rem;">
-          <input type="checkbox" name="join" checked style="width:auto;margin-right:.4rem;" />
-          Adicionar-me como membro do grupo
-        </label>
-        <div style="margin-top:.8rem;">
-          <button type="submit">Criar grupo</button>
-        </div>
-      </form>
     </div>`;
 
-  document.getElementById("new-group").onsubmit = async (e) => {
-    e.preventDefault();
-    const f = new FormData(e.target);
-    const { data: group, error } = await sb.from("groups").insert({
-      name: f.get("name").trim(),
-      description: f.get("description").trim() || null,
-      currency: f.get("currency"),
-    }).select().single();
-    if (error) return toast(error.message, true);
+  const slot = document.getElementById("new-group-slot");
+  const $btnNew = document.getElementById("btn-new-group");
 
-    if (f.get("join")) {
-      const u = session.user;
-      const { error: e2 } = await sb.from("group_members").insert({
-        group_id: group.id,
-        name: u.user_metadata?.full_name || u.email,
-        email: u.email,
-        user_id: u.id,
-      });
-      if (e2) toast(e2.message, true);
-    }
-    location.hash = `#/g/${group.id}/membros`;
+  $btnNew.onclick = () => {
+    if (slot.innerHTML) { slot.innerHTML = ""; return; }
+    slot.innerHTML = `
+      <div class="card">
+        <h2>Novo grupo / evento</h2>
+        <form id="new-group">
+          <div class="row">
+            <div class="field" style="flex:3;">
+              <label>Nome</label>
+              <input name="name" placeholder="Ex.: Férias Algarve 2026" required />
+            </div>
+            <div class="field" style="flex:1;">
+              <label>Moeda</label>
+              <select name="currency">
+                <option value="EUR" selected>EUR €</option>
+                <option value="USD">USD $</option>
+                <option value="GBP">GBP £</option>
+                <option value="BRL">BRL R$</option>
+                <option value="CHF">CHF</option>
+              </select>
+            </div>
+          </div>
+          <div class="field">
+            <label>Descrição (opcional)</label>
+            <input name="description" placeholder="Ex.: casa alugada + jantares" />
+          </div>
+          <label style="font-weight:400;font-size:.88rem;">
+            <input type="checkbox" name="join" checked style="width:auto;margin-right:.4rem;" />
+            Adicionar-me como membro do grupo
+          </label>
+          <div style="margin-top:.8rem;display:flex;gap:.6rem;">
+            <button type="submit">Criar grupo</button>
+            <button type="button" class="secondary" id="new-group-cancel">Cancelar</button>
+          </div>
+        </form>
+      </div>`;
+    slot.querySelector("input[name=name]").focus();
+    slot.querySelector("#new-group-cancel").onclick = () => { slot.innerHTML = ""; };
+
+    slot.querySelector("#new-group").onsubmit = async (e) => {
+      e.preventDefault();
+      const f = new FormData(e.target);
+      const { data: group, error } = await sb.from("groups").insert({
+        name: f.get("name").trim(),
+        description: f.get("description").trim() || null,
+        currency: f.get("currency"),
+      }).select().single();
+      if (error) return toast(error.message, true);
+
+      if (f.get("join")) {
+        const u = session.user;
+        const { error: e2 } = await sb.from("group_members").insert({
+          group_id: group.id,
+          name: u.user_metadata?.full_name || u.email,
+          email: u.email,
+          user_id: u.id,
+        });
+        if (e2) toast(e2.message, true);
+      }
+      location.hash = `#/g/${group.id}/membros`;
+    };
   };
 }
 
@@ -419,21 +472,36 @@ async function renderGroup(groupId, tab) {
 function renderExpensesTab($c, ctx) {
   const { group, members, expenses } = ctx;
   const memberName = id => members.find(m => m.id === id)?.name || "?";
+  const myMember = members.find(m => m.user_id === session.user.id);
+
+  // efeito líquido da despesa no utilizador: o que pagou menos a sua parte
+  const myImpact = (x) => {
+    if (!myMember) return "";
+    const paid = x.expense_payers.filter(p => p.member_id === myMember.id)
+      .reduce((a, p) => a + toCents(p.amount), 0);
+    const share = x.expense_shares.filter(s => s.member_id === myMember.id)
+      .reduce((a, s) => a + toCents(s.amount), 0);
+    const net = paid - share;
+    if (net === 0 && paid === 0) return "";
+    return `<span class="my-impact ${net >= 0 ? "positive" : "negative"}">
+      para ti: ${net > 0 ? "+" : ""}${fmtMoney(net, group.currency)}</span>`;
+  };
 
   $c.innerHTML = `
     <div class="card">
-      <div class="header-row">
+      <div class="header-row" id="expense-list-head">
         <h2 style="margin:0;">Despesas</h2>
         <button id="btn-add-expense" ${members.length === 0 ? "disabled" : ""}>+ Nova despesa</button>
       </div>
       ${members.length === 0 ? `<p class="empty">Adiciona primeiro membros na aba «Membros».</p>` : ""}
       <div id="expense-form-slot"></div>
+      <div id="expense-list">
       ${expenses.length === 0 && members.length > 0
         ? `<p class="empty">Sem despesas ainda.</p>`
         : `<ul class="list">${expenses.map(x => {
             const payers = x.expense_payers.map(p => memberName(p.member_id)).join(", ");
             const nShares = x.expense_shares.length;
-            return `<li>
+            return `<li class="clickable" data-open="${x.id}">
               <span class="expense-icon">🧾</span>
               <div style="flex:1;min-width:0;">
                 <div style="font-weight:600;">${esc(x.description)}</div>
@@ -441,40 +509,42 @@ function renderExpensesTab($c, ctx) {
               </div>
               <div class="expense-right">
                 <span class="amount">${fmtMoney(toCents(x.amount), group.currency)}</span>
-                <span class="row-actions">
-                  <button class="secondary small" data-edit="${x.id}">Editar</button>
-                  <button class="danger small" data-del="${x.id}">✕</button>
-                </span>
+                ${myImpact(x)}
               </div>
+              <span class="chevron">›</span>
             </li>`;
           }).join("")}</ul>`}
+      </div>
     </div>`;
 
   const slot = $c.querySelector("#expense-form-slot");
-  $c.querySelector("#btn-add-expense")?.addEventListener("click", () => {
-    renderExpenseForm(slot, ctx, null);
-  });
-  $c.querySelectorAll("[data-edit]").forEach(b => {
-    b.onclick = () => {
-      const x = expenses.find(e => e.id === b.dataset.edit);
-      renderExpenseForm(slot, ctx, x);
-      slot.scrollIntoView({ behavior: "smooth", block: "center" });
-    };
-  });
-  $c.querySelectorAll("[data-del]").forEach(b => {
-    b.onclick = async () => {
-      if (!confirm("Apagar esta despesa?")) return;
-      const { error } = await sb.from("expenses").delete().eq("id", b.dataset.del);
-      if (error) return toast(error.message, true);
-      toast("Despesa apagada");
-      route();
-    };
+  const $list = $c.querySelector("#expense-list");
+  const $head = $c.querySelector("#expense-list-head");
+
+  // abre o "detalhe" da despesa: esconde a lista, mostra o formulário
+  const openForm = (x) => {
+    $list.style.display = "none";
+    $head.style.display = "none";
+    renderExpenseForm(slot, ctx, x, () => {
+      slot.innerHTML = "";
+      $list.style.display = "";
+      $head.style.display = "";
+    });
+    slot.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  $c.querySelector("#btn-add-expense")?.addEventListener("click", () => openForm(null));
+  $c.querySelectorAll("[data-open]").forEach(li => {
+    li.onclick = () => openForm(expenses.find(e => e.id === li.dataset.open));
   });
 }
 
-// Formulário de despesa (nova ou edição), com defaults do grupo
-function renderExpenseForm(slot, ctx, existing) {
+// Formulário de despesa (nova ou edição), com defaults do grupo.
+// Dividido em secções (Dados / Quem pagou / Divisão) para não ficar
+// um formulário interminável no telemóvel. `onClose` devolve à lista.
+function renderExpenseForm(slot, ctx, existing, onClose) {
   const { group, members } = ctx;
+  const close = onClose || (() => { slot.innerHTML = ""; });
 
   // estado inicial: defaults do grupo ou valores da despesa em edição
   const defaultPayers = members.filter(m => m.is_default_payer).map(m => m.id);
@@ -490,6 +560,9 @@ function renderExpenseForm(slot, ctx, existing) {
   if (existing) existing.expense_shares.forEach(s => { initShares[s.member_id] = toCents(s.amount); });
 
   const state = {
+    section: "dados", // dados | pagou | divide
+    desc: existing?.description || "",
+    date: existing?.expense_date || new Date().toISOString().slice(0, 10),
     mode: existing ? "exact" : "weights", // equal | weights | exact
     totalCents: existing ? toCents(existing.amount) : 0,
     payers: new Set(initPayers),
@@ -525,77 +598,105 @@ function renderExpenseForm(slot, ctx, existing) {
     const shareSum = Object.values(shares).reduce((a, b) => a + b, 0);
     const okPaid = paidSum === state.totalCents && state.totalCents > 0;
     const okShare = shareSum === state.totalCents && state.totalCents > 0;
+    const okDados = !!state.desc.trim() && state.totalCents > 0;
+    const cur = group.currency;
+
+    const sections = {
+      dados: `
+        <div class="field">
+          <label>Descrição</label>
+          <input id="x-desc" value="${esc(state.desc)}" placeholder="Ex.: Jantar no restaurante" />
+        </div>
+        <div class="row">
+          <div class="field">
+            <label>Valor (${esc(cur)})</label>
+            <input id="x-amount" type="number" step="0.01" min="0" value="${state.totalCents ? (state.totalCents / 100).toFixed(2) : ""}" />
+          </div>
+          <div class="field">
+            <label>Data</label>
+            <input id="x-date" type="date" value="${esc(state.date)}" />
+          </div>
+        </div>`,
+      pagou: `
+        ${okPaid ? "" : `<p class="form-status">${fmtMoney(paidSum, cur)} de ${fmtMoney(state.totalCents, cur)} atribuídos</p>`}
+        <table class="split-table">
+          ${members.map(m => `
+            <tr>
+              <td style="width:30px;"><input type="checkbox" data-payer="${m.id}" ${state.payers.has(m.id) ? "checked" : ""} /></td>
+              <td>${esc(m.name)}</td>
+              <td style="width:130px;">
+                <input type="number" step="0.01" min="0" data-payer-amount="${m.id}"
+                  value="${state.payers.has(m.id) ? ((state.payerAmounts[m.id] || 0) / 100).toFixed(2) : ""}"
+                  ${state.payers.has(m.id) ? "" : "disabled"} />
+              </td>
+            </tr>`).join("")}
+        </table>
+        <button class="secondary small" id="x-dist-payers" style="margin-top:.6rem;">Distribuir igualmente pelos pagadores</button>`,
+      divide: `
+        ${okShare ? "" : `<p class="form-status">${fmtMoney(shareSum, cur)} de ${fmtMoney(state.totalCents, cur)} divididos</p>`}
+        <div class="tabs" style="margin-bottom:.6rem;">
+          <button data-mode="equal" class="${state.mode === "equal" ? "active" : ""}">Partes iguais</button>
+          <button data-mode="weights" class="${state.mode === "weights" ? "active" : ""}">Proporção</button>
+          <button data-mode="exact" class="${state.mode === "exact" ? "active" : ""}">Exatos</button>
+        </div>
+        <table class="split-table">
+          <tr><th></th><th>Pessoa</th><th>${state.mode === "weights" ? "Peso" : state.mode === "exact" ? "Valor" : ""}</th><th style="text-align:right;">Fica com</th></tr>
+          ${members.map(m => {
+            const inShare = state.participants.has(m.id);
+            let ctrl = "";
+            if (state.mode === "weights") {
+              ctrl = `<input type="number" step="0.1" min="0" data-weight="${m.id}" value="${state.weights[m.id] ?? 0}" ${inShare ? "" : "disabled"} />`;
+            } else if (state.mode === "exact") {
+              ctrl = `<input type="number" step="0.01" min="0" data-exact="${m.id}" value="${inShare ? ((state.exact[m.id] || 0) / 100).toFixed(2) : ""}" ${inShare ? "" : "disabled"} />`;
+            }
+            return `<tr>
+              <td style="width:30px;"><input type="checkbox" data-part="${m.id}" ${inShare ? "checked" : ""} /></td>
+              <td>${esc(m.name)}</td>
+              <td style="width:130px;">${ctrl}</td>
+              <td style="text-align:right;" class="amount">${inShare ? fmtMoney(shares[m.id] || 0, cur) : "—"}</td>
+            </tr>`;
+          }).join("")}
+        </table>`,
+    };
+
+    const secTab = (id, label, ok) =>
+      `<button data-sec="${id}" class="${state.section === id ? "active" : ""}">${label}${ok ? ' <span class="tab-ok">✓</span>' : ""}</button>`;
 
     slot.innerHTML = `
-    <div class="card inner-card">
-      <h2>${existing ? "Editar despesa" : "Nova despesa"}</h2>
-      <div class="row">
-        <div class="field" style="flex:3;">
-          <label>Descrição</label>
-          <input id="x-desc" value="${esc(existing?.description || "")}" placeholder="Ex.: Jantar no restaurante" />
-        </div>
-        <div class="field">
-          <label>Valor (${esc(group.currency)})</label>
-          <input id="x-amount" type="number" step="0.01" min="0" value="${state.totalCents ? (state.totalCents / 100).toFixed(2) : ""}" />
-        </div>
-        <div class="field">
-          <label>Data</label>
-          <input id="x-date" type="date" value="${esc(existing?.expense_date || new Date().toISOString().slice(0, 10))}" />
-        </div>
+    <div class="expense-detail">
+      <div class="form-head">
+        <button class="secondary small" id="x-back">← Despesas</button>
+        <h2 style="margin:0;">${existing ? "Detalhe da despesa" : "Nova despesa"}</h2>
       </div>
-
-      <h2 style="margin-top:.6rem;">Quem pagou ${okPaid ? "✅" : `<span class="muted">(${fmtMoney(paidSum, group.currency)} de ${fmtMoney(state.totalCents, group.currency)})</span>`}</h2>
-      <table class="split-table">
-        ${members.map(m => `
-          <tr>
-            <td style="width:30px;"><input type="checkbox" data-payer="${m.id}" ${state.payers.has(m.id) ? "checked" : ""} /></td>
-            <td>${esc(m.name)}</td>
-            <td style="width:130px;">
-              <input type="number" step="0.01" min="0" data-payer-amount="${m.id}"
-                value="${state.payers.has(m.id) ? ((state.payerAmounts[m.id] || 0) / 100).toFixed(2) : ""}"
-                ${state.payers.has(m.id) ? "" : "disabled"} />
-            </td>
-          </tr>`).join("")}
-      </table>
-      <button class="secondary small" id="x-dist-payers" style="margin-top:.4rem;">Distribuir igualmente pelos pagadores</button>
-
-      <h2 style="margin-top:1rem;">Como se divide ${okShare ? "✅" : `<span class="muted">(${fmtMoney(shareSum, group.currency)} de ${fmtMoney(state.totalCents, group.currency)})</span>`}</h2>
-      <div class="tabs" style="margin-bottom:.6rem;">
-        <button data-mode="equal" class="${state.mode === "equal" ? "active" : ""}">Partes iguais</button>
-        <button data-mode="weights" class="${state.mode === "weights" ? "active" : ""}">Proporção (default do grupo)</button>
-        <button data-mode="exact" class="${state.mode === "exact" ? "active" : ""}">Valores exatos</button>
+      <div class="tabs form-tabs">
+        ${secTab("dados", "Dados", okDados)}
+        ${secTab("pagou", "Quem pagou", okPaid)}
+        ${secTab("divide", "Divisão", okShare)}
       </div>
-      <table class="split-table">
-        <tr><th></th><th>Pessoa</th><th>${state.mode === "weights" ? "Peso" : state.mode === "exact" ? "Valor" : ""}</th><th style="text-align:right;">Fica com</th></tr>
-        ${members.map(m => {
-          const inShare = state.participants.has(m.id);
-          let ctrl = "";
-          if (state.mode === "weights") {
-            ctrl = `<input type="number" step="0.1" min="0" data-weight="${m.id}" value="${state.weights[m.id] ?? 0}" ${inShare ? "" : "disabled"} />`;
-          } else if (state.mode === "exact") {
-            ctrl = `<input type="number" step="0.01" min="0" data-exact="${m.id}" value="${inShare ? ((state.exact[m.id] || 0) / 100).toFixed(2) : ""}" ${inShare ? "" : "disabled"} />`;
-          }
-          return `<tr>
-            <td style="width:30px;"><input type="checkbox" data-part="${m.id}" ${inShare ? "checked" : ""} /></td>
-            <td>${esc(m.name)}</td>
-            <td style="width:130px;">${ctrl}</td>
-            <td style="text-align:right;" class="amount">${inShare ? fmtMoney(shares[m.id] || 0, group.currency) : "—"}</td>
-          </tr>`;
-        }).join("")}
-      </table>
-
-      <div style="margin-top:1rem;display:flex;gap:.6rem;">
+      <div class="form-section">${sections[state.section]}</div>
+      <div class="form-actions">
         <button id="x-save">${existing ? "Guardar alterações" : "Adicionar despesa"}</button>
-        <button class="secondary" id="x-cancel">Cancelar</button>
+        ${existing ? `<button class="danger" id="x-del">Apagar</button>` : ""}
       </div>
     </div>`;
 
     // ---- listeners
-    slot.querySelector("#x-amount").onchange = (e) => {
-      state.totalCents = toCents(e.target.value);
+    slot.querySelector("#x-back").onclick = close;
+    slot.querySelectorAll("[data-sec]").forEach(b => {
+      b.onclick = () => { state.section = b.dataset.sec; draw(); };
+    });
+
+    const $desc = slot.querySelector("#x-desc");
+    if ($desc) $desc.oninput = () => { state.desc = $desc.value; };
+    const $date = slot.querySelector("#x-date");
+    if ($date) $date.onchange = () => { state.date = $date.value; };
+    const $amount = slot.querySelector("#x-amount");
+    if ($amount) $amount.onchange = () => {
+      state.totalCents = toCents($amount.value);
       distributePayersEqually();
       draw();
     };
+
     slot.querySelectorAll("[data-payer]").forEach(cb => {
       cb.onchange = () => {
         cb.checked ? state.payers.add(cb.dataset.payer) : state.payers.delete(cb.dataset.payer);
@@ -609,7 +710,8 @@ function renderExpenseForm(slot, ctx, existing) {
         draw();
       };
     });
-    slot.querySelector("#x-dist-payers").onclick = () => { distributePayersEqually(); draw(); };
+    const $dist = slot.querySelector("#x-dist-payers");
+    if ($dist) $dist.onclick = () => { distributePayersEqually(); draw(); };
 
     slot.querySelectorAll("[data-mode]").forEach(b => {
       b.onclick = () => { state.mode = b.dataset.mode; draw(); };
@@ -633,21 +735,28 @@ function renderExpenseForm(slot, ctx, existing) {
       };
     });
 
-    slot.querySelector("#x-cancel").onclick = () => { slot.innerHTML = ""; };
+    slot.querySelector("#x-del")?.addEventListener("click", async () => {
+      if (!confirm("Apagar esta despesa?")) return;
+      const { error } = await sb.from("expenses").delete().eq("id", existing.id);
+      if (error) return toast(error.message, true);
+      toast("Despesa apagada");
+      route();
+    });
 
     slot.querySelector("#x-save").onclick = async () => {
-      const desc = slot.querySelector("#x-desc").value.trim();
-      const date = slot.querySelector("#x-date").value;
+      const desc = state.desc.trim();
+      const date = state.date;
       const shares2 = computedShares();
       const paidSum2 = [...state.payers].reduce((a, id) => a + (state.payerAmounts[id] || 0), 0);
       const shareSum2 = Object.values(shares2).reduce((a, b) => a + b, 0);
 
-      if (!desc) return toast("Falta a descrição", true);
-      if (state.totalCents <= 0) return toast("O valor tem de ser maior que zero", true);
-      if (state.payers.size === 0) return toast("Escolhe quem pagou", true);
-      if (paidSum2 !== state.totalCents) return toast("Os valores pagos não somam o total", true);
-      if (Object.keys(shares2).length === 0) return toast("Escolhe por quem se divide", true);
-      if (shareSum2 !== state.totalCents) return toast("A divisão não soma o total", true);
+      const fail = (section, msg) => { state.section = section; draw(); toast(msg, true); };
+      if (!desc) return fail("dados", "Falta a descrição");
+      if (state.totalCents <= 0) return fail("dados", "O valor tem de ser maior que zero");
+      if (state.payers.size === 0) return fail("pagou", "Escolhe quem pagou");
+      if (paidSum2 !== state.totalCents) return fail("pagou", "Os valores pagos não somam o total");
+      if (Object.keys(shares2).length === 0) return fail("divide", "Escolhe por quem se divide");
+      if (shareSum2 !== state.totalCents) return fail("divide", "A divisão não soma o total");
 
       const payload = {
         group_id: group.id,
@@ -765,20 +874,26 @@ function renderBalancesTab($c, ctx) {
     </div>
 
     <div class="card">
-      <h2>Como acertar contas</h2>
+      <div class="card-title-row">
+        <h2>Como acertar contas</h2>
+        <span class="muted">o mínimo de transferências</span>
+      </div>
       ${settlements.length === 0
         ? `<p class="empty">Está tudo em dia 🎉</p>`
         : settlements.map((s, i) => `
           <div class="settle-line">
-            <span class="settle-who">
-              ${avatarHtml(s.from.name, "small")}
+            <span class="settle-avatars">
+              ${avatarHtml(s.from.name)}${avatarHtml(s.to.name)}
+            </span>
+            <span class="settle-text">
               <strong>${esc(s.from.name)}</strong>
-              <span class="settle-arrow">→</span>
-              ${avatarHtml(s.to.name, "small")}
+              <span class="muted">paga a</span>
               <strong>${esc(s.to.name)}</strong>
             </span>
-            <span class="amount">${fmtMoney(s.cents, cur)}</span>
-            ${paymentsReady ? `<button class="small" data-settle="${i}">Pagar</button>` : ""}
+            <span class="settle-right">
+              <span class="amount">${fmtMoney(s.cents, cur)}</span>
+              ${paymentsReady ? `<button class="small" data-settle="${i}">Pagar</button>` : ""}
+            </span>
           </div>`).join("")}
     </div>
 
