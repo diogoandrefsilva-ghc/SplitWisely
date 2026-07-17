@@ -1257,12 +1257,16 @@ function renderMembersSection($c, ctx) {
     ? `<p>O <strong>peso</strong> define a proporção default na divisão das despesas
        (0 = não entra por defeito). As alterações ao peso <strong>gravam-se
        automaticamente</strong>. Se indicares um email, a pessoa fica ligada à
-       conta dela quando entrar com Google.</p>`
+       conta dela quando entrar com Google. Toca num membro para editar o nome
+       e o email ou para o remover.</p>`
     : `<p>Se indicares um email, a pessoa fica ligada à conta dela quando entrar
        com Google. As despesas dividem-se em partes iguais — podes ativar a divisão
-       por proporções na opção «Divisão por proporções» acima.</p>`;
+       por proporções na opção «Divisão por proporções» acima. Toca num membro
+       para editar o nome e o email ou para o remover.</p>`;
 
   $c.innerHTML = `
+    <div id="member-detail-slot"></div>
+    <div id="members-list-wrap">
     <div class="card">
       <h2>Membros ${members.length ? `<span class="muted">· ${members.length}</span>` : ""}</h2>
       <details class="hint">
@@ -1272,7 +1276,7 @@ function renderMembersSection($c, ctx) {
       ${members.length === 0 ? `<p class="empty">Ainda sem membros.</p>` : `
       <ul class="list">
         ${members.map(m => `
-          <li>
+          <li class="clickable" data-member="${m.id}">
             ${avatarHtml(m.name)}
             <div class="item-main">
               <span class="item-title">${esc(m.name)}</span>
@@ -1282,8 +1286,8 @@ function renderMembersSection($c, ctx) {
             <div class="member-controls">
               ${useWeights ? `<label class="ctl"><span>Peso</span>
                 <input type="number" step="0.1" min="0" data-mw="${m.id}" value="${m.default_weight}" /></label>` : ""}
-              <button class="ghost small" data-mdel="${m.id}" title="Remover pessoa">✕</button>
             </div>
+            <span class="chevron">›</span>
           </li>`).join("")}
       </ul>`}
     </div>
@@ -1298,7 +1302,68 @@ function renderMembersSection($c, ctx) {
         </div>
         <button type="submit">Adicionar</button>
       </form>
+    </div>
     </div>`;
+
+  const $wrap = $c.querySelector("#members-list-wrap");
+  const $slot = $c.querySelector("#member-detail-slot");
+
+  // detalhe de um membro: esconde a lista, mostra o formulário de edição
+  function openMember(m) {
+    $wrap.style.display = "none";
+    $slot.innerHTML = `
+      <div class="card">
+        <div class="form-head">
+          <button class="back-pill" id="m-back"><span class="arr">←</span> Membros</button>
+          <h2 style="margin:0;">Detalhe do membro</h2>
+        </div>
+        <div class="field"><label>Nome</label>
+          <input id="m-name" value="${esc(m.name)}" required /></div>
+        <div class="field"><label>Email</label>
+          <input id="m-email" type="email" value="${esc(m.email || "")}"
+            placeholder="liga a pessoa à conta Google dela" ${m.user_id ? "disabled" : ""} /></div>
+        ${m.user_id ? `<p class="muted" style="margin:-.3rem 0 .7rem;">Esta pessoa já entrou com a
+          conta Google dela <span class="badge linked">conta ligada</span> — o email já não se altera.</p>` : ""}
+        ${useWeights ? `<div class="field" style="max-width:120px;"><label>Peso</label>
+          <input id="m-weight" type="number" step="0.1" min="0" value="${m.default_weight}" /></div>` : ""}
+        <div class="form-actions">
+          <button id="m-save">Guardar</button>
+          <button class="danger" id="m-del">Remover do grupo</button>
+        </div>
+      </div>`;
+    $slot.scrollIntoView({ behavior: "smooth", block: "start" });
+
+    const close = () => { $slot.innerHTML = ""; $wrap.style.display = ""; };
+    $slot.querySelector("#m-back").onclick = close;
+
+    $slot.querySelector("#m-save").onclick = async () => {
+      const name = $slot.querySelector("#m-name").value.trim();
+      if (!name) return toast("O nome não pode ficar vazio", true);
+      const payload = { name };
+      if (!m.user_id) payload.email = $slot.querySelector("#m-email").value.trim() || null;
+      if (useWeights) payload.default_weight = parseFloat($slot.querySelector("#m-weight").value) || 0;
+      const { error } = await sb.from("group_members").update(payload).eq("id", m.id);
+      if (error) return toast(error.message, true);
+      toast("Membro atualizado");
+      refresh();
+    };
+
+    $slot.querySelector("#m-del").onclick = async () => {
+      if (!confirm(`Remover ${m.name} do grupo? As despesas em que participa perdem essa linha.`)) return;
+      const { error } = await sb.from("group_members").delete().eq("id", m.id);
+      if (error) return toast(error.message, true);
+      toast("Pessoa removida");
+      refresh();
+    };
+  }
+
+  $c.querySelectorAll("[data-member]").forEach(li => {
+    li.onclick = (e) => {
+      // mexer no peso inline não deve abrir o detalhe
+      if (e.target.closest("[data-mw]")) return;
+      openMember(members.find(m => m.id === li.dataset.member));
+    };
+  });
 
   $c.querySelectorAll("[data-mw]").forEach(inp => {
     inp.onchange = async () => {
@@ -1314,15 +1379,6 @@ function renderMembersSection($c, ctx) {
       inp.classList.add("saved");
       setTimeout(() => inp.classList.remove("saved"), 1500);
       toast("Peso guardado automaticamente ✓");
-    };
-  });
-  $c.querySelectorAll("[data-mdel]").forEach(b => {
-    b.onclick = async () => {
-      if (!confirm("Remover esta pessoa? As despesas em que participa perdem essa linha.")) return;
-      const { error } = await sb.from("group_members").delete().eq("id", b.dataset.mdel);
-      if (error) return toast(error.message, true);
-      toast("Pessoa removida");
-      refresh();
     };
   });
 
