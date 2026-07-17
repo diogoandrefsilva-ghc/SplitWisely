@@ -4,6 +4,7 @@ App web estilo Splitwise para gerir despesas partilhadas, feita em HTML/JS puro 
 
 ## Funcionalidades
 
+- **Contas com aprovação** — o email definido em `admin_email` (no SQL) entra como **admin**; os restantes ficam num ecrã "à espera de aprovação" até o admin os aprovar no menu **Admin**. Assim ninguém entra por maldade e enche a base de dados.
 - **Grupos / eventos** — cada utilizador cria os grupos que quiser (pode até criar grupos onde não participa: continua a geri-los como criador).
 - **Membros por grupo** — pessoas com nome simples ou ligadas a contas Google. Se adicionares alguém com o email, fica automaticamente ligado à conta quando entrar pela primeira vez.
 - **Despesas flexíveis** — pagas por **uma ou mais** pessoas e divididas por **uma ou várias**, em partes iguais, por proporção ou valores exatos.
@@ -13,21 +14,43 @@ App web estilo Splitwise para gerir despesas partilhadas, feita em HTML/JS puro 
 
 ## Configuração (uma vez)
 
-### 1. Criar o projeto Supabase
+Esta app vive num **schema dedicado** (`splitwisely`) dentro do **projeto Supabase partilhado**
+pelas outras apps (Bet4Fun, FestasBV…). Não cria triggers em `auth.users` (tabela partilhada):
+o perfil é criado pela RPC `ensure_profile()` quando cada pessoa abre a app pela primeira vez.
 
-1. Cria um projeto em [supabase.com](https://supabase.com) (plano gratuito chega).
-2. No **SQL Editor**, cola e executa o conteúdo de [`supabase/schema.sql`](supabase/schema.sql). Isto cria as tabelas, os triggers e as políticas de segurança (RLS).
+### 1. Correr o schema no projeto partilhado
 
-### 2. Ativar o login com Google
+1. Abre o projeto Supabase partilhado → **SQL Editor** → cola e executa
+   [`supabase/schema.sql`](supabase/schema.sql). Cria o schema `splitwisely` com as tabelas,
+   as RPCs (`ensure_profile`, `approve_user`, `claim_memberships`) e as políticas RLS.
+2. No seed do ficheiro, confirma o teu Gmail em `admin_email` — esse email entra como
+   **admin já aprovado** no 1.º login; os restantes ficam à espera de aprovação. (Para trocar
+   depois: `update splitwisely.settings set value='"o-teu@gmail.com"'::jsonb where key='admin_email';`)
+3. Se chegaste a correr a versão antiga do schema (em `public`), corre também o bloco de
+   **LIMPEZA** comentado no fim do ficheiro.
 
-1. Na [Google Cloud Console](https://console.cloud.google.com/apis/credentials), cria um **OAuth Client ID** (tipo *Web application*).
-   - Em *Authorized redirect URIs* adiciona: `https://O-TEU-PROJETO.supabase.co/auth/v1/callback`
-2. No Supabase, vai a **Authentication → Providers → Google**, ativa e cola o *Client ID* e o *Client Secret*.
-3. Em **Authentication → URL Configuration**, define o *Site URL* como o endereço onde vais servir a app (ex.: `https://oteusite.github.io/SplitWisely/`) e adiciona-o também aos *Redirect URLs*.
+### 2. Expor o schema `splitwisely` na Data API
 
-### 3. Ligar a app ao projeto
+**Project Settings → API → Data API → *Exposed schemas*** → adiciona `splitwisely`.
+Sem isto o PostgREST devolve 403/404 a todos os pedidos da app.
 
-Copia `config.example.js` para `config.js` e preenche com os valores de **Settings → API** do Supabase:
+### 3. Login com Google
+
+O provider Google já está configurado no projeto partilhado (usado pelas outras apps),
+por isso só falta autorizar o endereço desta app:
+
+1. Em **Authentication → URL Configuration**, adiciona o endereço onde vais servir a
+   SplitWisely (ex.: `https://oteusite.github.io/SplitWisely/`) aos *Redirect URLs*.
+   (A app passa `redirectTo` no login, por isso não é preciso mexer no *Site URL*.)
+2. *(Só se o Google ainda não estivesse ativo:* na [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
+   cria um **OAuth Client ID** (tipo *Web application*) com o redirect URI
+   `https://O-TEU-PROJETO.supabase.co/auth/v1/callback`, e em
+   **Authentication → Providers → Google** ativa e cola o *Client ID* e o *Client Secret*.)*
+
+### 4. Ligar a app ao projeto
+
+Copia `config.example.js` para `config.js` e preenche com os valores de **Settings → API**
+do projeto partilhado — são o **mesmo Project URL e a mesma chave `anon`** das outras apps:
 
 ```js
 window.APP_CONFIG = {
@@ -38,9 +61,9 @@ window.APP_CONFIG = {
 
 (Em alternativa, se não existir `config.js`, a app pede estes valores no primeiro arranque e guarda-os no browser.)
 
-> A chave *anon* é pública por natureza — a segurança dos dados é garantida pelas políticas RLS no schema, não pelo segredo da chave.
+> A chave *anon* é pública por natureza — a segurança dos dados é garantida pelas políticas RLS no schema, não pelo segredo da chave. **Nunca** uses aqui a chave `service_role`.
 
-### 4. Servir a app
+### 5. Servir a app
 
 É um site estático — serve como quiseres:
 
@@ -54,7 +77,7 @@ ou publica no GitHub Pages, Netlify, Vercel, etc. (lembra-te de atualizar o *Sit
 
 > **Nota PWA:** o service worker (offline + instalação) só funciona em **HTTPS** ou em `localhost`. Em produção usa sempre HTTPS.
 
-### 5. Instalar no telemóvel
+### 6. Instalar no telemóvel
 
 - **Android (Chrome):** abre o site → menu ⋮ → **Adicionar ao ecrã principal** (ou aceita o aviso de instalação).
 - **iPhone (Safari):** abre o site → botão de partilha → **Adicionar ao ecrã principal**.
@@ -63,7 +86,9 @@ A app abre depois como qualquer outra, em ecrã inteiro e com o ícone próprio.
 
 ## Como usar
 
-1. Entra com Google.
+1. Entra com Google. O email definido em `admin_email` entra logo como **admin**; os
+   restantes ficam no ecrã "à espera de aprovação" até o admin os aprovar no menu
+   **Admin** (botão na barra de topo, só visível ao admin — também dá para revogar acessos).
 2. Cria um grupo (podes escolher não ser membro dele).
 3. Na aba **Membros**, adiciona as pessoas: define o **peso** de cada uma (proporção default da divisão) e marca quem é o **pagador default**.
 4. Adiciona despesas na aba **Despesas** — vêm pré-preenchidas com os defaults, mas podes ajustar pagadores, participantes e o modo de divisão em cada despesa.
@@ -80,4 +105,4 @@ A app abre depois como qualquer outra, em ecrã inteiro e com o ícone próprio.
 | `manifest.webmanifest` | manifesto PWA (nome, ícones, ecrã inteiro) |
 | `sw.js` | service worker (cache offline) |
 | `icons/` | ícones da app |
-| `supabase/schema.sql` | tabelas, triggers e políticas RLS |
+| `supabase/schema.sql` | schema `splitwisely`: tabelas, RPCs, aprovação de contas e políticas RLS |

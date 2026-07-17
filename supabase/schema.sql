@@ -1,46 +1,142 @@
 -- ============================================================
--- SplitWisely — Schema Supabase
--- Executar no SQL Editor do teu projeto Supabase (uma vez).
+-- SplitWisely — Schema Supabase (schema dedicado `splitwisely`)
+-- Executar no SQL Editor do projeto Supabase PARTILHADO (uma vez).
+--
+-- Como as outras apps do projeto (Bet4Fun, FestasBV), esta app vive
+-- num schema próprio para não colidir com as restantes. Dois cuidados:
+--   1. Expor o schema: Project Settings → API → Data API →
+--      Exposed schemas → adicionar `splitwisely`
+--      (sem isto o PostgREST devolve 403/404).
+--   2. NÃO há trigger em auth.users — essa tabela é partilhada por
+--      todas as apps. O perfil é criado pela RPC ensure_profile(),
+--      chamada pela app no primeiro acesso.
+--
+-- Contas: o email em settings('admin_email') entra como admin já
+-- aprovado; os restantes ficam à espera de aprovação no menu Admin.
 -- ============================================================
 
--- ---------- PERFIS (espelho de auth.users) ----------
-create table if not exists public.profiles (
+create schema if not exists splitwisely;
+
+-- ---------- DEFINIÇÕES ----------
+create table if not exists splitwisely.settings (
+  key text primary key,
+  value jsonb not null
+);
+
+insert into splitwisely.settings (key, value) values
+  ('admin_email', '"diogo.andre.f.silva@gmail.com"'::jsonb)  -- <<< TROCA se preciso
+on conflict (key) do nothing;
+
+-- ---------- PERFIS ----------
+-- is_admin    -> gere aprovações (menu Admin)
+-- is_approved -> pode usar a app; false = ecrã "à espera de aprovação"
+create table if not exists splitwisely.profiles (
   id uuid primary key references auth.users (id) on delete cascade,
   full_name text,
   email text,
   avatar_url text,
+  is_admin boolean not null default false,
+  is_approved boolean not null default false,
   created_at timestamptz not null default now()
 );
 
-create or replace function public.handle_new_user()
-returns trigger
-language plpgsql
-security definer
-set search_path = public
+-- ---------- HELPERS (SECURITY DEFINER evita recursão de RLS) ----------
+create or replace function splitwisely.is_admin()
+returns boolean
+language sql stable security definer
+set search_path = splitwisely
 as $$
+  select exists (select 1 from profiles where id = auth.uid() and is_admin);
+$$;
+
+-- pode usar a app? (aprovado ou admin)
+create or replace function splitwisely.can_use()
+returns boolean
+language sql stable security definer
+set search_path = splitwisely
+as $$
+  select exists (
+    select 1 from profiles
+    where id = auth.uid() and (is_approved or is_admin)
+  );
+$$;
+
+-- ---------- INSCRIÇÃO (chamada pela app no login) ----------
+-- Cria/atualiza o perfil do utilizador atual e devolve-o. O email de
+-- settings('admin_email') entra como admin já aprovado; os restantes
+-- ficam is_approved=false até o admin aprovar.
+create or replace function splitwisely.ensure_profile()
+returns jsonb
+language plpgsql security definer
+set search_path = splitwisely
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_admin_email text;
+  v_profile profiles;
 begin
-  insert into public.profiles (id, full_name, email, avatar_url)
-  values (
-    new.id,
-    coalesce(new.raw_user_meta_data->>'full_name', new.raw_user_meta_data->>'name'),
-    new.email,
-    new.raw_user_meta_data->>'avatar_url'
-  )
+  if v_uid is null then raise exception 'Não autenticado'; end if;
+
+  select value #>> '{}' into v_admin_email from settings where key = 'admin_email';
+
+  insert into profiles (id, full_name, email, avatar_url, is_admin, is_approved)
+  select u.id,
+         coalesce(u.raw_user_meta_data->>'full_name',
+                  u.raw_user_meta_data->>'name',
+                  split_part(u.email, '@', 1)),
+         u.email,
+         u.raw_user_meta_data->>'avatar_url',
+         coalesce(lower(u.email) = lower(v_admin_email), false),
+         coalesce(lower(u.email) = lower(v_admin_email), false)
+  from auth.users u where u.id = v_uid
   on conflict (id) do update
     set full_name  = excluded.full_name,
         email      = excluded.email,
         avatar_url = excluded.avatar_url;
+
+  select * into v_profile from profiles where id = v_uid;
+  return to_jsonb(v_profile);
+end;
+$$;
+
+-- ---------- APROVAR / REVOGAR (só admin, via menu Admin) ----------
+create or replace function splitwisely.approve_user(p_id uuid, p_approved boolean)
+returns void
+language plpgsql security definer
+set search_path = splitwisely
+as $$
+begin
+  if not splitwisely.is_admin() then raise exception 'Apenas admin'; end if;
+  -- admins nunca são revogados por aqui (evita o admin trancar-se fora)
+  update profiles set is_approved = p_approved
+   where id = p_id and not is_admin;
+end;
+$$;
+
+-- Congelar colunas privilegiadas: um UPDATE direto do próprio perfil
+-- (nome/avatar) nunca pode mexer em is_admin/is_approved.
+create or replace function splitwisely.profiles_guard()
+returns trigger
+language plpgsql security definer
+set search_path = splitwisely
+as $$
+begin
+  if (new.is_admin is distinct from old.is_admin
+      or new.is_approved is distinct from old.is_approved)
+     and not splitwisely.is_admin() then
+    new.is_admin := old.is_admin;
+    new.is_approved := old.is_approved;
+  end if;
   return new;
 end;
 $$;
 
-drop trigger if exists on_auth_user_created on auth.users;
-create trigger on_auth_user_created
-  after insert on auth.users
-  for each row execute function public.handle_new_user();
+drop trigger if exists trg_profiles_guard on splitwisely.profiles;
+create trigger trg_profiles_guard before update on splitwisely.profiles
+  for each row execute function splitwisely.profiles_guard();
 
 -- ---------- GRUPOS / EVENTOS ----------
-create table if not exists public.groups (
+create table if not exists splitwisely.groups (
   id uuid primary key default gen_random_uuid(),
   name text not null,
   description text,
@@ -55,9 +151,9 @@ create table if not exists public.groups (
 -- automaticamente quando esse utilizador fizer login (claim_memberships).
 -- default_weight  -> proporção default na divisão de despesas (0 = não entra)
 -- is_default_payer-> pré-selecionado como pagador nas novas despesas
-create table if not exists public.group_members (
+create table if not exists splitwisely.group_members (
   id uuid primary key default gen_random_uuid(),
-  group_id uuid not null references public.groups (id) on delete cascade,
+  group_id uuid not null references splitwisely.groups (id) on delete cascade,
   name text not null,
   email text,
   user_id uuid references auth.users (id) on delete set null,
@@ -68,9 +164,9 @@ create table if not exists public.group_members (
 );
 
 -- ---------- DESPESAS ----------
-create table if not exists public.expenses (
+create table if not exists splitwisely.expenses (
   id uuid primary key default gen_random_uuid(),
-  group_id uuid not null references public.groups (id) on delete cascade,
+  group_id uuid not null references splitwisely.groups (id) on delete cascade,
   description text not null,
   amount numeric(12,2) not null check (amount > 0),
   expense_date date not null default current_date,
@@ -79,17 +175,17 @@ create table if not exists public.expenses (
 );
 
 -- Quem pagou (uma ou mais pessoas)
-create table if not exists public.expense_payers (
-  expense_id uuid not null references public.expenses (id) on delete cascade,
-  member_id uuid not null references public.group_members (id) on delete cascade,
+create table if not exists splitwisely.expense_payers (
+  expense_id uuid not null references splitwisely.expenses (id) on delete cascade,
+  member_id uuid not null references splitwisely.group_members (id) on delete cascade,
   amount numeric(12,2) not null check (amount >= 0),
   primary key (expense_id, member_id)
 );
 
 -- Por quem se divide (uma ou mais pessoas), já em valor final
-create table if not exists public.expense_shares (
-  expense_id uuid not null references public.expenses (id) on delete cascade,
-  member_id uuid not null references public.group_members (id) on delete cascade,
+create table if not exists splitwisely.expense_shares (
+  expense_id uuid not null references splitwisely.expenses (id) on delete cascade,
+  member_id uuid not null references splitwisely.group_members (id) on delete cascade,
   amount numeric(12,2) not null check (amount >= 0),
   primary key (expense_id, member_id)
 );
@@ -97,56 +193,53 @@ create table if not exists public.expense_shares (
 -- ---------- FUNÇÃO DE ACESSO (evita recursão nas policies) ----------
 -- Tem acesso ao grupo: quem o criou (mesmo sem participar) ou quem
 -- é membro com conta ligada.
-create or replace function public.has_group_access(gid uuid)
+create or replace function splitwisely.has_group_access(gid uuid)
 returns boolean
-language sql
-security definer
-stable
-set search_path = public
+language sql stable security definer
+set search_path = splitwisely
 as $$
   select exists (
-    select 1 from public.groups g
+    select 1 from groups g
     where g.id = gid and g.created_by = auth.uid()
   )
   or exists (
-    select 1 from public.group_members m
+    select 1 from group_members m
     where m.group_id = gid and m.user_id = auth.uid()
   );
 $$;
 
-create or replace function public.expense_group(eid uuid)
+create or replace function splitwisely.expense_group(eid uuid)
 returns uuid
-language sql
-security definer
-stable
-set search_path = public
+language sql stable security definer
+set search_path = splitwisely
 as $$
-  select group_id from public.expenses where id = eid;
+  select group_id from expenses where id = eid;
 $$;
 
 -- ---------- LIGAR CONVITES POR EMAIL AO FAZER LOGIN ----------
-create or replace function public.claim_memberships()
+create or replace function splitwisely.claim_memberships()
 returns integer
-language plpgsql
-security definer
-set search_path = public
+language plpgsql security definer
+set search_path = splitwisely
 as $$
 declare
   n integer;
   my_email text;
 begin
+  if not splitwisely.can_use() then return 0; end if;
+
   select email into my_email from auth.users where id = auth.uid();
   if my_email is null then
     return 0;
   end if;
 
-  update public.group_members m
+  update group_members m
      set user_id = auth.uid()
    where m.user_id is null
      and m.email is not null
      and lower(m.email) = lower(my_email)
      and not exists (
-       select 1 from public.group_members x
+       select 1 from group_members x
        where x.group_id = m.group_id and x.user_id = auth.uid()
      );
   get diagnostics n = row_count;
@@ -155,68 +248,107 @@ end;
 $$;
 
 -- ---------- ROW LEVEL SECURITY ----------
-alter table public.profiles       enable row level security;
-alter table public.groups         enable row level security;
-alter table public.group_members  enable row level security;
-alter table public.expenses       enable row level security;
-alter table public.expense_payers enable row level security;
-alter table public.expense_shares enable row level security;
+-- Tudo gated por can_use(): quem não está aprovado não vê nem escreve nada.
+alter table splitwisely.settings       enable row level security;
+alter table splitwisely.profiles       enable row level security;
+alter table splitwisely.groups         enable row level security;
+alter table splitwisely.group_members  enable row level security;
+alter table splitwisely.expenses       enable row level security;
+alter table splitwisely.expense_payers enable row level security;
+alter table splitwisely.expense_shares enable row level security;
 
--- Perfis: qualquer utilizador autenticado pode ver nomes/avatares
-drop policy if exists "profiles_select" on public.profiles;
-create policy "profiles_select" on public.profiles
-  for select to authenticated using (true);
+-- settings: sem policies — invisível via API (admin_email fica privado)
 
-drop policy if exists "profiles_update_own" on public.profiles;
-create policy "profiles_update_own" on public.profiles
-  for update to authenticated using (id = auth.uid());
+-- Perfis: cada um vê o seu (para saber se está aprovado); admin vê todos
+-- (menu Admin). UPDATE só do próprio; flags congeladas pelo trigger.
+drop policy if exists "profiles_select" on splitwisely.profiles;
+create policy "profiles_select" on splitwisely.profiles
+  for select to authenticated
+  using (id = auth.uid() or splitwisely.is_admin());
+
+drop policy if exists "profiles_update_own" on splitwisely.profiles;
+create policy "profiles_update_own" on splitwisely.profiles
+  for update to authenticated
+  using (id = auth.uid()) with check (id = auth.uid());
 
 -- Grupos
-drop policy if exists "groups_select" on public.groups;
-create policy "groups_select" on public.groups
-  for select to authenticated using (public.has_group_access(id));
+drop policy if exists "groups_select" on splitwisely.groups;
+create policy "groups_select" on splitwisely.groups
+  for select to authenticated
+  using (splitwisely.can_use() and splitwisely.has_group_access(id));
 
-drop policy if exists "groups_insert" on public.groups;
-create policy "groups_insert" on public.groups
-  for insert to authenticated with check (created_by = auth.uid());
+drop policy if exists "groups_insert" on splitwisely.groups;
+create policy "groups_insert" on splitwisely.groups
+  for insert to authenticated
+  with check (splitwisely.can_use() and created_by = auth.uid());
 
-drop policy if exists "groups_update" on public.groups;
-create policy "groups_update" on public.groups
-  for update to authenticated using (created_by = auth.uid());
+drop policy if exists "groups_update" on splitwisely.groups;
+create policy "groups_update" on splitwisely.groups
+  for update to authenticated
+  using (splitwisely.can_use() and created_by = auth.uid());
 
-drop policy if exists "groups_delete" on public.groups;
-create policy "groups_delete" on public.groups
-  for delete to authenticated using (created_by = auth.uid());
+drop policy if exists "groups_delete" on splitwisely.groups;
+create policy "groups_delete" on splitwisely.groups
+  for delete to authenticated
+  using (splitwisely.can_use() and created_by = auth.uid());
 
 -- Membros: quem tem acesso ao grupo gere tudo
-drop policy if exists "members_all" on public.group_members;
-create policy "members_all" on public.group_members
+drop policy if exists "members_all" on splitwisely.group_members;
+create policy "members_all" on splitwisely.group_members
   for all to authenticated
-  using (public.has_group_access(group_id))
-  with check (public.has_group_access(group_id));
+  using (splitwisely.can_use() and splitwisely.has_group_access(group_id))
+  with check (splitwisely.can_use() and splitwisely.has_group_access(group_id));
 
 -- Despesas
-drop policy if exists "expenses_all" on public.expenses;
-create policy "expenses_all" on public.expenses
+drop policy if exists "expenses_all" on splitwisely.expenses;
+create policy "expenses_all" on splitwisely.expenses
   for all to authenticated
-  using (public.has_group_access(group_id))
-  with check (public.has_group_access(group_id));
+  using (splitwisely.can_use() and splitwisely.has_group_access(group_id))
+  with check (splitwisely.can_use() and splitwisely.has_group_access(group_id));
 
-drop policy if exists "payers_all" on public.expense_payers;
-create policy "payers_all" on public.expense_payers
+drop policy if exists "payers_all" on splitwisely.expense_payers;
+create policy "payers_all" on splitwisely.expense_payers
   for all to authenticated
-  using (public.has_group_access(public.expense_group(expense_id)))
-  with check (public.has_group_access(public.expense_group(expense_id)));
+  using (splitwisely.can_use() and splitwisely.has_group_access(splitwisely.expense_group(expense_id)))
+  with check (splitwisely.can_use() and splitwisely.has_group_access(splitwisely.expense_group(expense_id)));
 
-drop policy if exists "shares_all" on public.expense_shares;
-create policy "shares_all" on public.expense_shares
+drop policy if exists "shares_all" on splitwisely.expense_shares;
+create policy "shares_all" on splitwisely.expense_shares
   for all to authenticated
-  using (public.has_group_access(public.expense_group(expense_id)))
-  with check (public.has_group_access(public.expense_group(expense_id)));
+  using (splitwisely.can_use() and splitwisely.has_group_access(splitwisely.expense_group(expense_id)))
+  with check (splitwisely.can_use() and splitwisely.has_group_access(splitwisely.expense_group(expense_id)));
 
 -- ---------- ÍNDICES ----------
-create index if not exists idx_members_group  on public.group_members (group_id);
-create index if not exists idx_members_user   on public.group_members (user_id);
-create index if not exists idx_expenses_group on public.expenses (group_id, expense_date desc);
-create index if not exists idx_payers_expense on public.expense_payers (expense_id);
-create index if not exists idx_shares_expense on public.expense_shares (expense_id);
+create index if not exists idx_members_group  on splitwisely.group_members (group_id);
+create index if not exists idx_members_user   on splitwisely.group_members (user_id);
+create index if not exists idx_expenses_group on splitwisely.expenses (group_id, expense_date desc);
+create index if not exists idx_payers_expense on splitwisely.expense_payers (expense_id);
+create index if not exists idx_shares_expense on splitwisely.expense_shares (expense_id);
+
+-- ---------- GRANTS ----------
+-- A RLS acima é que filtra as linhas; aqui é só o acesso base.
+grant usage on schema splitwisely to anon, authenticated;
+grant select, update on splitwisely.profiles to authenticated;
+grant select, insert, update, delete
+  on splitwisely.groups, splitwisely.group_members, splitwisely.expenses,
+     splitwisely.expense_payers, splitwisely.expense_shares
+  to authenticated;
+grant execute on all functions in schema splitwisely to authenticated;
+
+-- ============================================================
+-- LIMPEZA (opcional): se chegaste a correr a versão ANTIGA deste
+-- schema (que criava tudo em `public` + trigger em auth.users),
+-- descomenta e corre este bloco UMA vez para a remover:
+--
+-- drop trigger if exists on_auth_user_created on auth.users;
+-- drop function if exists public.handle_new_user();
+-- drop function if exists public.claim_memberships();
+-- drop function if exists public.has_group_access(uuid);
+-- drop function if exists public.expense_group(uuid);
+-- drop table if exists public.expense_shares;
+-- drop table if exists public.expense_payers;
+-- drop table if exists public.expenses;
+-- drop table if exists public.group_members;
+-- drop table if exists public.groups;
+-- drop table if exists public.profiles;
+-- ============================================================
