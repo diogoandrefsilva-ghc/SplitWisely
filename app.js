@@ -766,11 +766,18 @@ function renderExpenseForm(slot, ctx, existing, onClose) {
   const initShares = {};
   if (existing) existing.expense_shares.forEach(s => { initShares[s.member_id] = toCents(s.amount); });
 
+  // ao reabrir uma despesa, volta ao modo em que foi gravada (split_mode);
+  // despesas de schemas antigos sem a coluna caem no modo "exatos", o
+  // único sempre fiel aos valores gravados
+  const initMode = existing
+    ? (existing.split_mode === "weights" && !useWeights ? "exact" : (existing.split_mode || "exact"))
+    : (useWeights ? "weights" : "equal");
+
   const state = {
     section: "dados", // dados | pagou | divide
     desc: existing?.description || "",
     date: existing?.expense_date || new Date().toISOString().slice(0, 10),
-    mode: existing ? "exact" : (useWeights ? "weights" : "equal"), // equal | weights | exact
+    mode: initMode, // equal | weights | exact
     totalCents: existing ? toCents(existing.amount) : 0,
     payers: new Set(initPayers),
     payerAmounts: { ...initPayerAmounts },
@@ -886,8 +893,8 @@ function renderExpenseForm(slot, ctx, existing, onClose) {
       if (shareIds.length > 0) {
         let modeTxt = state.mode === "equal" ? "em partes iguais"
           : state.mode === "weights" ? "por proporção" : "em valores exatos";
-        // despesa em edição fica em modo "exatos", mas se as partes forem
-        // todas iguais (± arredondamento) a frase natural é "partes iguais"
+        // despesas antigas sem split_mode reabrem em "exatos"; se as partes
+        // forem todas iguais (± arredondamento) a frase natural é "partes iguais"
         if (state.mode === "exact") {
           const vals = Object.values(shares);
           if (vals.length > 1 && vals.every(v => Math.abs(v - vals[0]) <= 1)) modeTxt = "em partes iguais";
@@ -1005,17 +1012,28 @@ function renderExpenseForm(slot, ctx, existing, onClose) {
         description: desc,
         amount: (state.totalCents / 100).toFixed(2),
         expense_date: date || new Date().toISOString().slice(0, 10),
+        split_mode: state.mode,
+      };
+
+      // schema antigo sem a coluna split_mode: grava na mesma sem o modo
+      const stripSplitMode = (error) => {
+        if (!error || !/split_mode/i.test(error.message)) return false;
+        toast("Modo de divisão não gravado — corre o schema.sql mais recente no Supabase", true);
+        delete payload.split_mode;
+        return true;
       };
 
       let expenseId = existing?.id;
       if (existing) {
-        const { error } = await sb.from("expenses").update(payload).eq("id", existing.id);
+        let { error } = await sb.from("expenses").update(payload).eq("id", existing.id);
+        if (stripSplitMode(error)) ({ error } = await sb.from("expenses").update(payload).eq("id", existing.id));
         if (error) return toast(error.message, true);
         const d1 = await sb.from("expense_payers").delete().eq("expense_id", existing.id);
         const d2 = await sb.from("expense_shares").delete().eq("expense_id", existing.id);
         if (d1.error || d2.error) return toast((d1.error || d2.error).message, true);
       } else {
-        const { data, error } = await sb.from("expenses").insert(payload).select().single();
+        let { data, error } = await sb.from("expenses").insert(payload).select().single();
+        if (stripSplitMode(error)) ({ data, error } = await sb.from("expenses").insert(payload).select().single());
         if (error) return toast(error.message, true);
         expenseId = data.id;
       }
