@@ -4,9 +4,9 @@ App web estilo Splitwise para gerir despesas partilhadas, feita em HTML/JS puro 
 
 ## Funcionalidades
 
-- **Contas com aprovação** — o email definido em `admin_email` (no SQL) entra como **admin**; os restantes ficam num ecrã "à espera de aprovação" até o admin os aprovar no menu **Admin**. Assim ninguém entra por maldade e enche a base de dados.
+- **Contas com aprovação** — o email definido em `admin_email` (no SQL) entra como **admin**; os restantes ficam num ecrã "à espera de aprovação" até o admin os aprovar no menu **Admin**. Assim ninguém entra por maldade e enche a base de dados. Exceção: quem foi **convidado** (adicionado como membro de um grupo pelo seu email) entra já aprovado ao fazer login.
 - **Grupos / eventos** — cada utilizador cria os grupos que quiser (pode até criar grupos onde não participa: continua a geri-los como criador).
-- **Membros por grupo** — pessoas com nome simples ou ligadas a contas Google. Se adicionares alguém com o email, fica automaticamente ligado à conta quando entrar pela primeira vez.
+- **Membros por grupo** — pessoas com nome simples ou ligadas a contas Google. Se adicionares alguém com o email, fica automaticamente ligado à conta quando entrar pela primeira vez — e podes mandar-lhe o convite com um clique em **«Convidar por email»** (abre o teu email já com o link da app).
 - **Despesas flexíveis** — pagas por **uma ou mais** pessoas e divididas por **uma ou várias**, em partes iguais, por proporção ou valores exatos.
 - **Defaults por grupo** — cada membro tem um *peso* default (a proporção com que entra nas divisões) e pode ser marcado como *pagador default*; as novas despesas vêm pré-preenchidas com isso.
 - **Saldos e acerto de contas** — quem deve a quem (com o detalhe de *a quem* por baixo do saldo), sugestões de pagamentos mínimos e **registo de pagamentos**: um clique em «Pagar» numa sugestão pré-preenche o pagamento; os pagamentos registados abatem nos saldos e podem ser apagados.
@@ -96,8 +96,9 @@ A app abre depois como qualquer outra, em ecrã inteiro e com o ícone próprio.
 6. Quando alguém pagar a dívida, regista o pagamento na aba **Saldos** — o botão «Pagar» em cada
    sugestão pré-preenche tudo (ou usa «Registar pagamento» para valores/pessoas à escolha).
 
-> **Já tinhas o schema da 1.ª versão?** Volta a correr `supabase/schema.sql` no SQL Editor
-> (é idempotente) para criar a tabela `payments` dos pagamentos.
+> **Já tinhas uma versão anterior do schema?** Volta a correr `supabase/schema.sql` no SQL
+> Editor (é idempotente) para apanhar as novidades — a tabela `payments` dos pagamentos e a
+> aprovação automática de quem é convidado por email.
 
 ## Estrutura
 

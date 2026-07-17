@@ -12,7 +12,9 @@
 --      chamada pela app no primeiro acesso.
 --
 -- Contas: o email em settings('admin_email') entra como admin já
--- aprovado; os restantes ficam à espera de aprovação no menu Admin.
+-- aprovado; quem foi convidado (adicionado como membro de um grupo pelo
+-- seu email) entra também já aprovado; os restantes ficam à espera de
+-- aprovação no menu Admin.
 -- ============================================================
 
 create schema if not exists splitwisely;
@@ -62,9 +64,12 @@ as $$
 $$;
 
 -- ---------- INSCRIÇÃO (chamada pela app no login) ----------
--- Cria/atualiza o perfil do utilizador atual e devolve-o. O email de
--- settings('admin_email') entra como admin já aprovado; os restantes
--- ficam is_approved=false até o admin aprovar.
+-- Cria/atualiza o perfil do utilizador atual e devolve-o. Entra já
+-- aprovado quem for o admin (settings('admin_email')) OU quem tiver um
+-- convite pendente (foi adicionado como membro de um grupo pelo seu
+-- email — ver email_was_invited); os restantes ficam is_approved=false
+-- até o admin aprovar. Um utilizador já existente mas ainda por aprovar
+-- passa a aprovado se, entretanto, tiver recebido um convite.
 create or replace function splitwisely.ensure_profile()
 returns jsonb
 language plpgsql security definer
@@ -88,11 +93,15 @@ begin
          u.raw_user_meta_data->>'avatar_url',
          coalesce(lower(u.email) = lower(v_admin_email), false),
          coalesce(lower(u.email) = lower(v_admin_email), false)
+           or splitwisely.email_was_invited(u.email)
   from auth.users u where u.id = v_uid
   on conflict (id) do update
     set full_name  = excluded.full_name,
         email      = excluded.email,
-        avatar_url = excluded.avatar_url;
+        avatar_url = excluded.avatar_url,
+        -- convite recebido depois do 1.º login aprova a conta agora
+        is_approved = profiles.is_approved
+                        or splitwisely.email_was_invited(excluded.email);
 
   select * into v_profile from profiles where id = v_uid;
   return to_jsonb(v_profile);
@@ -127,6 +136,17 @@ begin
   if (new.is_admin is distinct from old.is_admin
       or new.is_approved is distinct from old.is_approved)
      and not splitwisely.is_admin() then
+    -- Exceção: auto-aprovação por convite. Um utilizador pode passar de
+    -- is_approved false->true (e SÓ isso — is_admin nunca muda por aqui)
+    -- se tiver um convite pendente, i.e. foi adicionado como membro de um
+    -- grupo pelo seu email por alguém com acesso a esse grupo. A criação
+    -- desses membros já é limitada pela RLS de group_members, por isso
+    -- ninguém se aprova sozinho sem ter sido genuinamente convidado.
+    if new.is_admin is not distinct from old.is_admin
+       and old.is_approved is false and new.is_approved is true
+       and splitwisely.email_was_invited(new.email) then
+      return new;
+    end if;
     new.is_admin := old.is_admin;
     new.is_approved := old.is_approved;
   end if;
@@ -172,6 +192,24 @@ create table if not exists splitwisely.group_members (
   created_at timestamptz not null default now(),
   unique (group_id, user_id)
 );
+
+-- ---------- CONVITE PENDENTE? ----------
+-- Há um convite por email à espera deste endereço, i.e. alguém com acesso
+-- a um grupo adicionou-o como membro (por email) e a conta ainda não foi
+-- ligada. Usado no login para aprovar automaticamente quem foi convidado
+-- (ensure_profile) e para permitir essa auto-aprovação no profiles_guard.
+create or replace function splitwisely.email_was_invited(p_email text)
+returns boolean
+language sql stable security definer
+set search_path = splitwisely
+as $$
+  select p_email is not null and exists (
+    select 1 from group_members m
+    where m.user_id is null
+      and m.email is not null
+      and lower(m.email) = lower(p_email)
+  );
+$$;
 
 -- ---------- DESPESAS ----------
 -- split_mode -> como a despesa foi dividida ('equal' partes iguais,

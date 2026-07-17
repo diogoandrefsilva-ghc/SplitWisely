@@ -76,6 +76,32 @@ function avatarHtml(name, extra = "") {
   return `<span class="avatar ${extra}" style="background:${AVATAR_COLORS[h % AVATAR_COLORS.length]}">${esc(initials)}</span>`;
 }
 
+// URL base da app (sem hash/rota) — o link que se envia no convite.
+// Funciona em GitHub Pages num subcaminho (usa origin + pathname).
+function appBaseUrl() {
+  return location.origin + location.pathname;
+}
+
+// Link mailto: para convidar um membro por email. Abre o cliente de email
+// já com assunto e corpo preenchidos; a pessoa entra com a conta Google do
+// mesmo email e fica logo ligada ao grupo (e aprovada — ver schema.sql).
+function inviteMailtoHref(member, group) {
+  const url = appBaseUrl();
+  const subject = `Convite para o SplitWisely — ${group.name}`;
+  const body =
+`Olá!
+
+Adicionei-te ao grupo «${group.name}» no SplitWisely para acertarmos as contas partilhadas.
+
+Entra aqui com a tua conta Google (usa este mesmo email: ${member.email}):
+${url}
+
+Assim que entrares, ficas logo ligado ao grupo. Até já!`;
+  return `mailto:${encodeURIComponent(member.email)}`
+    + `?subject=${encodeURIComponent(subject)}`
+    + `&body=${encodeURIComponent(body)}`;
+}
+
 // Divide `totalCents` por pesos, sem perder cêntimos (maior resto)
 function splitByWeights(totalCents, weights) {
   const sum = weights.reduce((a, b) => a + b, 0);
@@ -1271,14 +1297,16 @@ function renderMembersSection($c, ctx) {
   const { members } = ctx;
   const useWeights = !!ctx.group.use_weights;
 
+  const inviteHint = `Se indicares um email, toca no membro e usa
+       <strong>«Convidar por email»</strong> para lhe mandar o link da app. Ao
+       entrar com a conta Google desse email, a pessoa fica logo ligada ao grupo
+       e com acesso aprovado — sem esperar por aprovação do admin.`;
   const hint = useWeights
     ? `<p>O <strong>peso</strong> define a proporção default na divisão das despesas
        (0 = não entra por defeito). As alterações ao peso <strong>gravam-se
-       automaticamente</strong>. Se indicares um email, a pessoa fica ligada à
-       conta dela quando entrar com Google. Toca num membro para editar o nome
+       automaticamente</strong>. ${inviteHint} Toca num membro para editar o nome
        e o email ou para o remover.</p>`
-    : `<p>Se indicares um email, a pessoa fica ligada à conta dela quando entrar
-       com Google. As despesas dividem-se em partes iguais — podes ativar a divisão
+    : `<p>${inviteHint} As despesas dividem-se em partes iguais — podes ativar a divisão
        por proporções na opção «Divisão por proporções» acima. Toca num membro
        para editar o nome e o email ou para o remover.</p>`;
 
@@ -1342,6 +1370,11 @@ function renderMembersSection($c, ctx) {
             placeholder="liga a pessoa à conta Google dela" ${m.user_id ? "disabled" : ""} /></div>
         ${m.user_id ? `<p class="muted" style="margin:-.3rem 0 .7rem;">Esta pessoa já entrou com a
           conta Google dela <span class="badge linked">conta ligada</span> — o email já não se altera.</p>` : ""}
+        ${!m.user_id && m.email ? `
+          <a class="btn invite" id="m-invite" href="${esc(inviteMailtoHref(m, ctx.group))}">✉️ Convidar por email</a>
+          <p class="muted" style="margin:.35rem 0 .8rem;">Abre o teu email já preenchido com o link. A pessoa
+            entra com a conta Google deste email e fica logo ligada ao grupo. Se acabaste de mudar o email,
+            grava primeiro.</p>` : ""}
         ${useWeights ? `<div class="field" style="max-width:120px;"><label>Peso</label>
           <input id="m-weight" type="number" step="0.1" min="0" value="${m.default_weight}" /></div>` : ""}
         <div class="form-actions">
@@ -1503,7 +1536,8 @@ function renderSettingsTab($c, ctx) {
 
 // Garante o perfil no schema splitwisely (RPC ensure_profile — não há
 // trigger em auth.users porque o projeto Supabase é partilhado por
-// várias apps) e liga convites por email se a conta estiver aprovada.
+// várias apps; quem foi convidado por email entra já aprovado) e liga os
+// convites por email aos grupos se a conta estiver aprovada.
 async function initProfile() {
   const { data, error } = await sb.rpc("ensure_profile");
   if (error) {
