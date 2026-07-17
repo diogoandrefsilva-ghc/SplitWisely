@@ -170,14 +170,27 @@ h2 { font-size: .98rem; font-weight: 700; letter-spacing: -.01em; margin: 0 0 .6
   text-overflow: ellipsis;
 }
 
-.back-link {
-  display: inline-block;
-  color: var(--muted);
+/* botão de retroceder bem visível (página de grupo e detalhe da despesa) */
+.back-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: .4rem;
+  min-height: 34px;
+  background: var(--card);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: .3rem .85rem .3rem .65rem;
+  font-size: .84rem;
+  font-weight: 600;
   text-decoration: none;
-  font-size: .85rem;
-  margin-bottom: .35rem;
+  box-shadow: var(--shadow);
+  cursor: pointer;
+  margin-bottom: .45rem;
 }
-.back-link:hover { color: var(--primary); }
+.back-pill .arr { font-size: 1.05rem; line-height: 1; color: var(--primary); }
+.back-pill:hover { background: var(--card-inner); filter: none; }
+.back-pill:active { transform: scale(.97); }
 
 /* ================================================================ stats */
 .stat-strip {
@@ -651,6 +664,7 @@ input.saved {
   gap: .7rem;
   margin-bottom: .7rem;
 }
+.form-head .back-pill { margin-bottom: 0; flex: none; }
 .form-tabs { width: 100%; }
 .form-tabs button { flex: 1; text-align: center; padding: .38rem .3rem; }
 .tab-ok { color: var(--positive); font-weight: 800; }

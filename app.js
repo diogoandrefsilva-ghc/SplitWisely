@@ -277,7 +277,7 @@ async function renderAdmin() {
     </li>`;
 
   $app.innerHTML = `
-    <a class="back-link" href="#/">← Todos os grupos</a>
+    <a class="back-pill" href="#/"><span class="arr">←</span> Grupos</a>
     <div class="header-row" style="margin-top:.4rem;">
       <h1 style="margin:0;">Administração</h1>
     </div>
@@ -604,7 +604,7 @@ async function renderGroup(groupId, tab) {
 
   $app.innerHTML = `
     <div class="page-head" data-group-shell="${group.id}">
-      <a class="back-link" href="#/">← Todos os grupos</a>
+      <a class="back-pill" href="#/"><span class="arr">←</span> Grupos</a>
       <div class="header-row">
         <div class="title-line">
           <h1>${esc(group.name)}</h1>
@@ -906,7 +906,7 @@ function renderExpenseForm(slot, ctx, existing, onClose) {
     slot.innerHTML = `
     <div class="expense-detail">
       <div class="form-head">
-        <button class="secondary small" id="x-back">← Despesas</button>
+        <button class="back-pill" id="x-back"><span class="arr">←</span> Despesas</button>
         <h2 style="margin:0;">${existing ? "Detalhe da despesa" : "Nova despesa"}</h2>
       </div>
       <div class="tabs form-tabs">
@@ -1366,13 +1366,14 @@ function renderSettingsTab($c, ctx) {
         <label class="check-line">
           <input type="checkbox" name="use_weights" ${group.use_weights ? "checked" : ""} ${isOwner ? "" : "disabled"} />
           Divisão por proporções (pesos por pessoa)
-          <span class="check-note">desligado, as despesas dividem-se em partes iguais</span>
+          <span class="check-note">ligado, cada pessoa tem um peso na lista de membros em baixo;
+            desligado, as despesas dividem-se em partes iguais</span>
         </label>
-        ${isOwner ? `<button type="submit" style="margin-top:.5rem;">Guardar</button>` : ""}
       </form>
     </div>
     <div id="members-section"></div>
     ${isOwner ? `
+    <button type="submit" form="edit-group" id="btn-save-group" style="width:100%;margin-bottom:.8rem;">Guardar definições</button>
     <div class="card">
       <h2>Zona de perigo</h2>
       <button class="danger" id="btn-del-group">Apagar grupo e todas as despesas</button>
@@ -1380,9 +1381,19 @@ function renderSettingsTab($c, ctx) {
 
   // os membros gerem-se aqui, logo abaixo das definições — a opção da
   // divisão por proporções mexe na forma como se definem (o peso)
-  renderMembersSection($c.querySelector("#members-section"), ctx);
+  const drawMembers = (useWeights) => renderMembersSection(
+    $c.querySelector("#members-section"),
+    { ...ctx, group: { ...ctx.group, use_weights: useWeights } });
+  drawMembers(!!group.use_weights);
 
   if (!isOwner) return;
+
+  // ligar/desligar a checkbox mostra logo (ou esconde) os pesos nos
+  // membros em baixo, sem esperar pelo «Guardar definições»
+  $c.querySelector('input[name="use_weights"]').onchange = (e) => {
+    drawMembers(e.target.checked);
+    if (e.target.checked) toast("Define os pesos em baixo e carrega em «Guardar definições»");
+  };
 
   document.getElementById("edit-group").onsubmit = async (e) => {
     e.preventDefault();
