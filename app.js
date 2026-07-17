@@ -429,10 +429,7 @@ async function renderGroups() {
     const card = (g) => `
       <div class="group-card" data-goto="${g.id}">
         ${starBtn(g)}
-        <div class="group-card-head">
-          ${avatarHtml(g.name)}
-          <span class="group-card-name">${esc(g.name)}</span>
-        </div>
+        <span class="group-card-name">${esc(g.name)}</span>
         ${g.description ? `<span class="group-card-desc">${esc(g.description)}</span>` : ""}
         <div class="group-card-foot">${chipBalance(g)}</div>
       </div>`;
@@ -440,7 +437,6 @@ async function renderGroups() {
     const row = (g) => `
       <li class="group-row">
         <a class="item-link" href="#/g/${g.id}">
-          ${avatarHtml(g.name)}
           <span class="item-main">
             <span class="item-title">${esc(g.name)}</span>
             ${g.description ? `<span class="item-sub">${esc(g.description)}</span>` : ""}
