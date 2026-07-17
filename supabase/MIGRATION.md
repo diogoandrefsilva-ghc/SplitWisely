@@ -66,9 +66,14 @@ ou entra tudo, ou nada.
 
 ## Notas
 
-- **Categorias**: as do Splitwise (EN) são mapeadas para as da app (ver
-  `CATEGORY_MAP` no script). `General` fica sem categoria. Ajusta o mapa se
-  quiseres outra correspondência.
+- **Categorias** (modo `smart`, por defeito): parte-se do mapa Splitwise→app
+  (`CATEGORY_MAP`) e **afina-se pela descrição**, com a mesma heurística de
+  palavras-chave da app (`CAT_KEYWORDS` em `app.js`), mas **consciente da
+  família**: `Groceries` pode virar talho/peixe/padaria; `Dining out` pode virar
+  café; `General` e os "- Other" vão para o que a descrição indicar; as
+  categorias fiáveis do Splitwise (Medical, Car, Gifts, …) **não** são
+  sobrepostas pela descrição. Usa `--categories splitwise` para desligar a
+  afinação e mapear só pela categoria do export.
 - **Modo de divisão**: as despesas entram como `exact` (quotas em valor
   exato), por isso reabrem com os valores corretos independentemente dos pesos
   do grupo. Os pesos (0,55 / 0,45) aplicam-se às despesas **novas** daqui para a
