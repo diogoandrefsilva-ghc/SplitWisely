@@ -961,16 +961,14 @@ function renderBalancesTab($c, ctx) {
     (owesTo[s.from.id] ??= []).push({ name: s.to.name, cents: s.cents });
     (getsFrom[s.to.id] ??= []).push({ name: s.from.name, cents: s.cents });
   }
+  // sublinha: 1 pessoa mostra o nome; várias ficam «deve a N pessoas ▾»
+  // e a linha expande ao toque com o detalhe de cada uma
   const subline = (mId, b) => {
     const list = b < 0 ? owesTo[mId] : b > 0 ? getsFrom[mId] : null;
     if (!list?.length) return "";
     const verb = b < 0 ? "deve a" : "recebe de";
-    let names;
-    if (list.length === 1) names = esc(list[0].name);
-    else if (list.length === 2)
-      names = list.map(x => `${esc(x.name)} (${fmtMoney(x.cents, cur)})`).join(", ");
-    else names = `${esc(list[0].name)} e mais ${list.length - 1}`;
-    return `<span class="item-sub">${verb} ${names}</span>`;
+    if (list.length === 1) return `<span class="item-sub">${verb} ${esc(list[0].name)}</span>`;
+    return `<span class="item-sub">${verb} ${list.length} pessoas <span class="expand-arrow">▾</span></span>`;
   };
 
   const totalPaid = payments.reduce((a, p) => a + toCents(p.amount), 0);
@@ -982,7 +980,9 @@ function renderBalancesTab($c, ctx) {
       <ul class="list balances">
         ${members.map(m => {
           const b = balance[m.id];
-          return `<li>
+          const list = b < 0 ? owesTo[m.id] : b > 0 ? getsFrom[m.id] : null;
+          const expandable = (list?.length || 0) > 1;
+          return `<li class="${expandable ? "clickable" : ""}" ${expandable ? `data-bal="${m.id}"` : ""}>
             ${avatarHtml(m.name)}
             <div class="item-main">
               <span class="item-title">${esc(m.name)}</span>
@@ -991,7 +991,15 @@ function renderBalancesTab($c, ctx) {
             <span class="chip ${b > 0 ? "positive" : b < 0 ? "negative" : "zero"}">
               ${b === 0 ? "✓ em dia" : (b > 0 ? "recebe " : "deve ") + fmtMoney(Math.abs(b), cur)}
             </span>
-          </li>`;
+          </li>
+          ${expandable ? `<li class="balance-detail hidden" data-bdetail="${m.id}">
+            <ul class="detail-list">
+              ${list.map(x => `<li>
+                <span>${b < 0 ? "a" : "de"} ${esc(x.name)}</span>
+                <span class="amount">${fmtMoney(x.cents, cur)}</span>
+              </li>`).join("")}
+            </ul>
+          </li>` : ""}`;
         }).join("")}
       </ul>`}
     </div>
@@ -1040,6 +1048,15 @@ function renderBalancesTab($c, ctx) {
           </ul>
           ${totalPaid > 0 ? `<p class="muted" style="text-align:right;margin:.5rem 0 0;">total acertado: ${fmtMoney(totalPaid, cur)}</p>` : ""}`}`}
     </div>`;
+
+  // expandir/encolher o detalhe de um saldo com várias pessoas
+  $c.querySelectorAll("[data-bal]").forEach(li => {
+    li.onclick = () => {
+      $c.querySelector(`[data-bdetail="${li.dataset.bal}"]`).classList.toggle("hidden");
+      li.classList.toggle("open");
+      li.querySelector(".expand-arrow")?.classList.toggle("open");
+    };
+  });
 
   if (!paymentsReady) return;
 
@@ -1123,7 +1140,8 @@ function renderMembersTab($c, ctx) {
 
   const hint = useWeights
     ? `<p>O <strong>peso</strong> define a proporção default na divisão das despesas
-       (0 = não entra por defeito). Se indicares um email, a pessoa fica ligada à
+       (0 = não entra por defeito). As alterações ao peso <strong>gravam-se
+       automaticamente</strong>. Se indicares um email, a pessoa fica ligada à
        conta dela quando entrar com Google.</p>`
     : `<p>Se indicares um email, a pessoa fica ligada à conta dela quando entrar
        com Google. As despesas dividem-se em partes iguais — podes ativar a divisão
@@ -1172,7 +1190,11 @@ function renderMembersTab($c, ctx) {
       const { error } = await sb.from("group_members")
         .update({ default_weight: parseFloat(inp.value) || 0 })
         .eq("id", inp.dataset.mw);
-      error ? toast(error.message, true) : toast("Peso atualizado");
+      if (error) return toast(error.message, true);
+      // feedback visível de que o valor ficou logo gravado na BD
+      inp.classList.add("saved");
+      setTimeout(() => inp.classList.remove("saved"), 1500);
+      toast("Peso guardado automaticamente ✓");
     };
   });
   $c.querySelectorAll("[data-mdel]").forEach(b => {
