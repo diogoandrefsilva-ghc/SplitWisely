@@ -174,15 +174,36 @@ create table if not exists splitwisely.group_members (
 );
 
 -- ---------- DESPESAS ----------
+-- split_mode -> como a despesa foi dividida ('equal' partes iguais,
+-- 'weights' proporção por pesos, 'exact' valores exatos). Serve para a
+-- app reabrir a despesa no modo em que foi criada; os valores finais
+-- por pessoa vivem sempre em expense_shares.
 create table if not exists splitwisely.expenses (
   id uuid primary key default gen_random_uuid(),
   group_id uuid not null references splitwisely.groups (id) on delete cascade,
   description text not null,
   amount numeric(12,2) not null check (amount > 0),
   expense_date date not null default current_date,
+  split_mode text not null default 'exact'
+    check (split_mode in ('equal', 'weights', 'exact')),
   created_by uuid references auth.users (id) default auth.uid(),
   created_at timestamptz not null default now()
 );
+
+-- migração para instalações antigas (re-executar este ficheiro é seguro)
+alter table splitwisely.expenses
+  add column if not exists split_mode text not null default 'exact'
+    check (split_mode in ('equal', 'weights', 'exact'));
+
+-- backfill: despesas antigas com as partes todas iguais (± arredondamento
+-- de cêntimos) passam a 'equal' — o resultado é o mesmo, mas reabrem no
+-- modo «Partes iguais» em vez de «Exatos»
+update splitwisely.expenses e
+   set split_mode = 'equal'
+ where e.split_mode = 'exact'
+   and (select max(s.amount) - min(s.amount)
+          from splitwisely.expense_shares s
+         where s.expense_id = e.id) <= 0.01;
 
 -- Quem pagou (uma ou mais pessoas)
 create table if not exists splitwisely.expense_payers (
