@@ -446,6 +446,157 @@ grant select, insert, update, delete
 grant execute on all functions in schema splitwisely to authenticated;
 
 -- ============================================================
+-- DESPESAS RECORRENTES (moldes mensais)
+-- Um "molde" que gera uma despesa por mês, num dado dia, para um grupo.
+-- Não há servidor próprio: a app chama a RPC generate_due_recurring() ao
+-- arrancar, que materializa as despesas em atraso. É idempotente — cada
+-- despesa gerada fica ligada ao molde por (recurring_id, recurring_period)
+-- e um índice único impede duplicados, mesmo com dois membros a abrir a app
+-- ao mesmo tempo. Re-correr este ficheiro é seguro.
+-- ============================================================
+create table if not exists splitwisely.recurring_expenses (
+  id uuid primary key default gen_random_uuid(),
+  group_id uuid not null references splitwisely.groups (id) on delete cascade,
+  description text not null,
+  amount numeric(12,2) not null check (amount > 0),
+  category text,
+  split_mode text not null default 'exact'
+    check (split_mode in ('equal', 'weights', 'exact')),
+  day_of_month int not null check (day_of_month between 1 and 31),
+  start_date date not null default current_date,
+  end_date date,
+  active boolean not null default true,
+  created_by uuid references auth.users (id) default auth.uid(),
+  created_at timestamptz not null default now()
+);
+
+-- Quem paga / por quem se divide, tal como nas despesas normais, mas no molde.
+-- Os valores são copiados para a despesa de cada mês (montante fixo mensal).
+create table if not exists splitwisely.recurring_expense_payers (
+  recurring_id uuid not null references splitwisely.recurring_expenses (id) on delete cascade,
+  member_id uuid not null references splitwisely.group_members (id) on delete cascade,
+  amount numeric(12,2) not null check (amount >= 0),
+  primary key (recurring_id, member_id)
+);
+create table if not exists splitwisely.recurring_expense_shares (
+  recurring_id uuid not null references splitwisely.recurring_expenses (id) on delete cascade,
+  member_id uuid not null references splitwisely.group_members (id) on delete cascade,
+  amount numeric(12,2) not null check (amount >= 0),
+  primary key (recurring_id, member_id)
+);
+
+-- Liga a despesa gerada ao molde e ao mês (período) que representa.
+alter table splitwisely.expenses
+  add column if not exists recurring_id uuid references splitwisely.recurring_expenses (id) on delete set null;
+alter table splitwisely.expenses
+  add column if not exists recurring_period date;
+create unique index if not exists uq_expenses_recurring_period
+  on splitwisely.expenses (recurring_id, recurring_period)
+  where recurring_id is not null;
+
+-- grupo de um molde (evita recursão nas policies dos filhos, como expense_group)
+create or replace function splitwisely.recurring_group(rid uuid)
+returns uuid
+language sql stable security definer
+set search_path = splitwisely
+as $$
+  select group_id from recurring_expenses where id = rid;
+$$;
+
+-- Materializa as despesas recorrentes em atraso dos grupos a que o utilizador
+-- tem acesso. Para cada molde ativo gera uma despesa por mês, do mês de
+-- start_date até ao mês atual, no dia indicado (ajustado ao último dia do mês
+-- nos meses mais curtos — dia 31 em fevereiro cai no último dia), desde que a
+-- data já tenha chegado e esteja dentro de [start_date, end_date].
+-- Idempotente: o ON CONFLICT não duplica. Devolve quantas despesas criou.
+create or replace function splitwisely.generate_due_recurring()
+returns integer
+language plpgsql security definer
+set search_path = splitwisely
+as $$
+declare
+  r record;
+  m date;                                                -- 1.º dia do mês a processar
+  last_m date := date_trunc('month', current_date)::date;
+  dim int;                                               -- dias do mês m
+  occ date;                                              -- data da ocorrência nesse mês
+  new_id uuid;
+  n int := 0;
+begin
+  if not splitwisely.can_use() then return 0; end if;
+
+  for r in
+    select * from recurring_expenses
+     where active and splitwisely.has_group_access(group_id)
+  loop
+    m := date_trunc('month', r.start_date)::date;
+    while m <= last_m loop
+      dim := extract(day from (m + interval '1 month' - interval '1 day'))::int;
+      occ := m + (least(r.day_of_month, dim) - 1);
+      if occ >= r.start_date and occ <= current_date
+         and (r.end_date is null or occ <= r.end_date) then
+        new_id := null;
+        insert into expenses (group_id, description, amount, expense_date,
+                              split_mode, category, created_by,
+                              recurring_id, recurring_period)
+        values (r.group_id, r.description, r.amount, occ,
+                r.split_mode, r.category, r.created_by, r.id, m)
+        on conflict (recurring_id, recurring_period) where recurring_id is not null
+        do nothing
+        returning id into new_id;
+
+        if new_id is not null then
+          insert into expense_payers (expense_id, member_id, amount)
+            select new_id, member_id, amount
+              from recurring_expense_payers where recurring_id = r.id;
+          insert into expense_shares (expense_id, member_id, amount)
+            select new_id, member_id, amount
+              from recurring_expense_shares where recurring_id = r.id;
+          n := n + 1;
+        end if;
+      end if;
+      m := (m + interval '1 month')::date;
+    end loop;
+  end loop;
+  return n;
+end;
+$$;
+
+-- RLS: como as despesas, tudo gated por can_use() + acesso ao grupo
+alter table splitwisely.recurring_expenses       enable row level security;
+alter table splitwisely.recurring_expense_payers enable row level security;
+alter table splitwisely.recurring_expense_shares enable row level security;
+
+drop policy if exists "recurring_all" on splitwisely.recurring_expenses;
+create policy "recurring_all" on splitwisely.recurring_expenses
+  for all to authenticated
+  using (splitwisely.can_use() and splitwisely.has_group_access(group_id))
+  with check (splitwisely.can_use() and splitwisely.has_group_access(group_id));
+
+drop policy if exists "recurring_payers_all" on splitwisely.recurring_expense_payers;
+create policy "recurring_payers_all" on splitwisely.recurring_expense_payers
+  for all to authenticated
+  using (splitwisely.can_use() and splitwisely.has_group_access(splitwisely.recurring_group(recurring_id)))
+  with check (splitwisely.can_use() and splitwisely.has_group_access(splitwisely.recurring_group(recurring_id)));
+
+drop policy if exists "recurring_shares_all" on splitwisely.recurring_expense_shares;
+create policy "recurring_shares_all" on splitwisely.recurring_expense_shares
+  for all to authenticated
+  using (splitwisely.can_use() and splitwisely.has_group_access(splitwisely.recurring_group(recurring_id)))
+  with check (splitwisely.can_use() and splitwisely.has_group_access(splitwisely.recurring_group(recurring_id)));
+
+create index if not exists idx_recurring_group   on splitwisely.recurring_expenses (group_id);
+create index if not exists idx_rec_payers         on splitwisely.recurring_expense_payers (recurring_id);
+create index if not exists idx_rec_shares         on splitwisely.recurring_expense_shares (recurring_id);
+create index if not exists idx_expenses_recurring on splitwisely.expenses (recurring_id);
+
+grant select, insert, update, delete
+  on splitwisely.recurring_expenses, splitwisely.recurring_expense_payers,
+     splitwisely.recurring_expense_shares
+  to authenticated;
+grant execute on all functions in schema splitwisely to authenticated;
+
+-- ============================================================
 -- LIMPEZA (opcional): se chegaste a correr a versão ANTIGA deste
 -- schema (que criava tudo em `public` + trigger em auth.users),
 -- descomenta e corre este bloco UMA vez para a remover:
