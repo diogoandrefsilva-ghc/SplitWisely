@@ -233,6 +233,14 @@ alter table splitwisely.expenses
   add column if not exists split_mode text not null default 'exact'
     check (split_mode in ('equal', 'weights', 'exact'));
 
+-- category -> categoria da despesa (talho, mercearia, restaurante, …).
+-- A lista de categorias (e o ícone de cada uma) vive na app (CATEGORIES,
+-- em app.js); aqui fica só o id em texto, nullable — despesas antigas ou
+-- sem categoria ficam a null. A app sugere a categoria automaticamente a
+-- partir da descrição e vai aprendendo com as categorizações anteriores.
+alter table splitwisely.expenses
+  add column if not exists category text;
+
 -- backfill: despesas antigas com as partes todas iguais (± arredondamento
 -- de cêntimos) passam a 'equal' — o resultado é o mesmo, mas reabrem no
 -- modo «Partes iguais» em vez de «Exatos»
