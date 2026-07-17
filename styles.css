@@ -709,15 +709,20 @@ input.saved {
   border-top: 1px solid var(--border-soft);
 }
 
-table.split-table { width: 100%; border-collapse: collapse; font-size: .88rem; }
+/* linhas compactas: muitos membros têm de caber no ecrã sem rolar muito */
+table.split-table { width: 100%; border-collapse: collapse; font-size: .86rem; }
 table.split-table th, table.split-table td {
   text-align: left;
-  padding: .4rem .35rem;
+  padding: .18rem .3rem;
   border-bottom: 1px solid var(--border-soft);
 }
 table.split-table th { font-size: .7rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
 table.split-table tr:last-child td { border-bottom: none; }
-table.split-table input[type="number"] { max-width: 110px; padding: .3rem .45rem; }
+table.split-table input[type="number"] {
+  max-width: 110px;
+  height: 32px;
+  padding: .15rem .4rem;
+}
 table.split-table input[type="checkbox"] { width: 1.1rem; }
 
 /* ================================================================ saldos / acertos */
