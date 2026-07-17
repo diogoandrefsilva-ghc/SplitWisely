@@ -487,6 +487,44 @@ details.hint p { margin: .4rem 0 0; font-size: .8rem; color: var(--muted); line-
 .chip.negative { color: var(--negative); background: var(--chip-neg-bg); }
 .chip.zero { color: var(--muted); background: var(--chip-zero-bg); font-weight: 600; }
 
+/* detalhe expansível de um saldo (deve a / recebe de várias pessoas) */
+.expand-arrow {
+  display: inline-block;
+  font-size: .68rem;
+  transition: transform .15s;
+}
+.expand-arrow.open { transform: rotate(180deg); }
+.list li.open { border-bottom-color: transparent; }
+li.balance-detail {
+  display: block;
+  padding: 0 0 .6rem 2.7rem; /* alinha com o texto (avatar + gap) */
+}
+.detail-list {
+  list-style: none;
+  margin: 0;
+  padding: .3rem .75rem;
+  background: var(--card-inner);
+  border-radius: 10px;
+}
+.detail-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: .6rem;
+  padding: .3rem 0;
+  border-bottom: 1px solid var(--border-soft);
+  font-size: .84rem;
+  color: var(--muted);
+}
+.detail-list li:last-child { border-bottom: none; }
+.detail-list .amount { font-size: .84rem; color: var(--text); }
+
+/* flash verde no input quando o auto-save conclui */
+input.saved {
+  border-color: var(--positive);
+  box-shadow: 0 0 0 3px rgba(15, 157, 118, .18);
+}
+
 /* saldo à direita nas linhas de grupo (home) */
 .item-amount {
   font-size: .82rem;
