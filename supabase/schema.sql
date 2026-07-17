@@ -193,6 +193,24 @@ create table if not exists splitwisely.expense_shares (
   primary key (expense_id, member_id)
 );
 
+-- ---------- PAGAMENTOS (acertos de contas) ----------
+-- Registo de "X pagou Y€ a Z" para acertar contas. Entra nos saldos:
+-- quem paga fica com saldo mais positivo, quem recebe mais negativo.
+-- (Adicionado depois da 1.ª versão: o ficheiro é idempotente, basta
+-- voltar a corrê-lo todo no SQL Editor para criar esta tabela.)
+create table if not exists splitwisely.payments (
+  id uuid primary key default gen_random_uuid(),
+  group_id uuid not null references splitwisely.groups (id) on delete cascade,
+  from_member uuid not null references splitwisely.group_members (id) on delete cascade,
+  to_member uuid not null references splitwisely.group_members (id) on delete cascade,
+  amount numeric(12,2) not null check (amount > 0),
+  payment_date date not null default current_date,
+  note text,
+  created_by uuid references auth.users (id) default auth.uid(),
+  created_at timestamptz not null default now(),
+  check (from_member <> to_member)
+);
+
 -- ---------- FUNÇÃO DE ACESSO (evita recursão nas policies) ----------
 -- Tem acesso ao grupo: quem o criou (mesmo sem participar) ou quem
 -- é membro com conta ligada.
@@ -259,6 +277,7 @@ alter table splitwisely.group_members  enable row level security;
 alter table splitwisely.expenses       enable row level security;
 alter table splitwisely.expense_payers enable row level security;
 alter table splitwisely.expense_shares enable row level security;
+alter table splitwisely.payments       enable row level security;
 
 -- settings: sem policies — invisível via API (admin_email fica privado)
 
@@ -326,12 +345,20 @@ create policy "shares_all" on splitwisely.expense_shares
   using (splitwisely.can_use() and splitwisely.has_group_access(splitwisely.expense_group(expense_id)))
   with check (splitwisely.can_use() and splitwisely.has_group_access(splitwisely.expense_group(expense_id)));
 
+-- Pagamentos: quem tem acesso ao grupo gere tudo
+drop policy if exists "payments_all" on splitwisely.payments;
+create policy "payments_all" on splitwisely.payments
+  for all to authenticated
+  using (splitwisely.can_use() and splitwisely.has_group_access(group_id))
+  with check (splitwisely.can_use() and splitwisely.has_group_access(group_id));
+
 -- ---------- ÍNDICES ----------
 create index if not exists idx_members_group  on splitwisely.group_members (group_id);
 create index if not exists idx_members_user   on splitwisely.group_members (user_id);
 create index if not exists idx_expenses_group on splitwisely.expenses (group_id, expense_date desc);
 create index if not exists idx_payers_expense on splitwisely.expense_payers (expense_id);
 create index if not exists idx_shares_expense on splitwisely.expense_shares (expense_id);
+create index if not exists idx_payments_group on splitwisely.payments (group_id, payment_date desc);
 
 -- ---------- GRANTS ----------
 -- A RLS acima é que filtra as linhas; aqui é só o acesso base.
@@ -339,7 +366,8 @@ grant usage on schema splitwisely to anon, authenticated;
 grant select, update on splitwisely.profiles to authenticated;
 grant select, insert, update, delete
   on splitwisely.groups, splitwisely.group_members, splitwisely.expenses,
-     splitwisely.expense_payers, splitwisely.expense_shares
+     splitwisely.expense_payers, splitwisely.expense_shares,
+     splitwisely.payments
   to authenticated;
 grant execute on all functions in schema splitwisely to authenticated;
 

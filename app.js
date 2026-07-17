@@ -51,6 +51,17 @@ function fmtDate(d) {
   return new Date(d + "T00:00:00").toLocaleDateString("pt-PT", { day: "numeric", month: "short", year: "numeric" });
 }
 
+// Avatar redondo com iniciais, cor estável derivada do nome
+const AVATAR_COLORS = ["#0ea5e9", "#8b5cf6", "#f59e0b", "#10b981", "#ef4444",
+  "#ec4899", "#14b8a6", "#f97316", "#6366f1", "#d946ef"];
+function avatarHtml(name, extra = "") {
+  const parts = String(name || "?").trim().split(/\s+/);
+  const initials = ((parts[0]?.[0] || "?") + (parts.length > 1 ? parts[parts.length - 1][0] : "")).toUpperCase();
+  let h = 0;
+  for (const c of String(name || "")) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  return `<span class="avatar ${extra}" style="background:${AVATAR_COLORS[h % AVATAR_COLORS.length]}">${esc(initials)}</span>`;
+}
+
 // Divide `totalCents` por pesos, sem perder cêntimos (maior resto)
 function splitByWeights(totalCents, weights) {
   const sum = weights.reduce((a, b) => a + b, 0);
@@ -175,7 +186,7 @@ async function fetchGroups() {
 }
 
 async function fetchGroupBundle(groupId) {
-  const [g, m, e] = await Promise.all([
+  const [g, m, e, p] = await Promise.all([
     sb.from("groups").select("*").eq("id", groupId).single(),
     sb.from("group_members").select("*").eq("group_id", groupId).order("created_at"),
     sb.from("expenses")
@@ -183,9 +194,19 @@ async function fetchGroupBundle(groupId) {
       .eq("group_id", groupId)
       .order("expense_date", { ascending: false })
       .order("created_at", { ascending: false }),
+    sb.from("payments").select("*").eq("group_id", groupId)
+      .order("payment_date", { ascending: false })
+      .order("created_at", { ascending: false }),
   ]);
   for (const r of [g, m, e]) if (r.error) throw r.error;
-  return { group: g.data, members: m.data, expenses: e.data };
+  // A tabela payments pode ainda não existir (schema antigo por atualizar):
+  // degrada sem partir a app, só sem a funcionalidade de pagamentos.
+  if (p.error) console.warn("payments indisponível:", p.error.message);
+  return {
+    group: g.data, members: m.data, expenses: e.data,
+    payments: p.error ? [] : p.data,
+    paymentsReady: !p.error,
+  };
 }
 
 // ---------------------------------------------------------------- router
@@ -287,9 +308,16 @@ async function renderGroups() {
       ${groups.length === 0
         ? `<p class="empty">Ainda não tens grupos. Cria o primeiro abaixo 👇</p>`
         : `<ul class="list">${groups.map(g => `
-            <li>
-              <a class="item-link" href="#/g/${g.id}">${esc(g.name)}</a>
+            <li class="group-row">
+              <a class="item-link" href="#/g/${g.id}">
+                ${avatarHtml(g.name)}
+                <span class="group-info">
+                  <span class="group-name">${esc(g.name)}</span>
+                  ${g.description ? `<span class="group-desc">${esc(g.description)}</span>` : ""}
+                </span>
+              </a>
               <span class="badge">${esc(g.currency)}</span>
+              <span class="chevron">›</span>
             </li>`).join("")}</ul>`}
     </div>
     <div class="card">
@@ -352,7 +380,7 @@ async function renderGroups() {
 // ---------------------------------------------------------------- vista: grupo
 async function renderGroup(groupId, tab) {
   $app.innerHTML = `<div class="loading">A carregar grupo…</div>`;
-  const { group, members, expenses } = await fetchGroupBundle(groupId);
+  const { group, members, expenses, payments, paymentsReady } = await fetchGroupBundle(groupId);
   const isOwner = group.created_by === session.user.id;
 
   const tabs = [
@@ -379,7 +407,7 @@ async function renderGroup(groupId, tab) {
     b.onclick = () => { location.hash = `#/g/${groupId}/${b.dataset.tab}`; };
   });
 
-  const ctx = { group, members, expenses, isOwner };
+  const ctx = { group, members, expenses, payments, paymentsReady, isOwner };
   const $c = document.getElementById("tab-content");
   if (tab === "despesas") renderExpensesTab($c, ctx);
   else if (tab === "saldos") renderBalancesTab($c, ctx);
@@ -406,13 +434,18 @@ function renderExpensesTab($c, ctx) {
             const payers = x.expense_payers.map(p => memberName(p.member_id)).join(", ");
             const nShares = x.expense_shares.length;
             return `<li>
-              <div style="flex:1;">
+              <span class="expense-icon">🧾</span>
+              <div style="flex:1;min-width:0;">
                 <div style="font-weight:600;">${esc(x.description)}</div>
                 <div class="expense-meta">${fmtDate(x.expense_date)} · pago por ${esc(payers)} · dividido por ${nShares} pessoa${nShares === 1 ? "" : "s"}</div>
               </div>
-              <span class="amount">${fmtMoney(toCents(x.amount), group.currency)}</span>
-              <button class="secondary small" data-edit="${x.id}">Editar</button>
-              <button class="danger small" data-del="${x.id}">✕</button>
+              <div class="expense-right">
+                <span class="amount">${fmtMoney(toCents(x.amount), group.currency)}</span>
+                <span class="row-actions">
+                  <button class="secondary small" data-edit="${x.id}">Editar</button>
+                  <button class="danger small" data-del="${x.id}">✕</button>
+                </span>
+              </div>
             </li>`;
           }).join("")}</ul>`}
     </div>`;
@@ -494,7 +527,7 @@ function renderExpenseForm(slot, ctx, existing) {
     const okShare = shareSum === state.totalCents && state.totalCents > 0;
 
     slot.innerHTML = `
-    <div class="card" style="background:var(--bg);">
+    <div class="card inner-card">
       <h2>${existing ? "Editar despesa" : "Nova despesa"}</h2>
       <div class="row">
         <div class="field" style="flex:3;">
@@ -657,12 +690,19 @@ function renderExpenseForm(slot, ctx, existing) {
 
 // ------------------------------------------------ tab: saldos
 function renderBalancesTab($c, ctx) {
-  const { group, members, expenses } = ctx;
+  const { group, members, expenses, payments, paymentsReady } = ctx;
+  const cur = group.currency;
+  const memberName = id => members.find(m => m.id === id)?.name || "?";
 
   const balance = Object.fromEntries(members.map(m => [m.id, 0])); // cêntimos: + recebe, - deve
   for (const x of expenses) {
     for (const p of x.expense_payers) if (p.member_id in balance) balance[p.member_id] += toCents(p.amount);
     for (const s of x.expense_shares) if (s.member_id in balance) balance[s.member_id] -= toCents(s.amount);
+  }
+  // pagamentos já feitos: quem pagou fica menos devedor, quem recebeu menos credor
+  for (const p of payments) {
+    if (p.from_member in balance) balance[p.from_member] += toCents(p.amount);
+    if (p.to_member in balance) balance[p.to_member] -= toCents(p.amount);
   }
 
   // sugestões de acerto (algoritmo guloso)
@@ -679,36 +719,168 @@ function renderBalancesTab($c, ctx) {
     if (creditors[ci].v === 0) ci++;
   }
 
+  // a quem deve / de quem recebe cada pessoa (para a linha secundária)
+  const owesTo = {}, getsFrom = {};
+  for (const s of settlements) {
+    (owesTo[s.from.id] ??= []).push({ name: s.to.name, cents: s.cents });
+    (getsFrom[s.to.id] ??= []).push({ name: s.from.name, cents: s.cents });
+  }
+  const subline = (mId, b) => {
+    const list = b < 0 ? owesTo[mId] : b > 0 ? getsFrom[mId] : null;
+    if (!list?.length) return "";
+    const prep = b < 0 ? "a" : "de";
+    let names;
+    if (list.length === 1) names = esc(list[0].name);
+    else if (list.length === 2)
+      names = list.map(x => `${esc(x.name)} (${fmtMoney(x.cents, cur)})`).join(", ");
+    else names = `${esc(list[0].name)} e mais ${list.length - 1}`;
+    return `<span class="balance-sub">${prep} ${names}</span>`;
+  };
+
   const total = expenses.reduce((a, x) => a + toCents(x.amount), 0);
+  const totalPaid = payments.reduce((a, p) => a + toCents(p.amount), 0);
 
   $c.innerHTML = `
     <div class="card">
-      <h2>Saldos <span class="muted" style="font-weight:400;">· total gasto: ${fmtMoney(total, group.currency)}</span></h2>
+      <div class="card-title-row">
+        <h2>Saldos</h2>
+        <span class="muted">total gasto: ${fmtMoney(total, cur)}</span>
+      </div>
       ${members.length === 0 ? `<p class="empty">Sem membros.</p>` : `
-      <ul class="list">
+      <ul class="list balances">
         ${members.map(m => {
           const b = balance[m.id];
           return `<li>
-            <span>${esc(m.name)}</span>
-            <span class="amount ${b > 0 ? "positive" : b < 0 ? "negative" : ""}">
-              ${b === 0 ? "✔ em dia" : (b > 0 ? "recebe " : "deve ") + fmtMoney(Math.abs(b), group.currency)}
+            ${avatarHtml(m.name)}
+            <span class="balance-name">${esc(m.name)}</span>
+            <span class="balance-right">
+              <span class="chip ${b > 0 ? "positive" : b < 0 ? "negative" : "zero"}">
+                ${b === 0 ? "✓ em dia" : (b > 0 ? "recebe " : "deve ") + fmtMoney(Math.abs(b), cur)}
+              </span>
+              ${subline(m.id, b)}
             </span>
           </li>`;
         }).join("")}
       </ul>`}
     </div>
+
     <div class="card">
       <h2>Como acertar contas</h2>
       ${settlements.length === 0
         ? `<p class="empty">Está tudo em dia 🎉</p>`
-        : settlements.map(s => `
+        : settlements.map((s, i) => `
           <div class="settle-line">
-            <strong>${esc(s.from.name)}</strong>
-            <span class="settle-arrow">paga →</span>
-            <strong>${esc(s.to.name)}</strong>
-            <span class="amount" style="margin-left:auto;">${fmtMoney(s.cents, group.currency)}</span>
+            <span class="settle-who">
+              ${avatarHtml(s.from.name, "small")}
+              <strong>${esc(s.from.name)}</strong>
+              <span class="settle-arrow">→</span>
+              ${avatarHtml(s.to.name, "small")}
+              <strong>${esc(s.to.name)}</strong>
+            </span>
+            <span class="amount">${fmtMoney(s.cents, cur)}</span>
+            ${paymentsReady ? `<button class="small" data-settle="${i}">Pagar</button>` : ""}
           </div>`).join("")}
+    </div>
+
+    <div class="card">
+      <div class="card-title-row">
+        <h2>Pagamentos</h2>
+        ${paymentsReady ? `<button class="secondary small" id="btn-add-payment">+ Registar pagamento</button>` : ""}
+      </div>
+      ${!paymentsReady ? `<p class="muted">Para ativar o registo de pagamentos, corre a versão mais
+        recente de <code>supabase/schema.sql</code> no SQL Editor do Supabase.</p>` : `
+      <div id="payment-form-slot"></div>
+      ${payments.length === 0
+        ? `<p class="empty">Ainda não há pagamentos registados.</p>`
+        : `<ul class="list">
+            ${payments.map(p => `
+              <li>
+                <div style="flex:1;">
+                  <div class="payment-line">
+                    <strong>${esc(memberName(p.from_member))}</strong>
+                    <span class="settle-arrow">pagou a</span>
+                    <strong>${esc(memberName(p.to_member))}</strong>
+                  </div>
+                  <div class="expense-meta">${fmtDate(p.payment_date)}${p.note ? ` · ${esc(p.note)}` : ""}</div>
+                </div>
+                <span class="amount">${fmtMoney(toCents(p.amount), cur)}</span>
+                <button class="danger small" data-pdel="${p.id}">✕</button>
+              </li>`).join("")}
+          </ul>
+          ${totalPaid > 0 ? `<p class="muted" style="text-align:right;margin:.5rem 0 0;">total acertado: ${fmtMoney(totalPaid, cur)}</p>` : ""}`}`}
     </div>`;
+
+  if (!paymentsReady) return;
+
+  const slot = $c.querySelector("#payment-form-slot");
+
+  function paymentForm(prefill) {
+    slot.innerHTML = `
+      <div class="card inner-card">
+        <h2>Registar pagamento</h2>
+        <div class="row">
+          <div class="field"><label>Quem paga</label>
+            <select id="p-from">${members.map(m =>
+              `<option value="${m.id}" ${prefill?.from === m.id ? "selected" : ""}>${esc(m.name)}</option>`).join("")}</select>
+          </div>
+          <div class="field"><label>Recebe</label>
+            <select id="p-to">${members.map(m =>
+              `<option value="${m.id}" ${prefill?.to === m.id ? "selected" : ""}>${esc(m.name)}</option>`).join("")}</select>
+          </div>
+          <div class="field" style="max-width:130px;"><label>Valor (${esc(cur)})</label>
+            <input id="p-amount" type="number" step="0.01" min="0"
+              value="${prefill ? (prefill.cents / 100).toFixed(2) : ""}" />
+          </div>
+          <div class="field"><label>Data</label>
+            <input id="p-date" type="date" value="${new Date().toISOString().slice(0, 10)}" />
+          </div>
+        </div>
+        <div class="field"><label>Nota (opcional)</label>
+          <input id="p-note" placeholder="Ex.: MB Way" /></div>
+        <div style="display:flex;gap:.6rem;">
+          <button id="p-save">Guardar pagamento</button>
+          <button class="secondary" id="p-cancel">Cancelar</button>
+        </div>
+      </div>`;
+    slot.scrollIntoView({ behavior: "smooth", block: "center" });
+
+    slot.querySelector("#p-cancel").onclick = () => { slot.innerHTML = ""; };
+    slot.querySelector("#p-save").onclick = async () => {
+      const from = slot.querySelector("#p-from").value;
+      const to = slot.querySelector("#p-to").value;
+      const cents = toCents(slot.querySelector("#p-amount").value);
+      if (from === to) return toast("Quem paga e quem recebe têm de ser pessoas diferentes", true);
+      if (cents <= 0) return toast("O valor tem de ser maior que zero", true);
+      const { error } = await sb.from("payments").insert({
+        group_id: group.id,
+        from_member: from,
+        to_member: to,
+        amount: (cents / 100).toFixed(2),
+        payment_date: slot.querySelector("#p-date").value || new Date().toISOString().slice(0, 10),
+        note: slot.querySelector("#p-note").value.trim() || null,
+      });
+      if (error) return toast(error.message, true);
+      toast("Pagamento registado 💸");
+      route();
+    };
+  }
+
+  $c.querySelector("#btn-add-payment")?.addEventListener("click", () => paymentForm(null));
+  $c.querySelectorAll("[data-settle]").forEach(b => {
+    b.onclick = () => {
+      const s = settlements[Number(b.dataset.settle)];
+      paymentForm({ from: s.from.id, to: s.to.id, cents: s.cents });
+    };
+  });
+  $c.querySelectorAll("[data-pdel]").forEach(b => {
+    b.onclick = async () => {
+      if (!confirm("Apagar este pagamento? O saldo volta a refletir a dívida.")) return;
+      const { error } = await sb.from("payments").delete().eq("id", b.dataset.pdel);
+      if (error) return toast(error.message, true);
+      toast("Pagamento apagado");
+      route();
+    };
+  });
 }
 
 // ------------------------------------------------ tab: membros
@@ -727,7 +899,7 @@ function renderMembersTab($c, ctx) {
         ${members.map(m => `
           <tr>
             <td>
-              ${esc(m.name)}
+              <span class="member-cell">${avatarHtml(m.name, "small")} ${esc(m.name)}</span>
               ${m.user_id ? `<span class="badge linked">conta ligada</span>` : m.email ? `<span class="badge">convite: ${esc(m.email)}</span>` : ""}
             </td>
             <td><input type="number" step="0.1" min="0" data-mw="${m.id}" value="${m.default_weight}" style="max-width:90px;" /></td>

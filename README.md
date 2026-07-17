@@ -9,7 +9,7 @@ App web estilo Splitwise para gerir despesas partilhadas, feita em HTML/JS puro 
 - **Membros por grupo** — pessoas com nome simples ou ligadas a contas Google. Se adicionares alguém com o email, fica automaticamente ligado à conta quando entrar pela primeira vez.
 - **Despesas flexíveis** — pagas por **uma ou mais** pessoas e divididas por **uma ou várias**, em partes iguais, por proporção ou valores exatos.
 - **Defaults por grupo** — cada membro tem um *peso* default (a proporção com que entra nas divisões) e pode ser marcado como *pagador default*; as novas despesas vêm pré-preenchidas com isso.
-- **Saldos e acerto de contas** — quem deve a quem, com sugestões de pagamentos mínimos.
+- **Saldos e acerto de contas** — quem deve a quem (com o detalhe de *a quem* por baixo do saldo), sugestões de pagamentos mínimos e **registo de pagamentos**: um clique em «Pagar» numa sugestão pré-preenche o pagamento; os pagamentos registados abatem nos saldos e podem ser apagados.
 - **PWA para telemóvel** — instalável no ecrã inicial (Android e iOS), abre em ecrã inteiro sem barra do browser, funciona offline para consulta e tem o zoom bloqueado.
 
 ## Configuração (uma vez)
@@ -92,7 +92,12 @@ A app abre depois como qualquer outra, em ecrã inteiro e com o ícone próprio.
 2. Cria um grupo (podes escolher não ser membro dele).
 3. Na aba **Membros**, adiciona as pessoas: define o **peso** de cada uma (proporção default da divisão) e marca quem é o **pagador default**.
 4. Adiciona despesas na aba **Despesas** — vêm pré-preenchidas com os defaults, mas podes ajustar pagadores, participantes e o modo de divisão em cada despesa.
-5. A aba **Saldos** mostra quem recebe, quem deve e a forma mais simples de acertar contas.
+5. A aba **Saldos** mostra quem recebe, quem deve (e a quem) e a forma mais simples de acertar contas.
+6. Quando alguém pagar a dívida, regista o pagamento na aba **Saldos** — o botão «Pagar» em cada
+   sugestão pré-preenche tudo (ou usa «Registar pagamento» para valores/pessoas à escolha).
+
+> **Já tinhas o schema da 1.ª versão?** Volta a correr `supabase/schema.sql` no SQL Editor
+> (é idempotente) para criar a tabela `payments` dos pagamentos.
 
 ## Estrutura
 
