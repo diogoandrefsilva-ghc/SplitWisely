@@ -1,0 +1,4 @@
+# Migração Splitwise: exports e SQL gerado contêm dados financeiros pessoais.
+# São gerados localmente e corridos no SQL Editor — nunca commitados.
+*_export.csv
+migrate_*.sql
