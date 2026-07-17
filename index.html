@@ -32,7 +32,12 @@
   <script src="app.js"></script>
   <script>
     if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("sw.js").catch(() => {});
+      // Procurar uma versão nova a cada 60s. Com skipWaiting()+clients.claim()
+      // no sw.js e o fetch network-first sem cache HTTP, a versão nova passa a
+      // entrar sozinha — sem ter de limpar a cache à mão (mesmo padrão do SplitBill).
+      navigator.serviceWorker.register("sw.js")
+        .then((reg) => { setInterval(() => reg.update().catch(() => {}), 60000); })
+        .catch(() => {});
     }
     // iOS Safari ignora "user-scalable=no": bloquear o pinch-zoom
     // (o double-tap zoom é tratado pelo touch-action: manipulation no CSS)
