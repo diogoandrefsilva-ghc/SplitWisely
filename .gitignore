@@ -1,0 +1,8 @@
+# Migração Splitwise: exports e SQL gerado contêm dados financeiros pessoais.
+# São gerados localmente e corridos no SQL Editor — nunca commitados.
+*_export.csv
+migrate_*.sql
+
+# Cache de bytecode Python (gerado ao correr o script de migração)
+__pycache__/
+*.pyc
