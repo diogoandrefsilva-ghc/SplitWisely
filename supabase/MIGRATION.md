@@ -47,6 +47,18 @@ ou entra tudo, ou nada.
    - `--expect-balance-a` é o saldo final dessa pessoa (**+** = tem a receber).
      No export de exemplo o Diogo tem +24,60 (a Margarida deve-lhe 24,60 €).
 
+   Se houver **outros grupos com pessoas do mesmo nome**, fixa os UUIDs em vez
+   de resolver por nome (o script verifica que cada membro pertence mesmo ao
+   grupo e aborta caso contrário):
+
+   ```bash
+   python3 supabase/migrate_splitwise.py EXPORT.csv \
+     --group-id      c36e5a26-8b18-4259-99e2-d3fdb9c871bb \
+     --member-a-id   e4f18919-648a-45e8-ba37-54b2f43b2e81 \
+     --member-b-id   d34d1d69-4fbe-445d-83fa-0bafdd6a62b2 \
+     --expect-balance-a 24.60 -o migrate_gidos.sql
+   ```
+
 4. Abre o **SQL Editor** do Supabase, cola o conteúdo de `migrate_gidos.sql` e
    executa. No fim aparece um `NOTICE` com as contagens e o saldo reconstruído.
    Volta a correr é seguro: um *guard* aborta se o grupo já tiver despesas ou
