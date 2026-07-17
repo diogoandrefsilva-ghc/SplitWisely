@@ -139,14 +139,21 @@ create trigger trg_profiles_guard before update on splitwisely.profiles
   for each row execute function splitwisely.profiles_guard();
 
 -- ---------- GRUPOS / EVENTOS ----------
+-- use_weights -> divisão por proporções (pesos por pessoa) ativa neste
+-- grupo. Por defeito os grupos dividem em partes iguais.
 create table if not exists splitwisely.groups (
   id uuid primary key default gen_random_uuid(),
   name text not null,
   description text,
   currency text not null default 'EUR',
+  use_weights boolean not null default false,
   created_by uuid not null references auth.users (id) default auth.uid(),
   created_at timestamptz not null default now()
 );
+
+-- migração para instalações antigas (re-executar este ficheiro é seguro)
+alter table splitwisely.groups
+  add column if not exists use_weights boolean not null default false;
 
 -- ---------- MEMBROS DE CADA GRUPO ----------
 -- Uma "pessoa" do grupo. Pode estar ligada a um utilizador registado

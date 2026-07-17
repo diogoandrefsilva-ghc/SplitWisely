@@ -267,7 +267,25 @@ input, select {
   background: var(--card-inner);
   color: var(--text);
   width: 100%;
+  min-width: 0; /* pode encolher dentro de flex (senão o de data transborda) */
   transition: border-color .15s, box-shadow .15s;
+}
+/* altura idêntica em todos os controlos — texto, número, data e select
+   ficam alinhados lado a lado (o iOS dá alturas diferentes a cada um) */
+input:not([type="checkbox"]), select {
+  height: 42px;
+  -webkit-appearance: none;
+  appearance: none;
+}
+/* iOS centra o valor do input de data; alinhar à esquerda como os outros */
+input[type="date"] { text-align: left; }
+input[type="date"]::-webkit-date-and-time-value { text-align: left; }
+/* appearance:none tira a seta nativa do select — repor uma discreta */
+select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1.5 6 6.5 11 1.5' fill='none' stroke='%23889' stroke-width='1.8' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right .65rem center;
+  padding-right: 2rem;
 }
 input:focus, select:focus {
   outline: none;
@@ -280,9 +298,31 @@ input[type="checkbox"] {
   accent-color: var(--primary);
 }
 label { font-size: .8rem; font-weight: 600; display: block; margin-bottom: .2rem; color: var(--muted); }
-.field { margin-bottom: .7rem; }
+.field { margin-bottom: .7rem; min-width: 0; }
 .row { display: flex; gap: .7rem; flex-wrap: wrap; }
-.row .field { flex: 1; min-width: 130px; }
+.row .field { flex: 1 1 0; min-width: 130px; }
+
+/* linha de checkbox com texto (e nota opcional por baixo) */
+.check-line {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  flex-wrap: wrap;
+  font-size: .88rem;
+  font-weight: 500;
+  color: var(--text);
+  margin: .45rem 0;
+  cursor: pointer;
+}
+.check-line input[type="checkbox"] { flex: none; width: 1.1rem; }
+.check-note {
+  flex-basis: 100%;
+  margin-left: 1.6rem; /* alinha com o texto da checkbox */
+  font-size: .75rem;
+  font-weight: 400;
+  color: var(--muted);
+  line-height: 1.35;
+}
 
 /* dica colapsável (substitui parágrafos longos de ajuda) */
 details.hint { margin: .1rem 0 .7rem; }
@@ -520,6 +560,7 @@ details.hint p { margin: .4rem 0 0; font-size: .8rem; color: var(--muted); line-
   padding: .3rem .55rem;
   display: inline-block;
 }
+.form-status.neutral { color: var(--muted); background: var(--chip-zero-bg); }
 .form-actions {
   display: flex;
   gap: .6rem;
@@ -617,6 +658,8 @@ table.split-table input[type="checkbox"] { width: 1.1rem; }
   table.split-table input[type="number"] { max-width: 88px; }
   .topbar .user-name { display: none; } /* poupa espaço na barra */
   .stat .stat-value { font-size: .98rem; }
+  /* botão principal do formulário ocupa o espaço livre */
+  .form-actions button:first-child { flex: 1; }
   /* os 3 separadores do detalhe da despesa têm de caber no ecrã */
   .form-tabs button, .form-section .tabs button { font-size: .84rem; padding: .38rem .3rem; }
 }

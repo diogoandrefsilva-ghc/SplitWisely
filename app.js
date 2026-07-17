@@ -422,9 +422,14 @@ async function renderGroups() {
             <label>Descrição (opcional)</label>
             <input name="description" placeholder="Ex.: casa alugada + jantares" />
           </div>
-          <label style="font-weight:400;font-size:.88rem;">
-            <input type="checkbox" name="join" checked style="width:auto;margin-right:.4rem;" />
+          <label class="check-line">
+            <input type="checkbox" name="join" checked />
             Adicionar-me como membro do grupo
+          </label>
+          <label class="check-line">
+            <input type="checkbox" name="use_weights" />
+            Divisão por proporções (pesos por pessoa)
+            <span class="check-note">por defeito as despesas dividem-se em partes iguais</span>
           </label>
           <div style="margin-top:.8rem;display:flex;gap:.6rem;">
             <button type="submit">Criar grupo</button>
@@ -438,11 +443,19 @@ async function renderGroups() {
     slot.querySelector("#new-group").onsubmit = async (e) => {
       e.preventDefault();
       const f = new FormData(e.target);
-      const { data: group, error } = await sb.from("groups").insert({
+      const payload = {
         name: f.get("name").trim(),
         description: f.get("description").trim() || null,
         currency: f.get("currency"),
-      }).select().single();
+      };
+      if (f.get("use_weights")) payload.use_weights = true;
+      let { data: group, error } = await sb.from("groups").insert(payload).select().single();
+      // schema antigo sem a coluna use_weights: cria na mesma, mas avisa
+      if (error && payload.use_weights && /use_weights/i.test(error.message)) {
+        toast("Quotas indisponíveis — corre o schema.sql mais recente no Supabase", true);
+        delete payload.use_weights;
+        ({ data: group, error } = await sb.from("groups").insert(payload).select().single());
+      }
       if (error) return toast(error.message, true);
 
       if (f.get("join")) {
@@ -624,6 +637,7 @@ function renderExpensesTab($c, ctx) {
 function renderExpenseForm(slot, ctx, existing, onClose) {
   const { group, members } = ctx;
   const close = onClose || (() => { slot.innerHTML = ""; });
+  const useWeights = !!group.use_weights; // opção do grupo: divisão por proporções
 
   // estado inicial: defaults do grupo ou valores da despesa em edição
   const defaultPayers = members.filter(m => m.is_default_payer).map(m => m.id);
@@ -642,13 +656,15 @@ function renderExpenseForm(slot, ctx, existing, onClose) {
     section: "dados", // dados | pagou | divide
     desc: existing?.description || "",
     date: existing?.expense_date || new Date().toISOString().slice(0, 10),
-    mode: existing ? "exact" : "weights", // equal | weights | exact
+    mode: existing ? "exact" : (useWeights ? "weights" : "equal"), // equal | weights | exact
     totalCents: existing ? toCents(existing.amount) : 0,
     payers: new Set(initPayers),
     payerAmounts: { ...initPayerAmounts },
     participants: new Set(existing
       ? existing.expense_shares.map(s => s.member_id)
-      : members.filter(m => Number(m.default_weight) > 0).map(m => m.id)),
+      : useWeights
+        ? members.filter(m => Number(m.default_weight) > 0).map(m => m.id)
+        : members.map(m => m.id)),
     weights: Object.fromEntries(members.map(m => [m.id, Number(m.default_weight) || 0])),
     exact: { ...initShares },
   };
@@ -697,7 +713,9 @@ function renderExpenseForm(slot, ctx, existing, onClose) {
           </div>
         </div>`,
       pagou: `
-        ${okPaid ? "" : `<p class="form-status">${fmtMoney(paidSum, cur)} de ${fmtMoney(state.totalCents, cur)} atribuídos</p>`}
+        ${okPaid ? "" : state.totalCents === 0
+          ? `<p class="form-status neutral">Indica primeiro o valor na secção «Dados»</p>`
+          : `<p class="form-status">${fmtMoney(paidSum, cur)} de ${fmtMoney(state.totalCents, cur)} atribuídos</p>`}
         <table class="split-table">
           ${members.map(m => `
             <tr>
@@ -712,10 +730,12 @@ function renderExpenseForm(slot, ctx, existing, onClose) {
         </table>
         <button class="secondary small" id="x-dist-payers" style="margin-top:.6rem;">Distribuir igualmente pelos pagadores</button>`,
       divide: `
-        ${okShare ? "" : `<p class="form-status">${fmtMoney(shareSum, cur)} de ${fmtMoney(state.totalCents, cur)} divididos</p>`}
+        ${okShare ? "" : state.totalCents === 0
+          ? `<p class="form-status neutral">Indica primeiro o valor na secção «Dados»</p>`
+          : `<p class="form-status">${fmtMoney(shareSum, cur)} de ${fmtMoney(state.totalCents, cur)} divididos</p>`}
         <div class="tabs" style="margin-bottom:.6rem;">
           <button data-mode="equal" class="${state.mode === "equal" ? "active" : ""}">Partes iguais</button>
-          <button data-mode="weights" class="${state.mode === "weights" ? "active" : ""}">Proporção</button>
+          ${useWeights ? `<button data-mode="weights" class="${state.mode === "weights" ? "active" : ""}">Proporção</button>` : ""}
           <button data-mode="exact" class="${state.mode === "exact" ? "active" : ""}">Exatos</button>
         </div>
         <table class="split-table">
@@ -1010,7 +1030,9 @@ function renderBalancesTab($c, ctx) {
             <select id="p-to">${members.map(m =>
               `<option value="${m.id}" ${prefill?.to === m.id ? "selected" : ""}>${esc(m.name)}</option>`).join("")}</select>
           </div>
-          <div class="field" style="max-width:130px;"><label>Valor (${esc(cur)})</label>
+        </div>
+        <div class="row">
+          <div class="field"><label>Valor (${esc(cur)})</label>
             <input id="p-amount" type="number" step="0.01" min="0"
               value="${prefill ? (prefill.cents / 100).toFixed(2) : ""}" />
           </div>
@@ -1069,16 +1091,24 @@ function renderBalancesTab($c, ctx) {
 // ------------------------------------------------ tab: membros
 function renderMembersTab($c, ctx) {
   const { members } = ctx;
+  const useWeights = !!ctx.group.use_weights;
+
+  const hint = useWeights
+    ? `<p>O <strong>peso</strong> define a proporção default na divisão das despesas
+       (0 = não entra por defeito). O <strong>pagador default</strong> fica pré-selecionado
+       nas novas despesas. Se indicares um email, a pessoa fica ligada à conta dela
+       quando entrar com Google.</p>`
+    : `<p>O <strong>pagador default</strong> fica pré-selecionado nas novas despesas.
+       Se indicares um email, a pessoa fica ligada à conta dela quando entrar com Google.
+       As despesas dividem-se em partes iguais — podes ativar a divisão por proporções
+       nas Definições do grupo.</p>`;
 
   $c.innerHTML = `
     <div class="card">
       <h2>Membros ${members.length ? `<span class="muted">· ${members.length}</span>` : ""}</h2>
       <details class="hint">
-        <summary>O que são o peso e o pagador default?</summary>
-        <p>O <strong>peso</strong> define a proporção default na divisão das despesas
-        (0 = não entra por defeito). O <strong>pagador default</strong> fica pré-selecionado
-        nas novas despesas. Se indicares um email, a pessoa fica ligada à conta dela
-        quando entrar com Google.</p>
+        <summary>${useWeights ? "O que são o peso e o pagador default?" : "O que é o pagador default?"}</summary>
+        ${hint}
       </details>
       ${members.length === 0 ? `<p class="empty">Ainda sem membros.</p>` : `
       <ul class="list">
@@ -1091,8 +1121,8 @@ function renderMembersTab($c, ctx) {
                 : m.email ? `<span class="item-sub">convite: ${esc(m.email)}</span>` : ""}
             </div>
             <div class="member-controls">
-              <label class="ctl"><span>Peso</span>
-                <input type="number" step="0.1" min="0" data-mw="${m.id}" value="${m.default_weight}" /></label>
+              ${useWeights ? `<label class="ctl"><span>Peso</span>
+                <input type="number" step="0.1" min="0" data-mw="${m.id}" value="${m.default_weight}" /></label>` : ""}
               <label class="ctl"><span>Pagador</span>
                 <input type="checkbox" data-mp="${m.id}" ${m.is_default_payer ? "checked" : ""} /></label>
               <button class="ghost small" data-mdel="${m.id}" title="Remover pessoa">✕</button>
@@ -1106,7 +1136,8 @@ function renderMembersTab($c, ctx) {
         <div class="row">
           <div class="field" style="flex:2;"><label>Nome</label><input name="name" required placeholder="Ex.: Maria" /></div>
           <div class="field" style="flex:2;"><label>Email (opcional)</label><input name="email" type="email" placeholder="maria@gmail.com" /></div>
-          <div class="field" style="max-width:90px;"><label>Peso</label><input name="weight" type="number" step="0.1" min="0" value="1" /></div>
+          ${useWeights ? `<div class="field" style="max-width:90px;"><label>Peso</label>
+            <input name="weight" type="number" step="0.1" min="0" value="1" /></div>` : ""}
         </div>
         <button type="submit">Adicionar</button>
       </form>
@@ -1145,7 +1176,9 @@ function renderMembersTab($c, ctx) {
       group_id: ctx.group.id,
       name: f.get("name").trim(),
       email: f.get("email").trim() || null,
-      default_weight: parseFloat(f.get("weight")) || 0,
+      // sem campo de peso (grupos de partes iguais) fica 1, para o caso
+      // de a divisão por proporções vir a ser ativada mais tarde
+      default_weight: f.get("weight") == null ? 1 : (parseFloat(f.get("weight")) || 0),
     });
     if (error) return toast(error.message, true);
     toast("Pessoa adicionada");
@@ -1173,7 +1206,12 @@ function renderSettingsTab($c, ctx) {
         </div>
         <div class="field"><label>Descrição</label>
           <input name="description" value="${esc(group.description || "")}" ${isOwner ? "" : "disabled"} /></div>
-        ${isOwner ? `<button type="submit">Guardar</button>` : ""}
+        <label class="check-line">
+          <input type="checkbox" name="use_weights" ${group.use_weights ? "checked" : ""} ${isOwner ? "" : "disabled"} />
+          Divisão por proporções (pesos por pessoa)
+          <span class="check-note">desligado, as despesas dividem-se em partes iguais</span>
+        </label>
+        ${isOwner ? `<button type="submit" style="margin-top:.5rem;">Guardar</button>` : ""}
       </form>
     </div>
     ${isOwner ? `
@@ -1187,11 +1225,19 @@ function renderSettingsTab($c, ctx) {
   document.getElementById("edit-group").onsubmit = async (e) => {
     e.preventDefault();
     const f = new FormData(e.target);
-    const { error } = await sb.from("groups").update({
+    const payload = {
       name: f.get("name").trim(),
       description: f.get("description").trim() || null,
       currency: f.get("currency"),
-    }).eq("id", group.id);
+      use_weights: !!f.get("use_weights"),
+    };
+    let { error } = await sb.from("groups").update(payload).eq("id", group.id);
+    // schema antigo sem a coluna use_weights: guarda o resto na mesma
+    if (error && /use_weights/i.test(error.message)) {
+      if (payload.use_weights) toast("Quotas indisponíveis — corre o schema.sql mais recente no Supabase", true);
+      delete payload.use_weights;
+      ({ error } = await sb.from("groups").update(payload).eq("id", group.id));
+    }
     if (error) return toast(error.message, true);
     toast("Grupo atualizado");
     route();
