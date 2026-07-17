@@ -82,10 +82,13 @@ function appBaseUrl() {
   return location.origin + location.pathname;
 }
 
-// Link mailto: para convidar um membro por email. Abre o cliente de email
-// já com assunto e corpo preenchidos; a pessoa entra com a conta Google do
-// mesmo email e fica logo ligada ao grupo (e aprovada — ver schema.sql).
-function inviteMailtoHref(member, group) {
+// Link de composição do Gmail para convidar um membro por email. Abre o
+// Gmail (janela nova) já com destinatário, assunto e corpo preenchidos —
+// em vez do cliente de email por defeito do sistema (mailto:). A pessoa
+// entra com a conta Google do mesmo email e fica logo ligada ao grupo (e
+// aprovada — ver schema.sql). Sendo um site estático sem servidor, o envio
+// é sempre com um clique: não dá para enviar sozinho sem backend.
+function inviteComposeHref(member, group) {
   const url = appBaseUrl();
   const subject = `Convite para o SplitWisely — ${group.name}`;
   const body =
@@ -97,8 +100,9 @@ Entra aqui com a tua conta Google (usa este mesmo email: ${member.email}):
 ${url}
 
 Assim que entrares, ficas logo ligado ao grupo. Até já!`;
-  return `mailto:${encodeURIComponent(member.email)}`
-    + `?subject=${encodeURIComponent(subject)}`
+  return "https://mail.google.com/mail/?view=cm&fs=1"
+    + `&to=${encodeURIComponent(member.email)}`
+    + `&su=${encodeURIComponent(subject)}`
     + `&body=${encodeURIComponent(body)}`;
 }
 
@@ -1513,7 +1517,7 @@ function renderMembersSection($c, ctx) {
   const useWeights = !!ctx.group.use_weights;
 
   const inviteHint = `Se indicares um email, toca no membro e usa
-       <strong>«Convidar por email»</strong> para lhe mandar o link da app. Ao
+       <strong>«Convidar por Gmail»</strong> para lhe mandar o link da app. Ao
        entrar com a conta Google desse email, a pessoa fica logo ligada ao grupo
        e com acesso aprovado — sem esperar por aprovação do admin.`;
   const hint = useWeights
@@ -1586,10 +1590,11 @@ function renderMembersSection($c, ctx) {
         ${m.user_id ? `<p class="muted" style="margin:-.3rem 0 .7rem;">Esta pessoa já entrou com a
           conta Google dela <span class="badge linked">conta ligada</span> — o email já não se altera.</p>` : ""}
         ${!m.user_id && m.email ? `
-          <a class="btn invite" id="m-invite" href="${esc(inviteMailtoHref(m, ctx.group))}">✉️ Convidar por email</a>
-          <p class="muted" style="margin:.35rem 0 .8rem;">Abre o teu email já preenchido com o link. A pessoa
-            entra com a conta Google deste email e fica logo ligada ao grupo. Se acabaste de mudar o email,
-            grava primeiro.</p>` : ""}
+          <a class="btn invite" id="m-invite" target="_blank" rel="noopener"
+            href="${esc(inviteComposeHref(m, ctx.group))}">✉️ Convidar por Gmail</a>
+          <p class="muted" style="margin:.35rem 0 .8rem;">Abre o Gmail já preenchido com o link (num separador
+            novo). A pessoa entra com a conta Google deste email e fica logo ligada ao grupo. Se acabaste de
+            mudar o email, grava primeiro.</p>` : ""}
         ${useWeights ? `<div class="field" style="max-width:120px;"><label>Peso</label>
           <input id="m-weight" type="number" step="0.1" min="0" value="${m.default_weight}" /></div>` : ""}
         <div class="form-actions">
