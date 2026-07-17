@@ -109,8 +109,8 @@ CAT_KEYWORDS = {
     "mobiliario":  ["mobiliario", "movel", "moveis", "sofa", "mesa", "cadeira", "cadeiras", "cama", "colchao", "ikea", "conforama", "estante", "armario"],
     "casa":        ["casa", "renda", "condominio", "agua", "luz", "eletricidade", "gas", "internet", "limpeza", "detergente", "seguro"],
     "saude":       ["farmacia", "medico", "medica", "consulta", "dentista", "hospital", "analises", "medicamentos", "oculos", "fisioterapia"],
-    "transportes": ["gasolina", "gasoleo", "combustivel", "portagem", "portagens", "estacionamento", "metro", "comboio", "autocarro", "uber", "bolt", "taxi", "oficina", "pneus", "inspecao"],
-    "viagens":     ["viagem", "viagens", "ferias", "hotel", "alojamento", "airbnb", "voo", "voos", "aviao", "booking", "praia"],
+    "transportes": ["gasolina", "gasoleo", "combustivel", "portagem", "portagens", "estacionamento", "metro", "comboio", "autocarro", "uber", "bolt", "taxi", "oficina", "pneus", "inspecao", "viagem", "viagens"],
+    "viagens":     ["ferias", "hotel", "alojamento", "airbnb", "voo", "voos", "aviao", "booking", "praia"],
     "animais":     ["veterinario", "racao", "gato", "cao", "animal", "animais"],
 }
 CAT_STOPWORDS = {"com", "para", "por", "dos", "das", "uma", "uns", "umas", "que", "nos", "nas", "aos", "the"}
