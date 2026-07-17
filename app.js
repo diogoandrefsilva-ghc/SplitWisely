@@ -19,6 +19,7 @@ const $topbarUser = document.getElementById("topbar-user");
 
 let sb = null;          // cliente supabase
 let session = null;     // sessão atual
+let profile = null;     // perfil splitwisely (is_admin / is_approved)
 let cache = { groups: null };
 
 // ---------------------------------------------------------------- helpers
@@ -129,8 +130,36 @@ function renderTopbar() {
   $topbarUser.innerHTML = `
     ${avatar ? `<img src="${esc(avatar)}" alt="" referrerpolicy="no-referrer" />` : ""}
     <span class="user-name">${esc(name)}</span>
+    ${profile?.is_admin ? `<button class="secondary small" id="btn-admin">Admin</button>` : ""}
     <button class="secondary small" id="btn-logout">Sair</button>`;
+  document.getElementById("btn-admin")?.addEventListener("click", () => {
+    location.hash = "#/admin";
+  });
   document.getElementById("btn-logout").onclick = async () => {
+    await sb.auth.signOut();
+    location.hash = "#/";
+  };
+}
+
+// Ecrã de espera para contas ainda não aprovadas pelo admin
+function renderWaiting() {
+  $app.innerHTML = `
+    <div class="card" style="max-width:460px;margin:2rem auto;text-align:center;">
+      <div style="font-size:2.2rem;">⏳</div>
+      <h1>Conta à espera de aprovação</h1>
+      <p class="muted">Já entraste com a tua conta Google, mas o administrador
+      ainda tem de aprovar o teu acesso. Avisa-o e volta cá depois 🙂</p>
+      <div style="display:flex;gap:.6rem;justify-content:center;margin-top:1rem;">
+        <button id="btn-recheck">Verificar novamente</button>
+        <button class="secondary" id="btn-waiting-logout">Sair</button>
+      </div>
+    </div>`;
+  document.getElementById("btn-recheck").onclick = async () => {
+    await initProfile();
+    if (canUse()) { toast("Conta aprovada 🎉"); route(); }
+    else toast("Ainda não foi aprovada");
+  };
+  document.getElementById("btn-waiting-logout").onclick = async () => {
     await sb.auth.signOut();
     location.hash = "#/";
   };
@@ -160,13 +189,26 @@ async function fetchGroupBundle(groupId) {
 }
 
 // ---------------------------------------------------------------- router
+function canUse() {
+  return !!(profile && (profile.is_approved || profile.is_admin));
+}
+
 async function route() {
   if (!session) { renderLogin(); return; }
   renderTopbar();
+  if (!profile) await initProfile();
+  if (!profile) {
+    $app.innerHTML = `<div class="card"><p>Não foi possível carregar o teu perfil.</p>
+      <button class="secondary" onclick="location.reload()">Tentar novamente</button></div>`;
+    return;
+  }
+  if (!canUse()) { renderWaiting(); return; }
   const hash = location.hash || "#/";
   const mGroup = hash.match(/^#\/g\/([0-9a-f-]+)(?:\/(\w+))?/i);
   try {
-    if (mGroup) {
+    if (hash.startsWith("#/admin") && profile.is_admin) {
+      await renderAdmin();
+    } else if (mGroup) {
       await renderGroup(mGroup[1], mGroup[2] || "despesas");
     } else {
       await renderGroups();
@@ -176,6 +218,60 @@ async function route() {
     $app.innerHTML = `<div class="card"><p>Ocorreu um erro: ${esc(err.message || err)}</p>
       <button class="secondary" onclick="location.hash='#/'">Voltar aos grupos</button></div>`;
   }
+}
+
+// ---------------------------------------------------------------- vista: admin
+async function renderAdmin() {
+  $app.innerHTML = `<div class="loading">A carregar utilizadores…</div>`;
+  const { data: users, error } = await sb.from("profiles")
+    .select("*").order("created_at");
+  if (error) throw error;
+
+  const pending = users.filter(u => !u.is_approved);
+  const row = (u) => `
+    <li>
+      <div style="flex:1;">
+        <div style="font-weight:600;">${esc(u.full_name || u.email || u.id)}
+          ${u.is_admin ? `<span class="badge linked">admin</span>` : ""}</div>
+        <div class="expense-meta">${esc(u.email || "")} · desde ${new Date(u.created_at).toLocaleDateString("pt-PT")}</div>
+      </div>
+      ${u.is_admin ? "" : u.is_approved
+        ? `<button class="danger small" data-revoke="${u.id}">Revogar acesso</button>`
+        : `<button class="small" data-approve="${u.id}">Aprovar</button>`}
+    </li>`;
+
+  $app.innerHTML = `
+    <a class="back-link" href="#/">← Todos os grupos</a>
+    <div class="header-row" style="margin-top:.4rem;">
+      <h1 style="margin:0;">Administração</h1>
+    </div>
+    <div class="card">
+      <h2>À espera de aprovação ${pending.length ? `<span class="badge">${pending.length}</span>` : ""}</h2>
+      ${pending.length === 0
+        ? `<p class="empty">Ninguém à espera 🎉</p>`
+        : `<ul class="list">${pending.map(row).join("")}</ul>`}
+    </div>
+    <div class="card">
+      <h2>Utilizadores com acesso</h2>
+      <ul class="list">${users.filter(u => u.is_approved).map(row).join("")}</ul>
+    </div>`;
+
+  const setApproved = async (id, approved) => {
+    const { error: e } = await sb.rpc("approve_user", { p_id: id, p_approved: approved });
+    if (e) return toast(e.message, true);
+    toast(approved ? "Utilizador aprovado ✅" : "Acesso revogado");
+    renderAdmin();
+  };
+  $app.querySelectorAll("[data-approve]").forEach(b => {
+    b.onclick = () => setApproved(b.dataset.approve, true);
+  });
+  $app.querySelectorAll("[data-revoke]").forEach(b => {
+    b.onclick = () => {
+      if (confirm("Revogar o acesso desta pessoa? Deixa de conseguir usar a app até voltares a aprovar.")) {
+        setApproved(b.dataset.revoke, false);
+      }
+    };
+  });
 }
 
 // ---------------------------------------------------------------- vista: grupos
@@ -747,11 +843,34 @@ function renderSettingsTab($c, ctx) {
 }
 
 // ---------------------------------------------------------------- arranque
+
+// Garante o perfil no schema splitwisely (RPC ensure_profile — não há
+// trigger em auth.users porque o projeto Supabase é partilhado por
+// várias apps) e liga convites por email se a conta estiver aprovada.
+async function initProfile() {
+  const { data, error } = await sb.rpc("ensure_profile");
+  if (error) {
+    console.error(error);
+    toast(error.message, true);
+    profile = null;
+    return;
+  }
+  profile = data;
+  if (canUse()) {
+    const { data: n } = await sb.rpc("claim_memberships");
+    if (n > 0) toast(`Foste ligado a ${n} grupo${n === 1 ? "" : "s"} onde te tinham convidado 🎉`);
+  }
+}
+
 async function main() {
   const cfg = loadConfig();
   if (!cfg) { renderSetup(); return; }
 
-  sb = window.supabase.createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY);
+  // A app vive no schema `splitwisely` (projeto Supabase partilhado
+  // com as outras apps). O schema tem de estar exposto na Data API.
+  sb = window.supabase.createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY, {
+    db: { schema: "splitwisely" },
+  });
 
   const { data } = await sb.auth.getSession();
   session = data.session;
@@ -760,20 +879,15 @@ async function main() {
     const wasLoggedOut = !session;
     session = s;
     if (event === "SIGNED_IN" && wasLoggedOut) {
-      // liga convites por email feitos antes do primeiro login
-      const { data: n } = await sb.rpc("claim_memberships");
-      if (n > 0) toast(`Foste ligado a ${n} grupo${n === 1 ? "" : "s"} onde te tinham convidado 🎉`);
+      await initProfile();
       route();
     } else if (event === "SIGNED_OUT") {
+      profile = null;
       route();
     }
   });
 
-  if (session) {
-    sb.rpc("claim_memberships").then(({ data: n }) => {
-      if (n > 0) { toast(`Foste ligado a ${n} grupo${n === 1 ? "" : "s"} 🎉`); route(); }
-    });
-  }
+  if (session) await initProfile();
 
   window.addEventListener("hashchange", route);
   route();
