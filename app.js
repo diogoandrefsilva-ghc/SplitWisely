@@ -82,28 +82,54 @@ function appBaseUrl() {
   return location.origin + location.pathname;
 }
 
-// Link de composição do Gmail para convidar um membro por email. Abre o
-// Gmail (janela nova) já com destinatário, assunto e corpo preenchidos —
-// em vez do cliente de email por defeito do sistema (mailto:). A pessoa
-// entra com a conta Google do mesmo email e fica logo ligada ao grupo (e
-// aprovada — ver schema.sql). Sendo um site estático sem servidor, o envio
-// é sempre com um clique: não dá para enviar sozinho sem backend.
-function inviteComposeHref(member, group) {
+// Destino do convite por email, escolhido conforme o dispositivo para abrir
+// mesmo a app do Gmail (e não só o site). A pessoa entra com a conta Google
+// do mesmo email e fica logo ligada ao grupo (e aprovada — ver schema.sql).
+// Sendo um site estático sem servidor, o envio é sempre com um clique: não
+// dá para enviar sozinho sem backend.
+//   • iOS      -> esquema googlegmail:// (abre a app do Gmail)
+//   • Android  -> mailto: (abre a app de email pré-definida — Gmail, se for)
+//   • Desktop  -> compose do Gmail no browser, em separador novo
+// Devolve { href, blank } (blank = abrir em separador novo).
+function inviteTarget(member, group) {
   const url = appBaseUrl();
+  const to = member.email;
   const subject = `Convite para o SplitWisely — ${group.name}`;
   const body =
 `Olá!
 
 Adicionei-te ao grupo «${group.name}» no SplitWisely para acertarmos as contas partilhadas.
 
-Entra aqui com a tua conta Google (usa este mesmo email: ${member.email}):
+Entra aqui com a tua conta Google (usa este mesmo email: ${to}):
 ${url}
 
 Assim que entrares, ficas logo ligado ao grupo. Até já!`;
-  return "https://mail.google.com/mail/?view=cm&fs=1"
-    + `&to=${encodeURIComponent(member.email)}`
-    + `&su=${encodeURIComponent(subject)}`
-    + `&body=${encodeURIComponent(body)}`;
+  const q = encodeURIComponent;
+  const ua = navigator.userAgent || "";
+  const isIOS = /iPad|iPhone|iPod/.test(ua)
+    || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1); // iPadOS
+  const isAndroid = /Android/.test(ua);
+  if (isIOS)
+    return { href: `googlegmail:///co?to=${q(to)}&subject=${q(subject)}&body=${q(body)}`, blank: false };
+  if (isAndroid)
+    return { href: `mailto:${q(to)}?subject=${q(subject)}&body=${q(body)}`, blank: false };
+  return {
+    href: `https://mail.google.com/mail/?view=cm&fs=1&to=${q(to)}&su=${q(subject)}&body=${q(body)}`,
+    blank: true,
+  };
+}
+
+// Bloco HTML do botão de convite — só quando o membro tem email e ainda não
+// tem conta ligada.
+function inviteBlockHtml(member, group) {
+  if (member.user_id || !member.email) return "";
+  const { href, blank } = inviteTarget(member, group);
+  const tgt = blank ? ` target="_blank" rel="noopener"` : "";
+  return `
+    <a class="btn invite" id="m-invite" href="${esc(href)}"${tgt}>✉️ Convidar por Gmail</a>
+    <p class="muted" style="margin:.35rem 0 .8rem;">Abre o Gmail já preenchido com o link. A pessoa
+      entra com a conta Google deste email e fica logo ligada ao grupo. Se acabaste de mudar o email,
+      grava primeiro.</p>`;
 }
 
 // Divide `totalCents` por pesos, sem perder cêntimos (maior resto)
@@ -1589,12 +1615,7 @@ function renderMembersSection($c, ctx) {
             placeholder="liga a pessoa à conta Google dela" ${m.user_id ? "disabled" : ""} /></div>
         ${m.user_id ? `<p class="muted" style="margin:-.3rem 0 .7rem;">Esta pessoa já entrou com a
           conta Google dela <span class="badge linked">conta ligada</span> — o email já não se altera.</p>` : ""}
-        ${!m.user_id && m.email ? `
-          <a class="btn invite" id="m-invite" target="_blank" rel="noopener"
-            href="${esc(inviteComposeHref(m, ctx.group))}">✉️ Convidar por Gmail</a>
-          <p class="muted" style="margin:.35rem 0 .8rem;">Abre o Gmail já preenchido com o link (num separador
-            novo). A pessoa entra com a conta Google deste email e fica logo ligada ao grupo. Se acabaste de
-            mudar o email, grava primeiro.</p>` : ""}
+        ${inviteBlockHtml(m, ctx.group)}
         ${useWeights ? `<div class="field" style="max-width:120px;"><label>Peso</label>
           <input id="m-weight" type="number" step="0.1" min="0" value="${m.default_weight}" /></div>` : ""}
         <div class="form-actions">
