@@ -4,7 +4,7 @@
    Pedidos a outras origens (API do Supabase) passam direto, sem cache. */
 "use strict";
 
-const CACHE = "splitwisely-v5";
+const CACHE = "splitwisely-v6";
 const SHELL = [
   "./",
   "./index.html",
@@ -36,8 +36,12 @@ self.addEventListener("fetch", (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== "GET" || url.origin !== location.origin) return;
 
+  // `cache: "no-store"` para o network-first não ser servido pela cache
+  // HTTP do browser (ex.: max-age do GitHub Pages) — sem isto ficávamos
+  // presos ao app.js antigo durante minutos mesmo com rede. Offline cai
+  // no .catch() e serve da cache do service worker à mesma.
   e.respondWith(
-    fetch(e.request)
+    fetch(e.request, { cache: "no-store" })
       .then((res) => {
         if (res.ok) {
           const copy = res.clone();
