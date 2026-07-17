@@ -51,6 +51,12 @@ function fmtDate(d) {
   return new Date(d + "T00:00:00").toLocaleDateString("pt-PT", { day: "numeric", month: "short", year: "numeric" });
 }
 
+// "Maria Costa Santos" -> "Maria S." (para linhas compactas)
+function shortName(name) {
+  const parts = String(name || "?").trim().split(/\s+/);
+  return parts.length > 1 ? `${parts[0]} ${parts[parts.length - 1][0]}.` : parts[0];
+}
+
 // Avatar redondo com iniciais, cor estável derivada do nome
 const AVATAR_COLORS = ["#0ea5e9", "#8b5cf6", "#f59e0b", "#10b981", "#ef4444",
   "#ec4899", "#14b8a6", "#f97316", "#6366f1", "#d946ef"];
@@ -251,10 +257,11 @@ async function renderAdmin() {
   const pending = users.filter(u => !u.is_approved);
   const row = (u) => `
     <li>
-      <div style="flex:1;">
-        <div style="font-weight:600;">${esc(u.full_name || u.email || u.id)}
-          ${u.is_admin ? `<span class="badge linked">admin</span>` : ""}</div>
-        <div class="expense-meta">${esc(u.email || "")} · desde ${new Date(u.created_at).toLocaleDateString("pt-PT")}</div>
+      ${avatarHtml(u.full_name || u.email || "?")}
+      <div class="item-main">
+        <span class="item-title">${esc(u.full_name || u.email || u.id)}
+          ${u.is_admin ? `<span class="badge linked">admin</span>` : ""}</span>
+        <span class="item-sub">${esc(u.email || "")} · desde ${new Date(u.created_at).toLocaleDateString("pt-PT")}</span>
       </div>
       ${u.is_admin ? "" : u.is_approved
         ? `<button class="danger small" data-revoke="${u.id}">Revogar acesso</button>`
@@ -332,19 +339,43 @@ async function renderGroups() {
   $app.innerHTML = `<div class="loading">A carregar grupos…</div>`;
   const [groups, balances] = await Promise.all([fetchGroups(), fetchMyGroupBalances()]);
 
-  const balanceChip = (g) => {
+  // saldo à direita de cada grupo: valor em cima, verbo por baixo (compacto)
+  const balanceHtml = (g) => {
     const b = balances[g.id];
     if (b === undefined) return "";
-    return `<span class="chip group-chip ${b > 0 ? "positive" : b < 0 ? "negative" : "zero"}">
-      ${b === 0 ? "em dia" : (b > 0 ? "recebe " : "deve ") + fmtMoney(Math.abs(b), g.currency)}</span>`;
+    if (b === 0) return `<span class="item-amount zero">em dia</span>`;
+    return `<span class="item-amount ${b > 0 ? "positive" : "negative"}">${fmtMoney(Math.abs(b), g.currency)}</span>
+      <span class="bal-label">${b > 0 ? "recebes" : "deves"}</span>`;
   };
+
+  // resumo global (soma apenas grupos na mesma moeda, a do 1.º com saldo)
+  const mainCur = groups.find(g => balances[g.id])?.currency || "EUR";
+  const sameCur = groups.filter(g => g.currency === mainCur && balances[g.id] !== undefined);
+  const totPos = sameCur.reduce((a, g) => a + Math.max(balances[g.id], 0), 0);
+  const totNeg = sameCur.reduce((a, g) => a - Math.min(balances[g.id], 0), 0);
+  const statStrip = groups.length === 0 ? "" : `
+    <div class="stat-strip">
+      <div class="stat">
+        <span class="stat-label">A receber</span>
+        <span class="stat-value ${totPos > 0 ? "positive" : "zero"}">${fmtMoney(totPos, mainCur)}</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">A dever</span>
+        <span class="stat-value ${totNeg > 0 ? "negative" : "zero"}">${fmtMoney(totNeg, mainCur)}</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">Grupos</span>
+        <span class="stat-value">${groups.length}</span>
+      </div>
+    </div>`;
 
   $app.innerHTML = `
     <div class="header-row">
-      <h1 style="margin:0;">Os meus grupos</h1>
+      <h1>Os meus grupos</h1>
       <button id="btn-new-group">+ Novo grupo</button>
     </div>
     <div id="new-group-slot"></div>
+    ${statStrip}
     <div class="card">
       ${groups.length === 0
         ? `<p class="empty">Ainda não tens grupos. Cria o primeiro no botão «+ Novo grupo» 👆</p>`
@@ -352,14 +383,13 @@ async function renderGroups() {
             <li class="group-row">
               <a class="item-link" href="#/g/${g.id}">
                 ${avatarHtml(g.name)}
-                <span class="group-info">
-                  <span class="group-name">${esc(g.name)}</span>
-                  ${g.description ? `<span class="group-desc">${esc(g.description)}</span>` : ""}
-                  ${balanceChip(g)}
+                <span class="item-main">
+                  <span class="item-title">${esc(g.name)}</span>
+                  ${g.description ? `<span class="item-sub">${esc(g.description)}</span>` : ""}
                 </span>
+                <span class="item-end">${balanceHtml(g)}</span>
+                <span class="chevron">›</span>
               </a>
-              <span class="badge">${esc(g.currency)}</span>
-              <span class="chevron">›</span>
             </li>`).join("")}</ul>`}
     </div>`;
 
@@ -444,13 +474,17 @@ async function renderGroup(groupId, tab) {
   ];
 
   $app.innerHTML = `
-    <a class="back-link" href="#/">← Todos os grupos</a>
-    <div class="header-row" style="margin-top:.4rem;">
-      <h1 style="margin:0;">${esc(group.name)}</h1>
-      <span class="badge">${esc(group.currency)}</span>
+    <div class="page-head">
+      <a class="back-link" href="#/">← Todos os grupos</a>
+      <div class="header-row">
+        <div class="title-line">
+          <h1>${esc(group.name)}</h1>
+          <span class="badge">${esc(group.currency)}</span>
+        </div>
+      </div>
+      ${group.description ? `<p class="page-desc">${esc(group.description)}</p>` : ""}
     </div>
-    ${group.description ? `<p class="muted" style="margin-top:0;">${esc(group.description)}</p>` : ""}
-    <div class="tabs">
+    <div class="tabs page-tabs">
       ${tabs.map(([id, label]) =>
         `<button data-tab="${id}" class="${id === tab ? "active" : ""}">${label}</button>`).join("")}
     </div>
@@ -470,9 +504,10 @@ async function renderGroup(groupId, tab) {
 
 // ------------------------------------------------ tab: despesas
 function renderExpensesTab($c, ctx) {
-  const { group, members, expenses } = ctx;
+  const { group, members, expenses, payments } = ctx;
   const memberName = id => members.find(m => m.id === id)?.name || "?";
   const myMember = members.find(m => m.user_id === session.user.id);
+  const cur = group.currency;
 
   // efeito líquido da despesa no utilizador: o que pagou menos a sua parte
   const myImpact = (x) => {
@@ -484,13 +519,72 @@ function renderExpensesTab($c, ctx) {
     const net = paid - share;
     if (net === 0 && paid === 0) return "";
     return `<span class="my-impact ${net >= 0 ? "positive" : "negative"}">
-      para ti: ${net > 0 ? "+" : ""}${fmtMoney(net, group.currency)}</span>`;
+      ${net > 0 ? "+" : ""}${fmtMoney(net, cur)}</span>`;
   };
 
+  // resumo: total do grupo + o meu saldo (despesas e pagamentos)
+  const total = expenses.reduce((a, x) => a + toCents(x.amount), 0);
+  let myBalance = 0;
+  if (myMember) {
+    for (const x of expenses) {
+      for (const p of x.expense_payers) if (p.member_id === myMember.id) myBalance += toCents(p.amount);
+      for (const s of x.expense_shares) if (s.member_id === myMember.id) myBalance -= toCents(s.amount);
+    }
+    for (const p of payments) {
+      if (p.from_member === myMember.id) myBalance += toCents(p.amount);
+      if (p.to_member === myMember.id) myBalance -= toCents(p.amount);
+    }
+  }
+  const statStrip = members.length === 0 ? "" : `
+    <div class="stat-strip">
+      <div class="stat">
+        <span class="stat-label">Total do grupo</span>
+        <span class="stat-value">${fmtMoney(total, cur)}</span>
+      </div>
+      ${myMember ? `
+      <div class="stat">
+        <span class="stat-label">O teu saldo</span>
+        <span class="stat-value ${myBalance > 0 ? "positive" : myBalance < 0 ? "negative" : "zero"}">
+          ${myBalance === 0 ? "em dia" : (myBalance > 0 ? "+" : "−") + fmtMoney(Math.abs(myBalance), cur)}</span>
+      </div>` : ""}
+    </div>`;
+
+  // linhas agrupadas por mês; a data fica num bloco compacto à esquerda
+  const monthLabel = (d) =>
+    new Date(d + "T00:00:00").toLocaleDateString("pt-PT", { month: "long", year: "numeric" });
+  const dateBlock = (d) => {
+    const dt = new Date(d + "T00:00:00");
+    return `<span class="date-block"><span class="d">${dt.getDate()}</span>
+      <span class="m">${dt.toLocaleDateString("pt-PT", { month: "short" }).replace(".", "")}</span></span>`;
+  };
+
+  let lastMonth = null;
+  const rows = expenses.map(x => {
+    const payers = x.expense_payers.map(p => memberName(p.member_id)).join(", ");
+    const nShares = x.expense_shares.length;
+    const m = monthLabel(x.expense_date);
+    const head = m !== lastMonth ? `<li class="month-head">${esc(m)}</li>` : "";
+    lastMonth = m;
+    return `${head}
+      <li class="clickable" data-open="${x.id}">
+        ${dateBlock(x.expense_date)}
+        <div class="item-main">
+          <span class="item-title">${esc(x.description)}</span>
+          <span class="item-sub">pago por ${esc(payers)} · ${nShares} pessoa${nShares === 1 ? "" : "s"}</span>
+        </div>
+        <div class="item-end">
+          <span class="amount">${fmtMoney(toCents(x.amount), cur)}</span>
+          ${myImpact(x)}
+        </div>
+        <span class="chevron">›</span>
+      </li>`;
+  }).join("");
+
   $c.innerHTML = `
+    ${statStrip}
     <div class="card">
       <div class="header-row" id="expense-list-head">
-        <h2 style="margin:0;">Despesas</h2>
+        <h2 style="margin:0;">Despesas ${expenses.length ? `<span class="muted">· ${expenses.length}</span>` : ""}</h2>
         <button id="btn-add-expense" ${members.length === 0 ? "disabled" : ""}>+ Nova despesa</button>
       </div>
       ${members.length === 0 ? `<p class="empty">Adiciona primeiro membros na aba «Membros».</p>` : ""}
@@ -498,22 +592,7 @@ function renderExpensesTab($c, ctx) {
       <div id="expense-list">
       ${expenses.length === 0 && members.length > 0
         ? `<p class="empty">Sem despesas ainda.</p>`
-        : `<ul class="list">${expenses.map(x => {
-            const payers = x.expense_payers.map(p => memberName(p.member_id)).join(", ");
-            const nShares = x.expense_shares.length;
-            return `<li class="clickable" data-open="${x.id}">
-              <span class="expense-icon">🧾</span>
-              <div style="flex:1;min-width:0;">
-                <div style="font-weight:600;">${esc(x.description)}</div>
-                <div class="expense-meta">${fmtDate(x.expense_date)} · pago por ${esc(payers)} · dividido por ${nShares} pessoa${nShares === 1 ? "" : "s"}</div>
-              </div>
-              <div class="expense-right">
-                <span class="amount">${fmtMoney(toCents(x.amount), group.currency)}</span>
-                ${myImpact(x)}
-              </div>
-              <span class="chevron">›</span>
-            </li>`;
-          }).join("")}</ul>`}
+        : `<ul class="list">${rows}</ul>`}
       </div>
     </div>`;
 
@@ -837,36 +916,32 @@ function renderBalancesTab($c, ctx) {
   const subline = (mId, b) => {
     const list = b < 0 ? owesTo[mId] : b > 0 ? getsFrom[mId] : null;
     if (!list?.length) return "";
-    const prep = b < 0 ? "a" : "de";
+    const verb = b < 0 ? "deve a" : "recebe de";
     let names;
     if (list.length === 1) names = esc(list[0].name);
     else if (list.length === 2)
       names = list.map(x => `${esc(x.name)} (${fmtMoney(x.cents, cur)})`).join(", ");
     else names = `${esc(list[0].name)} e mais ${list.length - 1}`;
-    return `<span class="balance-sub">${prep} ${names}</span>`;
+    return `<span class="item-sub">${verb} ${names}</span>`;
   };
 
-  const total = expenses.reduce((a, x) => a + toCents(x.amount), 0);
   const totalPaid = payments.reduce((a, p) => a + toCents(p.amount), 0);
 
   $c.innerHTML = `
     <div class="card">
-      <div class="card-title-row">
-        <h2>Saldos</h2>
-        <span class="muted">total gasto: ${fmtMoney(total, cur)}</span>
-      </div>
+      <h2>Saldos</h2>
       ${members.length === 0 ? `<p class="empty">Sem membros.</p>` : `
       <ul class="list balances">
         ${members.map(m => {
           const b = balance[m.id];
           return `<li>
             ${avatarHtml(m.name)}
-            <span class="balance-name">${esc(m.name)}</span>
-            <span class="balance-right">
-              <span class="chip ${b > 0 ? "positive" : b < 0 ? "negative" : "zero"}">
-                ${b === 0 ? "✓ em dia" : (b > 0 ? "recebe " : "deve ") + fmtMoney(Math.abs(b), cur)}
-              </span>
+            <div class="item-main">
+              <span class="item-title">${esc(m.name)}</span>
               ${subline(m.id, b)}
+            </div>
+            <span class="chip ${b > 0 ? "positive" : b < 0 ? "negative" : "zero"}">
+              ${b === 0 ? "✓ em dia" : (b > 0 ? "recebe " : "deve ") + fmtMoney(Math.abs(b), cur)}
             </span>
           </li>`;
         }).join("")}
@@ -874,10 +949,7 @@ function renderBalancesTab($c, ctx) {
     </div>
 
     <div class="card">
-      <div class="card-title-row">
-        <h2>Como acertar contas</h2>
-        <span class="muted">o mínimo de transferências</span>
-      </div>
+      <h2>Como acertar contas</h2>
       ${settlements.length === 0
         ? `<p class="empty">Está tudo em dia 🎉</p>`
         : settlements.map((s, i) => `
@@ -885,11 +957,9 @@ function renderBalancesTab($c, ctx) {
             <span class="settle-avatars">
               ${avatarHtml(s.from.name)}${avatarHtml(s.to.name)}
             </span>
-            <span class="settle-text">
-              <strong>${esc(s.from.name)}</strong>
-              <span class="muted">paga a</span>
-              <strong>${esc(s.to.name)}</strong>
-            </span>
+            <div class="item-main">
+              <span class="item-title">${esc(shortName(s.from.name))} <span class="settle-arrow">→</span> ${esc(shortName(s.to.name))}</span>
+            </div>
             <span class="settle-right">
               <span class="amount">${fmtMoney(s.cents, cur)}</span>
               ${paymentsReady ? `<button class="small" data-settle="${i}">Pagar</button>` : ""}
@@ -900,7 +970,7 @@ function renderBalancesTab($c, ctx) {
     <div class="card">
       <div class="card-title-row">
         <h2>Pagamentos</h2>
-        ${paymentsReady ? `<button class="secondary small" id="btn-add-payment">+ Registar pagamento</button>` : ""}
+        ${paymentsReady ? `<button class="secondary small" id="btn-add-payment">+ Registar</button>` : ""}
       </div>
       ${!paymentsReady ? `<p class="muted">Para ativar o registo de pagamentos, corre a versão mais
         recente de <code>supabase/schema.sql</code> no SQL Editor do Supabase.</p>` : `
@@ -910,16 +980,14 @@ function renderBalancesTab($c, ctx) {
         : `<ul class="list">
             ${payments.map(p => `
               <li>
-                <div style="flex:1;">
-                  <div class="payment-line">
-                    <strong>${esc(memberName(p.from_member))}</strong>
-                    <span class="settle-arrow">pagou a</span>
-                    <strong>${esc(memberName(p.to_member))}</strong>
-                  </div>
-                  <div class="expense-meta">${fmtDate(p.payment_date)}${p.note ? ` · ${esc(p.note)}` : ""}</div>
+                <div class="item-main">
+                  <span class="item-title payment-line">
+                    ${esc(memberName(p.from_member))} <span class="settle-arrow">→</span> ${esc(memberName(p.to_member))}
+                  </span>
+                  <span class="item-sub">${fmtDate(p.payment_date)}${p.note ? ` · ${esc(p.note)}` : ""}</span>
                 </div>
                 <span class="amount">${fmtMoney(toCents(p.amount), cur)}</span>
-                <button class="danger small" data-pdel="${p.id}">✕</button>
+                <button class="ghost small" data-pdel="${p.id}" title="Apagar pagamento">✕</button>
               </li>`).join("")}
           </ul>
           ${totalPaid > 0 ? `<p class="muted" style="text-align:right;margin:.5rem 0 0;">total acertado: ${fmtMoney(totalPaid, cur)}</p>` : ""}`}`}
@@ -1004,32 +1072,41 @@ function renderMembersTab($c, ctx) {
 
   $c.innerHTML = `
     <div class="card">
-      <h2>Membros</h2>
-      <p class="muted">O <strong>peso</strong> define a proporção default na divisão das despesas
-      (0 = não entra por defeito). O <strong>pagador default</strong> fica pré-selecionado nas novas despesas.
-      Se indicares um email, a pessoa fica ligada à conta dela quando entrar com Google.</p>
+      <h2>Membros ${members.length ? `<span class="muted">· ${members.length}</span>` : ""}</h2>
+      <details class="hint">
+        <summary>O que são o peso e o pagador default?</summary>
+        <p>O <strong>peso</strong> define a proporção default na divisão das despesas
+        (0 = não entra por defeito). O <strong>pagador default</strong> fica pré-selecionado
+        nas novas despesas. Se indicares um email, a pessoa fica ligada à conta dela
+        quando entrar com Google.</p>
+      </details>
       ${members.length === 0 ? `<p class="empty">Ainda sem membros.</p>` : `
-      <table class="split-table">
-        <tr><th>Nome</th><th>Peso</th><th>Pagador default</th><th></th></tr>
+      <ul class="list">
         ${members.map(m => `
-          <tr>
-            <td>
-              <span class="member-cell">${avatarHtml(m.name, "small")} ${esc(m.name)}</span>
-              ${m.user_id ? `<span class="badge linked">conta ligada</span>` : m.email ? `<span class="badge">convite: ${esc(m.email)}</span>` : ""}
-            </td>
-            <td><input type="number" step="0.1" min="0" data-mw="${m.id}" value="${m.default_weight}" style="max-width:90px;" /></td>
-            <td style="text-align:center;"><input type="checkbox" data-mp="${m.id}" ${m.is_default_payer ? "checked" : ""} /></td>
-            <td style="text-align:right;"><button class="danger small" data-mdel="${m.id}">✕</button></td>
-          </tr>`).join("")}
-      </table>`}
+          <li>
+            ${avatarHtml(m.name)}
+            <div class="item-main">
+              <span class="item-title">${esc(m.name)}</span>
+              ${m.user_id ? `<span class="item-sub"><span class="badge linked">conta ligada</span></span>`
+                : m.email ? `<span class="item-sub">convite: ${esc(m.email)}</span>` : ""}
+            </div>
+            <div class="member-controls">
+              <label class="ctl"><span>Peso</span>
+                <input type="number" step="0.1" min="0" data-mw="${m.id}" value="${m.default_weight}" /></label>
+              <label class="ctl"><span>Pagador</span>
+                <input type="checkbox" data-mp="${m.id}" ${m.is_default_payer ? "checked" : ""} /></label>
+              <button class="ghost small" data-mdel="${m.id}" title="Remover pessoa">✕</button>
+            </div>
+          </li>`).join("")}
+      </ul>`}
     </div>
     <div class="card">
       <h2>Adicionar pessoa</h2>
       <form id="new-member">
         <div class="row">
-          <div class="field"><label>Nome</label><input name="name" required placeholder="Ex.: Maria" /></div>
-          <div class="field"><label>Email (opcional, para ligar à conta)</label><input name="email" type="email" placeholder="maria@gmail.com" /></div>
-          <div class="field" style="max-width:110px;"><label>Peso</label><input name="weight" type="number" step="0.1" min="0" value="1" /></div>
+          <div class="field" style="flex:2;"><label>Nome</label><input name="name" required placeholder="Ex.: Maria" /></div>
+          <div class="field" style="flex:2;"><label>Email (opcional)</label><input name="email" type="email" placeholder="maria@gmail.com" /></div>
+          <div class="field" style="max-width:90px;"><label>Peso</label><input name="weight" type="number" step="0.1" min="0" value="1" /></div>
         </div>
         <button type="submit">Adicionar</button>
       </form>
