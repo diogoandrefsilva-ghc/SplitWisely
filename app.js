@@ -80,6 +80,13 @@ function fmtMoney(cents, currency = "EUR") {
     .format((cents || 0) / 100);
 }
 
+// dinheiro arredondado à unidade (sem cêntimos) — para chips/totais compactos
+function fmtMoney0(cents, currency = "EUR") {
+  return new Intl.NumberFormat("pt-PT", {
+    style: "currency", currency, minimumFractionDigits: 0, maximumFractionDigits: 0,
+  }).format(Math.round((cents || 0) / 100));
+}
+
 function toCents(v) {
   const n = parseFloat(String(v).replace(",", "."));
   return Number.isFinite(n) ? Math.round(n * 100) : 0;
@@ -1030,7 +1037,8 @@ function renderExpensesTab($c, ctx) {
       const catChip = ([id, cents]) => {
         const c = id === "none" ? { icon: "🏷️", label: "Sem categoria" } : catOf(id);
         return `<button type="button" class="cat-chip ${filter.cat === id ? "active" : ""}" data-catfilter="${id}">
-          ${c.icon}<span>${esc(c.label)}</span><span class="cat-total">${fmtMoney(cents, cur)}</span></button>`;
+          <span class="cc-top">${c.icon}<span>${esc(c.label)}</span></span>
+          <span class="cat-total">${fmtMoney0(cents, cur)}</span></button>`;
       };
       $catStrip.innerHTML = [...catTotals.entries()].sort((a, b) => b[1] - a[1]).map(catChip).join("");
       $catStrip.querySelectorAll("[data-catfilter]").forEach(b => {

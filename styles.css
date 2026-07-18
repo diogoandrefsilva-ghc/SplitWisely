@@ -1098,22 +1098,29 @@ table.split-table input[type="checkbox"] { width: 1.1rem; }
 }
 .cat-chip.active .cat-total { color: var(--primary); }
 
-/* chips do FILTRO de despesas (na .cat-strip): o total vai para baixo do
-   nome, mais pequeno, para o chip ficar estreito e não obrigar a tanto
-   scroll horizontal. O picker do formulário (.cat-row) fica como está. */
+/* chips do FILTRO de despesas (na .cat-strip): duas linhas — nome em cima,
+   total (arredondado à unidade) por baixo. O chip encolhe ao conteúdo
+   (largura = a maior das duas linhas), sem esticar, para caber mais por
+   ecrã e reduzir o scroll horizontal. O picker do formulário (.cat-row)
+   fica como está (uma linha, sem total). */
 .cat-strip .cat-chip {
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 0 .3rem;
-  padding: .24rem .6rem;
+  flex-direction: column;
+  align-items: center;
+  gap: .3rem;
+  padding: .4rem .85rem;
   border-radius: 12px;
-  line-height: 1.1;
+  line-height: 1.05;
+}
+.cat-strip .cat-chip .cc-top {
+  display: inline-flex;
+  align-items: center;
+  gap: .45rem;
+  white-space: nowrap;
 }
 .cat-strip .cat-chip .cat-total {
-  flex-basis: 100%;
-  text-align: center;
-  font-size: .66rem;
-  font-weight: 650;
+  font-size: .72rem;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 /* «sugerida automaticamente» ao lado do label Categoria */
