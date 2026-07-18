@@ -1179,12 +1179,36 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
             <span>Muda apenas a despesa de ${esc(fmtDate(existing.expense_date))} — a série e as próximas ficam como estão.</span>
           </div>
         </div>`;
-    } else {
+    } else if (!existing) {
+      // criar de raiz: escolher o tipo à cabeça faz sentido
       typeHeader = `
         <div class="tabs type-toggle" style="margin-bottom:.7rem;">
           <button type="button" data-type="occ" class="${state.recurring ? "" : "active"}">Ocasional</button>
           <button type="button" data-type="rec" class="${state.recurring ? "active" : ""}">Recorrente</button>
         </div>`;
+    } else if (state.recurring) {
+      // conversão ligada: banner claro do que vai acontecer + cancelar
+      typeHeader = `
+        <div class="rec-banner">
+          <span class="rec-ico">🔁</span>
+          <div class="rec-banner-text">
+            <strong>A tornar recorrente</strong>
+            <span>Passa a repetir-se todos os meses — esta despesa fica como a primeira ocorrência da série.</span>
+          </div>
+          <button type="button" class="secondary small" id="x-cancel-convert">Cancelar</button>
+        </div>`;
+    } else {
+      // despesa ocasional existente: oferta de conversão como ação explícita
+      // (o antigo seletor Ocasional/Recorrente parecia um filtro e confundia)
+      typeHeader = `
+        <button type="button" class="rec-choice-btn" id="x-convert" style="margin-bottom:.8rem;">
+          <span class="rec-ico">🔁</span>
+          <span class="rec-choice-text">
+            <strong>Tornar recorrente</strong>
+            <span>Repetir esta despesa automaticamente todos os meses.</span>
+          </span>
+          <span class="chevron">›</span>
+        </button>`;
     }
     // recorrente: dia do mês + terminar em (>= hoje) + ativa;  ocasional: data
     const scheduleFields = state.recurring ? `
@@ -1203,7 +1227,7 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
         </label>
       </div>
       <p class="check-note" style="margin-top:-.3rem;">Repete-se todo o mês neste dia (ajustado ao último dia nos meses mais curtos).
-        É lançada automaticamente quando alguém abre a app.${converting ? " Esta despesa passa a ser a primeira ocorrência." : ""}</p>` : `
+        É lançada automaticamente quando alguém abre a app.</p>` : `
       <div class="row">
         ${amountField}
         <div class="field">
@@ -1311,7 +1335,7 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
       <div class="form-head">
         <button class="back-pill" id="x-back"><span class="arr">←</span> ${esc(opts.backLabel || "Despesas")}</button>
         <h2 style="margin:0;">${!existing ? "Nova despesa"
-          : (state.recurring || isOccurrence) ? "Despesa recorrente"
+          : (isRecurringRecord || isOccurrence) ? "Despesa recorrente"
           : "Detalhe da despesa"}</h2>
       </div>
       <div class="tabs form-tabs">
@@ -1342,6 +1366,9 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
         draw();
       };
     });
+    // conversão de despesa ocasional existente em recorrente (liga/cancela)
+    slot.querySelector("#x-convert")?.addEventListener("click", () => { state.recurring = true; draw(); });
+    slot.querySelector("#x-cancel-convert")?.addEventListener("click", () => { state.recurring = false; draw(); });
     const $desc = slot.querySelector("#x-desc");
     if ($desc) $desc.oninput = () => {
       state.desc = $desc.value;
