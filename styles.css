@@ -794,46 +794,36 @@ li.balance-detail {
    .date-range) — sem isto o expandir do saldo não fazia nada */
 li.balance-detail.hidden { display: none; }
 
-/* ================================================================ secções colapsáveis (Saldos) */
-.collapse-head {
+/* ================================================================ colapsar «dos outros» (Saldos) */
+/* botão que revela a parte alheia de cada cartão de saldos (a do próprio
+   fica sempre visível por cima) */
+.collapse-toggle {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: .6rem;
-  cursor: pointer;
-  user-select: none;
-  -webkit-user-select: none;
+  justify-content: center;
+  gap: .4rem;
+  width: 100%;
+  margin-top: .7rem;
+  background: var(--card-inner);
+  color: var(--muted);
+  border: 1px solid var(--border-soft);
+  box-shadow: none;
+  font-weight: 600;
+  font-size: .82rem;
 }
-.collapse-head h2 { margin: 0; }
+.collapse-toggle:hover { background: var(--seg-bg); filter: none; color: var(--text); }
+.collapse-toggle .muted { color: inherit; opacity: .7; }
 .collapse-arrow {
   color: var(--muted);
-  font-size: .8rem;
+  font-size: .72rem;
   line-height: 1;
   transition: transform .15s;
 }
+.collapse-toggle:hover .collapse-arrow { color: inherit; }
 .collapse-arrow.open { transform: rotate(180deg); }
+.collapse-toggle.open .collapse-arrow { transform: rotate(180deg); }
 .collapse-body { margin-top: .6rem; }
 .collapse-body.hidden { display: none; }
-
-/* subtítulo dentro de um cartão (ex.: «Os teus pagamentos» na posição) */
-.section-sub {
-  margin: .8rem 0 .15rem;
-  font-size: .68rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: .06em;
-  color: var(--muted);
-}
-/* ação da secção (📅 Período, + Registar) encostada à direita, subida
-   para a linha do título (antes da seta). A faixa em si não apanha
-   cliques — só o botão — para o toque no título continuar a colapsar. */
-.collapse-actions {
-  display: flex;
-  justify-content: flex-end;
-  margin: -2.2rem 1.6rem .5rem 0;
-  pointer-events: none;
-}
-.collapse-actions button { pointer-events: auto; }
 .detail-list {
   list-style: none;
   margin: 0;
@@ -1107,6 +1097,24 @@ table.split-table input[type="checkbox"] { width: 1.1rem; }
   color: var(--muted);
 }
 .cat-chip.active .cat-total { color: var(--primary); }
+
+/* chips do FILTRO de despesas (na .cat-strip): o total vai para baixo do
+   nome, mais pequeno, para o chip ficar estreito e não obrigar a tanto
+   scroll horizontal. O picker do formulário (.cat-row) fica como está. */
+.cat-strip .cat-chip {
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0 .3rem;
+  padding: .24rem .6rem;
+  border-radius: 12px;
+  line-height: 1.1;
+}
+.cat-strip .cat-chip .cat-total {
+  flex-basis: 100%;
+  text-align: center;
+  font-size: .66rem;
+  font-weight: 650;
+}
 
 /* «sugerida automaticamente» ao lado do label Categoria */
 .cat-hint { font-weight: 500; text-transform: none; color: var(--primary); }

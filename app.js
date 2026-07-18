@@ -1843,26 +1843,22 @@ function renderBalancesTab($c, ctx) {
   // Os saldos e os acertos ficam sempre sobre tudo — dívida é dívida.
   const period = { from: "", to: "" };
 
-  // ---- o que é do próprio utilizador fica sempre visível no topo:
-  // total do grupo + a sua quota (faixa), o seu saldo, os seus acertos e
-  // os seus pagamentos. Os colapsáveis ficam com o resto (alheio).
-  const totalAll = expenses.reduce((a, x) => a + toCents(x.amount), 0);
-  const globalExact = new Map(members.map(m => [m.id, 0]));
-  for (const x of expenses) {
-    for (const [id, v] of exactShareCents(x)) if (globalExact.has(id)) globalExact.set(id, globalExact.get(id) + v);
-  }
-  const globalShare = roundPreservingSum(globalExact);
-
+  // Em cada cartão, o que é do próprio utilizador fica sempre visível; só o
+  // que é dos outros (saldos, acertos, pagamentos, quotas) fica atrás de um
+  // «Ver … dos outros (N) ▾». Um criador que não é membro do grupo não tem
+  // "próprio": vê tudo sempre visível, sem botão de colapsar.
   const isMineS = (s) => !!myMember && (s.from.id === myMember.id || s.to.id === myMember.id);
   const isMineP = (p) => !!myMember && (p.from_member === myMember.id || p.to_member === myMember.id);
-  const mySettles = settlements.map((s, i) => [s, i]).filter(([s]) => isMineS(s));
-  const otherSettles = settlements.map((s, i) => [s, i]).filter(([s]) => !isMineS(s));
-  const myPayments = payments.filter(isMineP);
-  const otherPayments = payments.filter(p => !isMineP(p));
-  const othersOnly = myMember ? members.filter(m => m.id !== myMember.id) : members;
+  const mySettles = settlements.map((s, i) => [s, i]).filter(([s]) => !myMember || isMineS(s));
+  const otherSettles = myMember ? settlements.map((s, i) => [s, i]).filter(([s]) => !isMineS(s)) : [];
+  const myPayments = payments.filter(p => !myMember || isMineP(p));
+  const otherPayments = myMember ? payments.filter(p => !isMineP(p)) : [];
+  const mineMembers = myMember ? [myMember] : members;
+  const otherMembers = myMember ? members.filter(m => m.id !== myMember.id) : [];
+  // quotas por pessoa: sem "próprio" mostra toda a gente (senão só os outros)
+  const quotaMembers = myMember ? otherMembers : members;
 
-  // linha de acerto (usada em «A tua posição» e no colapsável dos outros);
-  // o índice aponta para settlements, para o «Pagar» pré-preencher
+  // linha de acerto (o índice aponta para settlements, para o «Pagar» pré-preencher)
   const settleLine = ([s, i]) => `
     <div class="settle-line">
       <span class="settle-avatars">
@@ -1889,118 +1885,106 @@ function renderBalancesTab($c, ctx) {
       <button class="ghost small" data-pdel="${p.id}" title="Apagar pagamento">✕</button>
     </li>`;
 
-  const topStats = `
-    <div class="stat-strip">
-      <div class="stat">
-        <span class="stat-label">Total do grupo</span>
-        <span class="stat-value">${fmtMoney(totalAll, cur)}</span>
-      </div>
-      ${myMember ? `
-      <div class="stat">
-        <span class="stat-label">A tua quota</span>
-        <span class="stat-value">${fmtMoney(globalShare.get(myMember.id) || 0, cur)}</span>
-      </div>` : ""}
+  // linha de saldo de um membro (com detalhe expansível se deve/recebe de vários)
+  const balanceLi = (m) => {
+    const b = balance[m.id];
+    const list = b < 0 ? owesTo[m.id] : b > 0 ? getsFrom[m.id] : null;
+    const expandable = (list?.length || 0) > 1;
+    return `<li class="${expandable ? "clickable" : ""}" ${expandable ? `data-bal="${m.id}"` : ""}>
+        ${avatarHtml(m.name)}
+        <div class="item-main">
+          <span class="item-title">${esc(m.name)}</span>
+          ${subline(m.id, b)}
+        </div>
+        <span class="chip ${b > 0 ? "positive" : b < 0 ? "negative" : "zero"}">
+          ${b === 0 ? "✓ em dia" : (b > 0 ? "recebe " : "deve ") + fmtMoney(Math.abs(b), cur)}
+        </span>
+      </li>
+      ${expandable ? `<li class="balance-detail hidden" data-bdetail="${m.id}">
+        <ul class="detail-list">
+          ${list.map(x => `<li>
+            <span>${b < 0 ? "a" : "de"} ${esc(x.name)}</span>
+            <span class="amount">${fmtMoney(x.cents, cur)}</span>
+          </li>`).join("")}
+        </ul>
+      </li>` : ""}`;
+  };
+
+  // cartão com o do próprio sempre visível + o dos outros atrás do colapsar
+  const card = (title, id, mine, others, othersCount, othersLabel, action = "") => `
+    <div class="card">
+      <div class="card-title-row"><h2>${title}</h2>${action}</div>
+      ${mine}
+      ${othersCount > 0 ? `
+        <button type="button" class="collapse-toggle" data-collapse="${id}">
+          <span>${othersLabel} <span class="muted">(${othersCount})</span></span>
+          <span class="collapse-arrow">▾</span>
+        </button>
+        <div class="collapse-body hidden" data-body="${id}">${others}</div>` : ""}
     </div>`;
 
-  const myBal = myMember ? balance[myMember.id] : null;
-  const myCard = !myMember ? "" : `
+  // ---- Resumo dos gastos: total + a tua quota + gráfico sempre visíveis;
+  // a quota por pessoa (dos outros) fica no colapsável ----
+  const resumoCard = `
     <div class="card">
       <div class="card-title-row">
-        <h2>A tua posição</h2>
-        <span class="chip ${myBal > 0 ? "positive" : myBal < 0 ? "negative" : "zero"}">
-          ${myBal === 0 ? "✓ em dia" : (myBal > 0 ? "recebes " : "deves ") + fmtMoney(Math.abs(myBal), cur)}
-        </span>
+        <h2>Resumo dos gastos</h2>
+        <button type="button" class="secondary small date-toggle-txt" id="bp-toggle">📅 Período</button>
       </div>
-      ${mySettles.length === 0
-        ? `<p class="empty">Não tens contas por acertar 🎉</p>`
-        : mySettles.map(settleLine).join("")}
-      ${myPayments.length ? `
-        <p class="section-sub">Os teus pagamentos</p>
-        <ul class="list">${myPayments.map(paymentLi).join("")}</ul>` : ""}
+      <div class="date-range hidden" id="bp-range">
+        <div class="field"><label>De</label><input type="date" id="bp-from" /></div>
+        <div class="field"><label>Até</label><input type="date" id="bp-to" /></div>
+        <button type="button" class="secondary small" id="bp-clear">Limpar</button>
+      </div>
+      <div id="balance-summary"></div>
+      ${quotaMembers.length === 0 ? "" : myMember ? `
+        <button type="button" class="collapse-toggle" data-collapse="resumo">
+          <span>Quota por pessoa <span class="muted">(${quotaMembers.length})</span></span>
+          <span class="collapse-arrow">▾</span>
+        </button>
+        <div class="collapse-body hidden" data-body="resumo"><div id="balance-quotas"></div></div>`
+        : `<div id="balance-quotas" style="margin-top:.6rem;"></div>`}
     </div>`;
 
-  // secções colapsáveis (fechadas): quotas, saldos e pagamentos alheios
-  const section = (id, title, body) => `
-    <div class="card">
-      <div class="collapse-head" data-collapse="${id}">
-        <h2>${title}</h2>
-        <span class="collapse-arrow">▾</span>
-      </div>
-      <div class="collapse-body hidden" data-body="${id}">${body}</div>
-    </div>`;
+  // ---- Saldos ----
+  const saldosMine = members.length === 0
+    ? `<p class="empty">Sem membros.</p>`
+    : `<ul class="list balances">${mineMembers.map(balanceLi).join("")}</ul>`;
+  const saldosOthers = `<ul class="list balances">${otherMembers.map(balanceLi).join("")}</ul>`;
 
-  const summaryBody = `
-    <div class="collapse-actions">
-      <button type="button" class="secondary small date-toggle-txt" id="bp-toggle">📅 Período</button>
-    </div>
-    <div class="date-range hidden" id="bp-range">
-      <div class="field"><label>De</label><input type="date" id="bp-from" /></div>
-      <div class="field"><label>Até</label><input type="date" id="bp-to" /></div>
-      <button type="button" class="secondary small" id="bp-clear">Limpar</button>
-    </div>
-    <div id="balance-summary"></div>`;
+  // ---- Como acertar contas ----
+  const acertosMine = mySettles.length
+    ? mySettles.map(settleLine).join("")
+    : `<p class="empty">${settlements.length && myMember
+        ? "Não tens contas por acertar 🎉" : "Está tudo em dia 🎉"}</p>`;
+  const acertosOthers = otherSettles.map(settleLine).join("");
 
-  const balancesBody = othersOnly.length === 0
-    ? `<p class="empty">${members.length ? "Não há mais membros no grupo." : "Sem membros."}</p>` : `
-    <ul class="list balances">
-      ${othersOnly.map(m => {
-        const b = balance[m.id];
-        const list = b < 0 ? owesTo[m.id] : b > 0 ? getsFrom[m.id] : null;
-        const expandable = (list?.length || 0) > 1;
-        return `<li class="${expandable ? "clickable" : ""}" ${expandable ? `data-bal="${m.id}"` : ""}>
-          ${avatarHtml(m.name)}
-          <div class="item-main">
-            <span class="item-title">${esc(m.name)}</span>
-            ${subline(m.id, b)}
-          </div>
-          <span class="chip ${b > 0 ? "positive" : b < 0 ? "negative" : "zero"}">
-            ${b === 0 ? "✓ em dia" : (b > 0 ? "recebe " : "deve ") + fmtMoney(Math.abs(b), cur)}
-          </span>
-        </li>
-        ${expandable ? `<li class="balance-detail hidden" data-bdetail="${m.id}">
-          <ul class="detail-list">
-            ${list.map(x => `<li>
-              <span>${b < 0 ? "a" : "de"} ${esc(x.name)}</span>
-              <span class="amount">${fmtMoney(x.cents, cur)}</span>
-            </li>`).join("")}
-          </ul>
-        </li>` : ""}`;
-      }).join("")}
-    </ul>`;
-
-  const settleBody = otherSettles.length
-    ? otherSettles.map(settleLine).join("")
-    : `<p class="empty">${settlements.length
-        ? "Os acertos em falta envolvem-te a ti — estão em cima, em «A tua posição»."
-        : "Está tudo em dia 🎉"}</p>`;
-
-  const paymentsBody = !paymentsReady
+  // ---- Pagamentos ----
+  const pagAction = paymentsReady
+    ? `<button type="button" class="secondary small" id="btn-add-payment">+ Registar</button>` : "";
+  const pagMine = !paymentsReady
     ? `<p class="muted">Para ativar o registo de pagamentos, corre a versão mais
       recente de <code>supabase/schema.sql</code> no SQL Editor do Supabase.</p>`
     : `
-    <div class="collapse-actions">
-      <button type="button" class="secondary small" id="btn-add-payment">+ Registar</button>
-    </div>
-    <div id="payment-form-slot"></div>
-    ${otherPayments.length === 0
-      ? `<p class="empty">${payments.length ? "Sem pagamentos de outras pessoas." : "Ainda não há pagamentos registados."}</p>`
-      : `<ul class="list">${otherPayments.map(paymentLi).join("")}</ul>`}
-    ${totalPaid > 0 ? `<p class="muted" style="text-align:right;margin:.5rem 0 0;">total acertado no grupo: ${fmtMoney(totalPaid, cur)}</p>` : ""}`;
+      <div id="payment-form-slot"></div>
+      ${myPayments.length
+        ? `<ul class="list">${myPayments.map(paymentLi).join("")}</ul>`
+        : `<p class="empty">${payments.length && myMember
+            ? "Ainda não tens pagamentos teus registados." : "Ainda não há pagamentos registados."}</p>`}
+      ${totalPaid > 0 ? `<p class="muted" style="text-align:right;margin:.5rem 0 0;">total acertado no grupo: ${fmtMoney(totalPaid, cur)}</p>` : ""}`;
+  const pagOthers = `<ul class="list">${otherPayments.map(paymentLi).join("")}</ul>`;
 
-  const oth = myMember ? " dos outros" : "";
   $c.innerHTML = `
-    ${topStats}
-    ${myCard}
-    ${section("resumo", "Resumo dos gastos", summaryBody)}
-    ${section("saldos", `Saldos${oth}`, balancesBody)}
-    ${section("acertos", myMember ? "Acertos entre os outros" : "Como acertar contas", settleBody)}
-    ${section("pagamentos", `Pagamentos${oth}`, paymentsBody)}`;
+    ${resumoCard}
+    ${card("Saldos", "saldos", saldosMine, saldosOthers, otherMembers.length, "Ver saldos dos outros")}
+    ${card("Como acertar contas", "acertos", acertosMine, acertosOthers, otherSettles.length, "Ver acertos entre os outros")}
+    ${card("Pagamentos", "pagamentos", pagMine, pagOthers, otherPayments.length, "Ver pagamentos dos outros", pagAction)}`;
 
-  // abrir/fechar cada secção ao toque no título
-  $c.querySelectorAll("[data-collapse]").forEach(h => {
-    h.onclick = () => {
-      $c.querySelector(`[data-body="${h.dataset.collapse}"]`).classList.toggle("hidden");
-      h.querySelector(".collapse-arrow").classList.toggle("open");
+  // abrir/fechar a parte "dos outros" de cada cartão
+  $c.querySelectorAll(".collapse-toggle").forEach(btn => {
+    btn.onclick = () => {
+      $c.querySelector(`[data-body="${btn.dataset.collapse}"]`).classList.toggle("hidden");
+      btn.classList.toggle("open");
     };
   });
 
@@ -2015,6 +1999,7 @@ function renderBalancesTab($c, ctx) {
 
   // ---- resumo dos gastos: total, quota por pessoa e mini gráfico mensal ----
   const $sum = $c.querySelector("#balance-summary");
+  const $quotas = $c.querySelector("#balance-quotas");
 
   function drawSummary() {
     const xs = expenses.filter(x =>
@@ -2066,34 +2051,47 @@ function renderBalancesTab($c, ctx) {
         </div>`).join("")}</div>`;
     }
 
-    // as quotas detalhadas mostram só os outros — a do próprio vive na
-    // faixa do topo, sempre visível
-    const maxShare = Math.max(...othersOnly.map(m => share[m.id]), 1);
-    const rows = [...othersOnly].sort((a, b) => share[b.id] - share[a.id]).map(m => {
-      const s = share[m.id], p = paid[m.id];
-      const pct = total > 0 ? Math.round(s / total * 100) : 0;
-      return `<div class="quota-row">
-        ${avatarHtml(m.name)}
-        <div class="quota-main">
-          <div class="quota-top">
-            <span class="quota-name">${esc(m.name)}</span>
-            <span class="quota-amt">${fmtMoney(s, cur)}</span>
-          </div>
-          <div class="quota-bar"><div class="quota-fill" style="width:${Math.round(s / maxShare * 100)}%"></div></div>
-          <div class="quota-foot">
-            <span>${pct}% do total</span>
-            <span>pagou ${fmtMoney(p, cur)}</span>
-          </div>
-        </div>
-      </div>`;
-    }).join("");
-
+    // sempre visível: total do grupo + a tua quota (do período) + gráfico
     $sum.innerHTML = `
-      ${active ? `<p class="muted period-note">período: ${period.from ? fmtDate(period.from) : "início"} → ${period.to ? fmtDate(period.to) : "hoje"} · total ${fmtMoney(total, cur)}</p>` : ""}
-      ${chart}
-      ${othersOnly.length === 0 ? "" : xs.length === 0
+      <div class="stat-strip in-card">
+        <div class="stat">
+          <span class="stat-label">Total do grupo</span>
+          <span class="stat-value">${fmtMoney(total, cur)}</span>
+        </div>
+        ${myMember ? `
+        <div class="stat">
+          <span class="stat-label">A tua quota</span>
+          <span class="stat-value">${fmtMoney(share[myMember.id] || 0, cur)}</span>
+        </div>` : ""}
+      </div>
+      ${active ? `<p class="muted period-note">período: ${period.from ? fmtDate(period.from) : "início"} → ${period.to ? fmtDate(period.to) : "hoje"}</p>` : ""}
+      ${chart}`;
+
+    // colapsável: a quota por pessoa dos outros (a do próprio já está em cima)
+    if ($quotas) {
+      const maxShare = Math.max(...quotaMembers.map(m => share[m.id]), 1);
+      const rows = [...quotaMembers].sort((a, b) => share[b.id] - share[a.id]).map(m => {
+        const s = share[m.id], p = paid[m.id];
+        const pct = total > 0 ? Math.round(s / total * 100) : 0;
+        return `<div class="quota-row">
+          ${avatarHtml(m.name)}
+          <div class="quota-main">
+            <div class="quota-top">
+              <span class="quota-name">${esc(m.name)}</span>
+              <span class="quota-amt">${fmtMoney(s, cur)}</span>
+            </div>
+            <div class="quota-bar"><div class="quota-fill" style="width:${Math.round(s / maxShare * 100)}%"></div></div>
+            <div class="quota-foot">
+              <span>${pct}% do total</span>
+              <span>pagou ${fmtMoney(p, cur)}</span>
+            </div>
+          </div>
+        </div>`;
+      }).join("");
+      $quotas.innerHTML = xs.length === 0
         ? `<p class="empty">Sem despesas ${active ? "neste período" : "ainda"}.</p>`
-        : `<p class="muted quota-hint">Quota por pessoa — a parte das despesas que coube a cada um.</p>${rows}`}`;
+        : `<p class="muted quota-hint">Quota por pessoa — a parte das despesas que coube a cada um.</p>${rows}`;
+    }
   }
 
   const $bpToggle = $c.querySelector("#bp-toggle");
@@ -2118,15 +2116,7 @@ function renderBalancesTab($c, ctx) {
 
   const slot = $c.querySelector("#payment-form-slot");
 
-  // garante que a secção Pagamentos está aberta (o «Pagar» de um acerto
-  // pode ser tocado com ela colapsada — o formulário vive lá dentro)
-  const openPayments = () => {
-    $c.querySelector(`[data-body="pagamentos"]`).classList.remove("hidden");
-    $c.querySelector(`[data-collapse="pagamentos"] .collapse-arrow`).classList.add("open");
-  };
-
   function paymentForm(prefill) {
-    openPayments();
     slot.innerHTML = `
       <div class="card inner-card">
         <h2>Registar pagamento</h2>
