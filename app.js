@@ -30,6 +30,10 @@ function invalidateGroupCache() { groupCache = { id: null, data: null }; }
 // Depois de gravar/apagar algo: deita fora a cache e volta a desenhar a vista.
 function refresh() { invalidateGroupCache(); route(); }
 
+// Molde recorrente a abrir automaticamente ao entrar nas Definições — usado
+// pelo atalho «Gerir série» a partir de uma ocorrência na lista de despesas.
+let pendingRecurringOpen = null;
+
 // ---------------------------------------------------------------- helpers
 function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, c =>
@@ -415,35 +419,45 @@ function canUse() {
   return !!(profile && (profile.is_approved || profile.is_admin));
 }
 
+// Ecrã de arranque (verde, a full-screen). Fica visível enquanto os dados
+// carregam e some assim que a primeira vista fica pronta.
+function showSplash() { document.getElementById("splash")?.classList.remove("splash-out"); }
+function hideSplash() { document.getElementById("splash")?.classList.add("splash-out"); }
+
 async function route() {
-  if (!session) { renderLogin(); return; }
-  renderTopbar();
-  if (!profile) await initProfile();
-  if (!profile) {
-    $app.innerHTML = `<div class="card"><p>Não foi possível carregar o teu perfil.</p>
-      <button class="secondary" onclick="location.reload()">Tentar novamente</button></div>`;
-    return;
-  }
-  if (!canUse()) { renderWaiting(); return; }
-  const hash = location.hash || "#/";
-  const mGroup = hash.match(/^#\/g\/([0-9a-f-]+)(?:\/(\w+))?/i);
   try {
-    if (hash.startsWith("#/admin") && profile.is_admin) {
-      await renderAdmin();
-    } else if (mGroup) {
-      await renderGroup(mGroup[1], mGroup[2] || "despesas");
-    } else {
-      await renderGroups();
+    if (!session) { renderLogin(); return; }
+    renderTopbar();
+    if (!profile) await initProfile();
+    if (!profile) {
+      $app.innerHTML = `<div class="card"><p>Não foi possível carregar o teu perfil.</p>
+        <button class="secondary" onclick="location.reload()">Tentar novamente</button></div>`;
+      return;
     }
-  } catch (err) {
-    console.error(err);
-    $app.innerHTML = `<div class="card"><p>Ocorreu um erro: ${esc(err.message || err)}</p>
-      <button class="secondary" onclick="location.hash='#/'">Voltar aos grupos</button></div>`;
+    if (!canUse()) { renderWaiting(); return; }
+    const hash = location.hash || "#/";
+    const mGroup = hash.match(/^#\/g\/([0-9a-f-]+)(?:\/(\w+))?/i);
+    try {
+      if (hash.startsWith("#/admin") && profile.is_admin) {
+        await renderAdmin();
+      } else if (mGroup) {
+        await renderGroup(mGroup[1], mGroup[2] || "despesas");
+      } else {
+        await renderGroups();
+      }
+    } catch (err) {
+      console.error(err);
+      $app.innerHTML = `<div class="card"><p>Ocorreu um erro: ${esc(err.message || err)}</p>
+        <button class="secondary" onclick="location.hash='#/'">Voltar aos grupos</button></div>`;
+    }
+  } finally {
+    hideSplash();
   }
 }
 
 // ---------------------------------------------------------------- vista: admin
 async function renderAdmin() {
+  showSplash();
   $app.innerHTML = `<div class="loading">A carregar utilizadores…</div>`;
   const { data: users, error } = await sb.from("profiles")
     .select("*").order("created_at");
@@ -551,6 +565,7 @@ function getFavs() {
 
 async function renderGroups() {
   invalidateGroupCache();
+  showSplash();
   $app.innerHTML = `<div class="loading">A carregar grupos…</div>`;
   const [groups, { balances, activity }] = await Promise.all([fetchGroups(), fetchMyGroupBalances()]);
   let othersOpen = false;
@@ -775,6 +790,7 @@ async function renderGroup(groupId, tab) {
     // só mostra o ecrã de carregamento quando ainda não estamos dentro do
     // grupo — trocar de separador não deve fazer a página "piscar"
     if (!$app.querySelector(`[data-group-shell="${groupId}"]`)) {
+      showSplash();
       $app.innerHTML = `<div class="loading">A carregar grupo…</div>`;
     }
     bundle = await fetchGroupBundle(groupId);
@@ -895,8 +911,8 @@ function renderExpensesTab($c, ctx) {
           ${dateBlock(x.expense_date)}
           ${catIconHtml(x.category)}
           <div class="item-main">
-            <span class="item-title">${esc(x.description)}</span>
-            <span class="item-sub">pago por ${esc(payers)} · ${nShares} pessoa${nShares === 1 ? "" : "s"}${x.recurring_id ? " · 🔁 recorrente" : ""}</span>
+            <span class="item-title">${esc(x.description)}${x.recurring_id ? ` <span class="badge linked">🔁 recorrente</span>` : ""}</span>
+            <span class="item-sub">pago por ${esc(payers)} · ${nShares} pessoa${nShares === 1 ? "" : "s"}</span>
           </div>
           <div class="item-end">
             <span class="amount">${fmtMoney(toCents(x.amount), cur)}</span>
@@ -974,12 +990,15 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
   // recorrente) é escolhido no formulário e vive em state.recurring; só é
   // editável ao criar (uma despesa não se converte em molde e vice-versa).
   const isRecurringRecord = !!opts.recurring;
-  // o seletor só se bloqueia ao editar um MOLDE já existente (um molde não se
-  // converte em despesa ocasional). Ao criar, ou ao editar uma despesa
-  // ocasional (que se pode tornar recorrente daí para a frente), fica livre.
-  const lockType = !!existing && isRecurringRecord;
-  // ao editar uma despesa ocasional e ligar «Recorrente», estamos a convertê-la
-  const converting = !!existing && !isRecurringRecord;
+  // isOccurrence: despesa normal já lançada por um molde recorrente (tem
+  // recurring_id). Não é o molde — é uma ocorrência de um certo mês. Já é
+  // recorrente, logo não se «converte» outra vez nem mostra o seletor.
+  const isOccurrence = !!existing && !isRecurringRecord && !!existing.recurring_id;
+  // o molde a que a ocorrência pertence, para o atalho «gerir série»
+  const parentRec = isOccurrence ? (ctx.recurring || []).find(r => r.id === existing.recurring_id) : null;
+  // ao editar uma despesa ocasional (SEM molde) e ligar «Recorrente»,
+  // estamos a convertê-la; uma ocorrência já ligada nunca converte.
+  const converting = !!existing && !isRecurringRecord && !existing.recurring_id;
   const today = new Date().toISOString().slice(0, 10);
   const close = onClose || (() => { slot.innerHTML = ""; });
   const useWeights = !!group.use_weights; // opção do grupo: divisão por proporções
@@ -1071,13 +1090,37 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
         <label>Valor (${esc(cur)})</label>
         <input id="x-amount" type="number" step="0.01" min="0" value="${state.totalCents ? (state.totalCents / 100).toFixed(2) : ""}" />
       </div>`;
-    // seletor do tipo: ocasional (com data) vs recorrente (dia do mês + fim).
-    // bloqueado ao editar — uma despesa não se converte em molde nem o inverso.
-    const typeToggle = `
-      <div class="tabs type-toggle" style="margin-bottom:.7rem;">
-        <button type="button" data-type="occ" class="${state.recurring ? "" : "active"}" ${lockType ? "disabled" : ""}>Ocasional</button>
-        <button type="button" data-type="rec" class="${state.recurring ? "active" : ""}" ${lockType ? "disabled" : ""}>Recorrente</button>
-      </div>`;
+    // topo do formulário: como se identifica/escolhe o tipo da despesa.
+    //  · molde recorrente (a editar a série)  -> aviso fixo
+    //  · ocorrência de uma série              -> aviso + atalho «gerir série»
+    //  · despesa ocasional (nova/convertível) -> seletor Ocasional/Recorrente
+    let typeHeader;
+    if (isRecurringRecord) {
+      typeHeader = `
+        <div class="rec-banner">
+          <span class="rec-ico">🔁</span>
+          <div class="rec-banner-text">
+            <strong>Despesa recorrente</strong>
+            <span>Repete-se todos os meses. As alterações valem para as próximas ocorrências.</span>
+          </div>
+        </div>`;
+    } else if (isOccurrence) {
+      typeHeader = `
+        <div class="rec-banner">
+          <span class="rec-ico">🔁</span>
+          <div class="rec-banner-text">
+            <strong>Parte de uma despesa recorrente</strong>
+            <span>Esta é a ocorrência de ${esc(fmtDate(existing.expense_date))}. Alterá-la aqui muda só este mês.</span>
+          </div>
+          ${parentRec ? `<button type="button" class="secondary small" id="x-goto-rec">Gerir série →</button>` : ""}
+        </div>`;
+    } else {
+      typeHeader = `
+        <div class="tabs type-toggle" style="margin-bottom:.7rem;">
+          <button type="button" data-type="occ" class="${state.recurring ? "" : "active"}">Ocasional</button>
+          <button type="button" data-type="rec" class="${state.recurring ? "active" : ""}">Recorrente</button>
+        </div>`;
+    }
     // recorrente: dia do mês + terminar em (>= hoje) + ativa;  ocasional: data
     const scheduleFields = state.recurring ? `
       <div class="row">
@@ -1106,7 +1149,7 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
 
     const sections = {
       dados: `
-        ${typeToggle}
+        ${typeHeader}
         <div class="field">
           <label>Descrição</label>
           <input id="x-desc" value="${esc(state.desc)}" placeholder="Ex.: Jantar no restaurante" />
@@ -1202,9 +1245,9 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     <div class="expense-detail">
       <div class="form-head">
         <button class="back-pill" id="x-back"><span class="arr">←</span> ${esc(opts.backLabel || "Despesas")}</button>
-        <h2 style="margin:0;">${existing
-          ? (state.recurring ? "Despesa recorrente" : "Detalhe da despesa")
-          : "Nova despesa"}</h2>
+        <h2 style="margin:0;">${!existing ? "Nova despesa"
+          : (state.recurring || isOccurrence) ? "Despesa recorrente"
+          : "Detalhe da despesa"}</h2>
       </div>
       <div class="tabs form-tabs">
         ${secTab("dados", "Dados", okDados)}
@@ -1233,6 +1276,11 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
         state.recurring = rec;
         draw();
       };
+    });
+    // atalho da ocorrência para gerir o molde da série (nas Definições)
+    slot.querySelector("#x-goto-rec")?.addEventListener("click", () => {
+      pendingRecurringOpen = existing.recurring_id;
+      location.hash = `#/g/${group.id}/definicoes`;
     });
 
     const $desc = slot.querySelector("#x-desc");
@@ -1331,6 +1379,14 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
         const { error } = await sb.from("recurring_expenses").delete().eq("id", existing.id);
         if (error) return toast(error.message, true);
         toast("Recorrente apagada");
+        return refresh();
+      }
+      if (isOccurrence) {
+        if (!confirm("Apagar esta ocorrência? Faz parte de uma despesa recorrente e pode voltar a ser lançada automaticamente. "
+          + "Para parar de vez, apaga ou pausa a série nas Definições.")) return;
+        const { error } = await sb.from("expenses").delete().eq("id", existing.id);
+        if (error) return toast(error.message, true);
+        toast("Ocorrência apagada");
         return refresh();
       }
       if (!confirm("Apagar esta despesa?")) return;
@@ -1973,6 +2029,13 @@ function renderRecurringSection($c, ctx) {
     $c.querySelectorAll("[data-open]").forEach(li => {
       li.onclick = () => openForm(recurring.find(x => x.id === li.dataset.open));
     });
+
+    // vindo do atalho «Gerir série» de uma ocorrência: abre logo o molde
+    if (pendingRecurringOpen) {
+      const r = (recurring || []).find(x => x.id === pendingRecurringOpen);
+      pendingRecurringOpen = null;
+      if (r) openForm(r);
+    }
   }
   draw();
 }
@@ -2092,7 +2155,7 @@ async function initProfile() {
 
 async function main() {
   const cfg = loadConfig();
-  if (!cfg) { renderSetup(); return; }
+  if (!cfg) { hideSplash(); renderSetup(); return; }
 
   // A app vive no schema `splitwisely` (projeto Supabase partilhado
   // com as outras apps). O schema tem de estar exposto na Data API.
