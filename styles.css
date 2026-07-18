@@ -276,6 +276,123 @@ h2 { font-size: .98rem; font-weight: 700; letter-spacing: -.01em; margin: 0 0 .6
 .stat .stat-value.positive { color: var(--positive); }
 .stat .stat-value.negative { color: var(--negative); }
 .stat .stat-value.zero { color: var(--muted); font-weight: 600; }
+/* variante para viver dentro de um cartão (sem sombra própria) */
+.stat-strip.in-card {
+  box-shadow: none;
+  background: var(--card-inner);
+  border-color: var(--border-soft);
+  margin-bottom: .7rem;
+}
+
+/* saldo do utilizador no canto superior direito, junto ao título do grupo */
+.head-balance {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: .15rem;
+  flex: none;
+}
+.head-balance-label {
+  font-size: .62rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--muted);
+  line-height: 1;
+}
+
+/* ================================================================ filtros / pesquisa */
+.filter-bar { display: flex; gap: .5rem; margin-bottom: .7rem; }
+.search-box { position: relative; flex: 1; min-width: 0; }
+.search-box .search-ico {
+  position: absolute;
+  left: .65rem;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: .8rem;
+  opacity: .5;
+  pointer-events: none;
+}
+.search-box input { padding-left: 2.05rem; }
+.date-toggle { flex: none; width: 42px; height: 42px; padding: 0; font-size: 1.05rem; }
+.date-toggle.active, .date-toggle-txt.active {
+  border-color: var(--primary);
+  color: var(--primary);
+  background: var(--chip-pos-bg);
+}
+.date-range { display: flex; align-items: flex-end; gap: .6rem; margin-bottom: .7rem; }
+.date-range.hidden { display: none; } /* .hidden sozinho perdia para o display:flex acima */
+.date-range .field { flex: 1; margin-bottom: 0; }
+.date-range button { flex: none; height: 42px; }
+.period-note { margin: -.2rem 0 .6rem; font-size: .75rem; }
+
+/* ================================================================ mini gráfico (gastos por mês) */
+.mini-chart {
+  display: flex;
+  align-items: stretch;
+  gap: .3rem;
+  height: 110px;
+  margin: .2rem 0 .9rem;
+}
+.mc-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: .2rem;
+}
+.mc-val {
+  font-size: .6rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  min-height: .6rem;
+  white-space: nowrap;
+}
+.mc-bar-wrap { flex: 1; width: 100%; display: flex; align-items: flex-end; justify-content: center; }
+.mc-bar {
+  width: 68%;
+  max-width: 30px;
+  min-height: 3px;
+  border-radius: 6px 6px 2px 2px;
+  background: linear-gradient(180deg, var(--primary-2), var(--primary));
+}
+.mc-lbl { font-size: .6rem; color: var(--muted); white-space: nowrap; }
+
+/* ================================================================ quotas por pessoa */
+.quota-hint { margin: .1rem 0 .2rem; font-size: .75rem; }
+.quota-row {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  padding: .5rem 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+.quota-row:last-child { border-bottom: none; padding-bottom: .1rem; }
+.quota-main { flex: 1; min-width: 0; }
+.quota-top { display: flex; justify-content: space-between; align-items: baseline; gap: .6rem; }
+.quota-name {
+  font-weight: 650;
+  font-size: .88rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.quota-amt { font-variant-numeric: tabular-nums; font-weight: 700; font-size: .88rem; white-space: nowrap; }
+.quota-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--seg-bg);
+  overflow: hidden;
+  margin: .3rem 0 .25rem;
+}
+.quota-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--primary-2), var(--primary));
+}
+.quota-foot { display: flex; justify-content: space-between; gap: .6rem; font-size: .72rem; color: var(--muted); }
 
 /* ================================================================ home: cards de grupo */
 .group-grid {
