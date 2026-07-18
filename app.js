@@ -30,9 +30,30 @@ function invalidateGroupCache() { groupCache = { id: null, data: null }; }
 // Depois de gravar/apagar algo: deita fora a cache e volta a desenhar a vista.
 function refresh() { invalidateGroupCache(); route(); }
 
-// Molde recorrente a abrir automaticamente ao entrar nas Definições — usado
-// pelo atalho «Gerir série» a partir de uma ocorrência na lista de despesas.
-let pendingRecurringOpen = null;
+// Pop-up para gerir a série recorrente a partir de uma ocorrência, sem
+// sair da lista de despesas. Fecha ao gravar/apagar (via refresh -> route),
+// no «Fechar», tocando fora do cartão ou com Escape.
+let $recModal = null;
+function recModalKey(e) { if (e.key === "Escape") closeRecModal(); }
+function closeRecModal() {
+  if (!$recModal) return;
+  $recModal.remove();
+  $recModal = null;
+  document.body.classList.remove("modal-open");
+  document.removeEventListener("keydown", recModalKey);
+}
+function openRecurringModal(ctx, rec) {
+  closeRecModal();
+  $recModal = document.createElement("div");
+  $recModal.className = "modal-backdrop";
+  $recModal.innerHTML = `<div class="modal-card"></div>`;
+  document.body.appendChild($recModal);
+  document.body.classList.add("modal-open");
+  $recModal.addEventListener("click", (e) => { if (e.target === $recModal) closeRecModal(); });
+  document.addEventListener("keydown", recModalKey);
+  renderExpenseForm($recModal.querySelector(".modal-card"), ctx, rec, closeRecModal,
+    { recurring: true, backLabel: "Fechar" });
+}
 
 // ---------------------------------------------------------------- helpers
 function esc(s) {
@@ -425,6 +446,7 @@ function showSplash() { document.getElementById("splash")?.classList.remove("spl
 function hideSplash() { document.getElementById("splash")?.classList.add("splash-out"); }
 
 async function route() {
+  closeRecModal();
   try {
     if (!session) { renderLogin(); return; }
     renderTopbar();
@@ -911,7 +933,7 @@ function renderExpensesTab($c, ctx) {
           ${dateBlock(x.expense_date)}
           ${catIconHtml(x.category)}
           <div class="item-main">
-            <span class="item-title">${esc(x.description)}${x.recurring_id ? ` <span class="badge linked">🔁 recorrente</span>` : ""}</span>
+            <span class="item-title">${esc(x.description)}${x.recurring_id ? ` <span class="badge linked" title="Despesa recorrente">🔁</span>` : ""}</span>
             <span class="item-sub">pago por ${esc(payers)} · ${nShares} pessoa${nShares === 1 ? "" : "s"}</span>
           </div>
           <div class="item-end">
@@ -1076,7 +1098,51 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
   }
   if (!existing) distributePayersEqually();
 
+  // Uma ocorrência de série abre primeiro num ecrã de escolha — o utilizador
+  // toma consciência de que é recorrente e decide: gerir a série (pop-up) ou
+  // editar só esta ocorrência. Só depois disso o formulário fica editável.
+  let occChoiceDone = false;
+  function drawOccChoice() {
+    slot.innerHTML = `
+    <div class="expense-detail">
+      <div class="form-head">
+        <button class="back-pill" id="x-back"><span class="arr">←</span> ${esc(opts.backLabel || "Despesas")}</button>
+        <h2 style="margin:0;">Despesa recorrente</h2>
+      </div>
+      <div class="rec-banner">
+        <span class="rec-ico">🔁</span>
+        <div class="rec-banner-text">
+          <strong>${esc(existing.description)} · ${fmtMoney(toCents(existing.amount), group.currency)}</strong>
+          <span>Lançada automaticamente pela série recorrente${parentRec ? ` (todo o mês no dia ${parentRec.day_of_month})` : ""}.</span>
+        </div>
+      </div>
+      <div class="rec-choice">
+        ${parentRec ? `
+        <button type="button" class="rec-choice-btn" id="x-open-serie">
+          <span class="rec-ico">🔁</span>
+          <span class="rec-choice-text">
+            <strong>Gerir a série</strong>
+            <span>Valor, dia do mês, divisão, pausar ou terminar — vale para as próximas ocorrências.</span>
+          </span>
+          <span class="chevron">›</span>
+        </button>` : ""}
+        <button type="button" class="rec-choice-btn" id="x-edit-occ">
+          <span class="rec-ico">✏️</span>
+          <span class="rec-choice-text">
+            <strong>Editar só esta ocorrência</strong>
+            <span>Muda apenas a despesa de ${esc(fmtDate(existing.expense_date))} — as próximas continuam como estão.</span>
+          </span>
+          <span class="chevron">›</span>
+        </button>
+      </div>
+    </div>`;
+    slot.querySelector("#x-back").onclick = close;
+    slot.querySelector("#x-open-serie")?.addEventListener("click", () => openRecurringModal(ctx, parentRec));
+    slot.querySelector("#x-edit-occ").onclick = () => { occChoiceDone = true; draw(); };
+  }
+
   function draw() {
+    if (isOccurrence && !occChoiceDone) return drawOccChoice();
     const shares = computedShares();
     const paidSum = [...state.payers].reduce((a, id) => a + (state.payerAmounts[id] || 0), 0);
     const shareSum = Object.values(shares).reduce((a, b) => a + b, 0);
@@ -1107,12 +1173,11 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     } else if (isOccurrence) {
       typeHeader = `
         <div class="rec-banner">
-          <span class="rec-ico">🔁</span>
+          <span class="rec-ico">✏️</span>
           <div class="rec-banner-text">
-            <strong>Parte de uma despesa recorrente</strong>
-            <span>Esta é a ocorrência de ${esc(fmtDate(existing.expense_date))}. Alterá-la aqui muda só este mês.</span>
+            <strong>A editar só esta ocorrência</strong>
+            <span>Muda apenas a despesa de ${esc(fmtDate(existing.expense_date))} — a série e as próximas ficam como estão.</span>
           </div>
-          ${parentRec ? `<button type="button" class="secondary small" id="x-goto-rec">Gerir série →</button>` : ""}
         </div>`;
     } else {
       typeHeader = `
@@ -1277,12 +1342,6 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
         draw();
       };
     });
-    // atalho da ocorrência para gerir o molde da série (nas Definições)
-    slot.querySelector("#x-goto-rec")?.addEventListener("click", () => {
-      pendingRecurringOpen = existing.recurring_id;
-      location.hash = `#/g/${group.id}/definicoes`;
-    });
-
     const $desc = slot.querySelector("#x-desc");
     if ($desc) $desc.oninput = () => {
       state.desc = $desc.value;
@@ -2029,13 +2088,6 @@ function renderRecurringSection($c, ctx) {
     $c.querySelectorAll("[data-open]").forEach(li => {
       li.onclick = () => openForm(recurring.find(x => x.id === li.dataset.open));
     });
-
-    // vindo do atalho «Gerir série» de uma ocorrência: abre logo o molde
-    if (pendingRecurringOpen) {
-      const r = (recurring || []).find(x => x.id === pendingRecurringOpen);
-      pendingRecurringOpen = null;
-      if (r) openForm(r);
-    }
   }
   draw();
 }
