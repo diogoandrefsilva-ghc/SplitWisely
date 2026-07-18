@@ -301,6 +301,27 @@ h2 { font-size: .98rem; font-weight: 700; letter-spacing: -.01em; margin: 0 0 .6
   line-height: 1;
 }
 
+/* ================================================================ FAB (nova despesa) */
+.fab {
+  position: fixed;
+  right: calc(1.1rem + env(safe-area-inset-right));
+  bottom: calc(1.3rem + env(safe-area-inset-bottom));
+  z-index: 40; /* abaixo do modal (60): o pop-up aberto tapa o botão */
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  padding: 0;
+  font-size: 2rem;
+  font-weight: 500;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 16px -2px rgba(15, 157, 118, .5), 0 2px 6px rgba(16, 24, 40, .18);
+}
+/* espaço no fim da página para o FAB não tapar a última linha da lista */
+#tab-content:has(.fab) { padding-bottom: 4.6rem; }
+
 /* ================================================================ filtros / pesquisa */
 .filter-bar { display: flex; gap: .5rem; margin-bottom: .7rem; }
 .search-box { position: relative; flex: 1; min-width: 0; }
@@ -325,6 +346,18 @@ h2 { font-size: .98rem; font-weight: 700; letter-spacing: -.01em; margin: 0 0 .6
 .date-range .field { flex: 1; margin-bottom: 0; }
 .date-range button { flex: none; height: 42px; }
 .period-note { margin: -.2rem 0 .6rem; font-size: .75rem; }
+
+/* linha de resultados no cartão dos filtros (N despesas · total) */
+.filter-result {
+  margin: .1rem 0 0;
+  font-size: .8rem;
+  font-weight: 600;
+  color: var(--primary);
+}
+/* a fila de categorias dentro do cartão dos filtros não precisa da margem
+   extra que tinha quando vivia solta na página */
+.cat-strip.in-filters { margin-bottom: 0; padding-bottom: .1rem; }
+.filter-bar:last-child { margin-bottom: 0; }
 
 /* ================================================================ mini gráfico (gastos por mês) */
 .mini-chart {
@@ -757,6 +790,40 @@ li.balance-detail {
   display: block;
   padding: 0 0 .6rem 2.7rem; /* alinha com o texto (avatar + gap) */
 }
+/* .hidden sozinho perdia para o display:block acima (mesmo caso do
+   .date-range) — sem isto o expandir do saldo não fazia nada */
+li.balance-detail.hidden { display: none; }
+
+/* ================================================================ secções colapsáveis (Saldos) */
+.collapse-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .6rem;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.collapse-head h2 { margin: 0; }
+.collapse-arrow {
+  color: var(--muted);
+  font-size: .8rem;
+  line-height: 1;
+  transition: transform .15s;
+}
+.collapse-arrow.open { transform: rotate(180deg); }
+.collapse-body { margin-top: .6rem; }
+.collapse-body.hidden { display: none; }
+/* ação da secção (📅 Período, + Registar) encostada à direita, subida
+   para a linha do título (antes da seta). A faixa em si não apanha
+   cliques — só o botão — para o toque no título continuar a colapsar. */
+.collapse-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin: -2.2rem 1.6rem .5rem 0;
+  pointer-events: none;
+}
+.collapse-actions button { pointer-events: auto; }
 .detail-list {
   list-style: none;
   margin: 0;

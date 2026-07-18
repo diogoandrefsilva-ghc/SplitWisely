@@ -30,29 +30,34 @@ function invalidateGroupCache() { groupCache = { id: null, data: null }; }
 // Depois de gravar/apagar algo: deita fora a cache e volta a desenhar a vista.
 function refresh() { invalidateGroupCache(); route(); }
 
-// Pop-up para gerir a série recorrente a partir de uma ocorrência, sem
-// sair da lista de despesas. Fecha ao gravar/apagar (via refresh -> route),
-// no «Fechar», tocando fora do cartão ou com Escape.
-let $recModal = null;
-function recModalKey(e) { if (e.key === "Escape") closeRecModal(); }
-function closeRecModal() {
-  if (!$recModal) return;
-  $recModal.remove();
-  $recModal = null;
+// Pop-up genérico (nova despesa, consulta, série recorrente…). Fecha ao
+// gravar/apagar (via refresh -> route), no «Fechar», tocando fora do
+// cartão ou com Escape — o retroceder da página fica sempre na lista.
+let $modal = null;
+function modalKey(e) { if (e.key === "Escape") closeModal(); }
+function closeModal() {
+  if (!$modal) return;
+  $modal.remove();
+  $modal = null;
   document.body.classList.remove("modal-open");
-  document.removeEventListener("keydown", recModalKey);
+  document.removeEventListener("keydown", modalKey);
+}
+function openModal() {
+  closeModal();
+  $modal = document.createElement("div");
+  $modal.className = "modal-backdrop";
+  $modal.innerHTML = `<div class="modal-card"></div>`;
+  document.body.appendChild($modal);
+  document.body.classList.add("modal-open");
+  $modal.addEventListener("click", (e) => { if (e.target === $modal) closeModal(); });
+  document.addEventListener("keydown", modalKey);
+  return $modal.querySelector(".modal-card");
 }
 function openRecurringModal(ctx, rec) {
-  closeRecModal();
-  $recModal = document.createElement("div");
-  $recModal.className = "modal-backdrop";
-  $recModal.innerHTML = `<div class="modal-card"></div>`;
-  document.body.appendChild($recModal);
-  document.body.classList.add("modal-open");
-  $recModal.addEventListener("click", (e) => { if (e.target === $recModal) closeRecModal(); });
-  document.addEventListener("keydown", recModalKey);
-  renderExpenseForm($recModal.querySelector(".modal-card"), ctx, rec, closeRecModal,
-    { recurring: true, backLabel: "Fechar" });
+  renderExpenseForm(openModal(), ctx, rec, closeModal, { recurring: true, backLabel: "Fechar" });
+}
+function openExpenseModal(ctx, x) {
+  renderExpenseForm(openModal(), ctx, x, closeModal, { backLabel: "Fechar" });
 }
 
 // ---------------------------------------------------------------- helpers
@@ -502,7 +507,7 @@ function showSplash() { document.getElementById("splash")?.classList.remove("spl
 function hideSplash() { document.getElementById("splash")?.classList.add("splash-out"); }
 
 async function route() {
-  closeRecModal();
+  closeModal();
   try {
     if (!session) { renderLogin(); return; }
     renderTopbar();
@@ -974,43 +979,44 @@ function renderExpensesTab($c, ctx) {
     && (!filter.from || x.expense_date >= filter.from)
     && (!filter.to || x.expense_date <= filter.to);
 
-  // o shell (pesquisa + datas) desenha-se uma única vez — só a lista e os
-  // chips de categoria voltam a desenhar-se, para o input não perder o foco
+  // o shell (filtros) desenha-se uma única vez — só a lista, os chips de
+  // categoria e a linha de resultados voltam a desenhar-se, para o input
+  // não perder o foco. Pesquisa, datas e categorias vivem num cartão
+  // próprio; a lista noutro; a despesa nova/consulta abre em pop-up (FAB).
   $c.innerHTML = `
-    ${hasCats ? `<div class="cat-strip" id="cat-strip"></div>` : ""}
+    ${members.length === 0
+      ? `<div class="card"><p class="empty">Adiciona primeiro membros no separador «Definições».</p></div>` : ""}
+    ${expenses.length === 0 ? "" : `
+    <div class="card" id="expense-filters">
+      <div class="filter-bar">
+        <div class="search-box">
+          <span class="search-ico">🔍</span>
+          <input id="f-q" type="search" placeholder="Pesquisar por descrição…" autocomplete="off" />
+        </div>
+        <button type="button" class="secondary date-toggle" id="f-dates-btn"
+          title="Filtrar por intervalo de datas">📅</button>
+      </div>
+      <div class="date-range hidden" id="f-dates">
+        <div class="field"><label>De</label><input type="date" id="f-from" /></div>
+        <div class="field"><label>Até</label><input type="date" id="f-to" /></div>
+        <button type="button" class="secondary small" id="f-clear">Limpar</button>
+      </div>
+      ${hasCats ? `<div class="cat-strip in-filters" id="cat-strip"></div>` : ""}
+      <p class="filter-result hidden" id="f-result"></p>
+    </div>`}
+    ${members.length === 0 && expenses.length === 0 ? "" : `
     <div class="card">
-      <div class="header-row" id="expense-list-head">
-        <h2 style="margin:0;" id="expense-count">Despesas</h2>
-        <button id="btn-add-expense" ${members.length === 0 ? "disabled" : ""}>+ Nova despesa</button>
-      </div>
-      ${members.length === 0 ? `<p class="empty">Adiciona primeiro membros no separador «Definições».</p>` : ""}
-      <div id="expense-filters" ${expenses.length === 0 ? `class="hidden"` : ""}>
-        <div class="filter-bar">
-          <div class="search-box">
-            <span class="search-ico">🔍</span>
-            <input id="f-q" type="search" placeholder="Pesquisar por descrição…" autocomplete="off" />
-          </div>
-          <button type="button" class="secondary date-toggle" id="f-dates-btn"
-            title="Filtrar por intervalo de datas">📅</button>
-        </div>
-        <div class="date-range hidden" id="f-dates">
-          <div class="field"><label>De</label><input type="date" id="f-from" /></div>
-          <div class="field"><label>Até</label><input type="date" id="f-to" /></div>
-          <button type="button" class="secondary small" id="f-clear">Limpar</button>
-        </div>
-      </div>
-      <div id="expense-form-slot"></div>
       <div id="expense-list"></div>
-    </div>`;
+    </div>`}
+    <button class="fab" id="btn-add-expense" title="Nova despesa"
+      ${members.length === 0 ? "disabled" : ""}>+</button>`;
 
-  const slot = $c.querySelector("#expense-form-slot");
   const $list = $c.querySelector("#expense-list");
-  const $head = $c.querySelector("#expense-list-head");
-  const $filters = $c.querySelector("#expense-filters");
-  const $count = $c.querySelector("#expense-count");
+  const $result = $c.querySelector("#f-result");
   const $catStrip = $c.querySelector("#cat-strip");
 
   function drawList() {
+    if (!$list) return; // grupo ainda sem membros nem despesas
     const base = expenses.filter(matches);
 
     // chips de categoria (com o total de cada uma dentro do recorte atual)
@@ -1037,9 +1043,12 @@ function renderExpensesTab($c, ctx) {
     const shown = filter.cat ? base.filter(x => catKey(x) === filter.cat) : base;
     const filtered = !!filter.cat || searching();
     const totalShown = shown.reduce((a, x) => a + toCents(x.amount), 0);
-    // com filtros ativos, o título mostra também o total do que está à vista
-    $count.innerHTML = `Despesas ${shown.length
-      ? `<span class="muted">· ${shown.length}${filtered ? ` · ${fmtMoney(totalShown, cur)}` : ""}</span>` : ""}`;
+    // com filtros ativos, o cartão dos filtros mostra o que está à vista
+    if ($result) {
+      $result.classList.toggle("hidden", !filtered);
+      if (filtered) $result.textContent =
+        `${shown.length} despesa${shown.length === 1 ? "" : "s"} · ${fmtMoney(totalShown, cur)}`;
+    }
 
     let lastMonth = null;
     const rows = shown.map(x => {
@@ -1068,47 +1077,37 @@ function renderExpensesTab($c, ctx) {
       ? `<p class="empty">${filtered ? "Nenhuma despesa encontrada com estes filtros." : "Sem despesas ainda."}</p>`
       : `<ul class="list">${rows}</ul>`;
 
+    // consulta da despesa em pop-up — fechar devolve à lista tal como estava
     $list.querySelectorAll("[data-open]").forEach(li => {
-      li.onclick = () => openForm(expenses.find(e => e.id === li.dataset.open));
+      li.onclick = () => openExpenseModal(ctx, expenses.find(e => e.id === li.dataset.open));
     });
   }
 
-  // abre o "detalhe" da despesa: esconde lista, filtros e cabeçalho
-  const openForm = (x) => {
-    $list.style.display = "none";
-    $head.style.display = "none";
-    $filters.style.display = "none";
-    renderExpenseForm(slot, ctx, x, () => {
-      slot.innerHTML = "";
-      $list.style.display = "";
-      $head.style.display = "";
-      $filters.style.display = "";
-    });
-    slot.scrollIntoView({ behavior: "smooth", block: "start" });
-  };
+  $c.querySelector("#btn-add-expense").onclick = () => openExpenseModal(ctx, null);
 
-  $c.querySelector("#btn-add-expense")?.addEventListener("click", () => openForm(null));
-
-  // pesquisa por descrição e intervalo de datas
+  // pesquisa por descrição e intervalo de datas (o cartão dos filtros só
+  // existe quando há despesas)
   const $q = $c.querySelector("#f-q");
-  const $from = $c.querySelector("#f-from");
-  const $to = $c.querySelector("#f-to");
-  const $datesBtn = $c.querySelector("#f-dates-btn");
-  const $dates = $c.querySelector("#f-dates");
-  // o botão 📅 fica realçado enquanto houver datas aplicadas, mesmo com o
-  // painel fechado — para o filtro nunca ficar "escondido" sem se notar
-  const syncDatesBtn = () => $datesBtn.classList.toggle("active", !!(filter.from || filter.to));
-  $q.oninput = () => { filter.q = $q.value; drawList(); };
-  $from.onchange = () => { filter.from = $from.value; syncDatesBtn(); drawList(); };
-  $to.onchange = () => { filter.to = $to.value; syncDatesBtn(); drawList(); };
-  $datesBtn.onclick = () => $dates.classList.toggle("hidden");
-  $c.querySelector("#f-clear").onclick = () => {
-    filter.from = filter.to = "";
-    $from.value = "";
-    $to.value = "";
-    syncDatesBtn();
-    drawList();
-  };
+  if ($q) {
+    const $from = $c.querySelector("#f-from");
+    const $to = $c.querySelector("#f-to");
+    const $datesBtn = $c.querySelector("#f-dates-btn");
+    const $dates = $c.querySelector("#f-dates");
+    // o botão 📅 fica realçado enquanto houver datas aplicadas, mesmo com o
+    // painel fechado — para o filtro nunca ficar "escondido" sem se notar
+    const syncDatesBtn = () => $datesBtn.classList.toggle("active", !!(filter.from || filter.to));
+    $q.oninput = () => { filter.q = $q.value; drawList(); };
+    $from.onchange = () => { filter.from = $from.value; syncDatesBtn(); drawList(); };
+    $to.onchange = () => { filter.to = $to.value; syncDatesBtn(); drawList(); };
+    $datesBtn.onclick = () => $dates.classList.toggle("hidden");
+    $c.querySelector("#f-clear").onclick = () => {
+      filter.from = filter.to = "";
+      $from.value = "";
+      $to.value = "";
+      syncDatesBtn();
+      drawList();
+    };
+  }
 
   drawList();
 }
@@ -1788,18 +1787,36 @@ function renderBalancesTab($c, ctx) {
   // cêntimos: + recebe, - deve (pagamentos já feitos incluídos)
   const balance = Object.fromEntries(groupBalancesCents(members, expenses, payments));
 
-  // sugestões de acerto (algoritmo guloso)
-  const debtors = members.filter(m => balance[m.id] < 0).map(m => ({ m, v: -balance[m.id] })).sort((a, b) => b.v - a.v);
-  const creditors = members.filter(m => balance[m.id] > 0).map(m => ({ m, v: balance[m.id] })).sort((a, b) => b.v - a.v);
+  // sugestões de acerto
+  const debtors = members.filter(m => balance[m.id] < 0).map(m => ({ m, v: -balance[m.id] }));
+  const creditors = members.filter(m => balance[m.id] > 0).map(m => ({ m, v: balance[m.id] }));
   const settlements = [];
+
+  // 1.ª passagem: preferências de liquidação (membro «convidado» acerta
+  // primeiro com o anfitrião — settle_with no membro). Só se aplica quando
+  // um deve e o outro tem a receber; o resto segue a distribuição normal.
+  for (const d of debtors) {
+    const pref = d.m.settle_with;
+    if (!pref || d.v <= 0) continue;
+    const c = creditors.find(x => x.m.id === pref && x.v > 0);
+    if (!c) continue;
+    const pay = Math.min(d.v, c.v);
+    settlements.push({ from: d.m, to: c.m, cents: pay });
+    d.v -= pay;
+    c.v -= pay;
+  }
+
+  // 2.ª passagem: o que sobra distribui-se pelo algoritmo guloso
+  const dRest = debtors.filter(d => d.v > 0).sort((a, b) => b.v - a.v);
+  const cRest = creditors.filter(c => c.v > 0).sort((a, b) => b.v - a.v);
   let di = 0, ci = 0;
-  while (di < debtors.length && ci < creditors.length) {
-    const pay = Math.min(debtors[di].v, creditors[ci].v);
-    if (pay > 0) settlements.push({ from: debtors[di].m, to: creditors[ci].m, cents: pay });
-    debtors[di].v -= pay;
-    creditors[ci].v -= pay;
-    if (debtors[di].v === 0) di++;
-    if (creditors[ci].v === 0) ci++;
+  while (di < dRest.length && ci < cRest.length) {
+    const pay = Math.min(dRest[di].v, cRest[ci].v);
+    if (pay > 0) settlements.push({ from: dRest[di].m, to: cRest[ci].m, cents: pay });
+    dRest[di].v -= pay;
+    cRest[ci].v -= pay;
+    if (dRest[di].v === 0) di++;
+    if (cRest[ci].v === 0) ci++;
   }
 
   // a quem deve / de quem recebe cada pessoa (para a linha secundária)
@@ -1825,94 +1842,109 @@ function renderBalancesTab($c, ctx) {
   // Os saldos e os acertos ficam sempre sobre tudo — dívida é dívida.
   const period = { from: "", to: "" };
 
-  $c.innerHTML = `
+  // cada secção é um cartão colapsável: o resumo abre por defeito, as
+  // seguintes ficam fechadas e abrem ao toque no título
+  const section = (id, title, body, open = false) => `
     <div class="card">
-      <div class="card-title-row">
-        <h2>Resumo dos gastos</h2>
-        <button type="button" class="secondary small date-toggle-txt" id="bp-toggle">📅 Período</button>
+      <div class="collapse-head" data-collapse="${id}">
+        <h2>${title}</h2>
+        <span class="collapse-arrow ${open ? "open" : ""}">▾</span>
       </div>
-      <div class="date-range hidden" id="bp-range">
-        <div class="field"><label>De</label><input type="date" id="bp-from" /></div>
-        <div class="field"><label>Até</label><input type="date" id="bp-to" /></div>
-        <button type="button" class="secondary small" id="bp-clear">Limpar</button>
-      </div>
-      <div id="balance-summary"></div>
-    </div>
-
-    <div class="card">
-      <h2>Saldos</h2>
-      ${members.length === 0 ? `<p class="empty">Sem membros.</p>` : `
-      <ul class="list balances">
-        ${members.map(m => {
-          const b = balance[m.id];
-          const list = b < 0 ? owesTo[m.id] : b > 0 ? getsFrom[m.id] : null;
-          const expandable = (list?.length || 0) > 1;
-          return `<li class="${expandable ? "clickable" : ""}" ${expandable ? `data-bal="${m.id}"` : ""}>
-            ${avatarHtml(m.name)}
-            <div class="item-main">
-              <span class="item-title">${esc(m.name)}</span>
-              ${subline(m.id, b)}
-            </div>
-            <span class="chip ${b > 0 ? "positive" : b < 0 ? "negative" : "zero"}">
-              ${b === 0 ? "✓ em dia" : (b > 0 ? "recebe " : "deve ") + fmtMoney(Math.abs(b), cur)}
-            </span>
-          </li>
-          ${expandable ? `<li class="balance-detail hidden" data-bdetail="${m.id}">
-            <ul class="detail-list">
-              ${list.map(x => `<li>
-                <span>${b < 0 ? "a" : "de"} ${esc(x.name)}</span>
-                <span class="amount">${fmtMoney(x.cents, cur)}</span>
-              </li>`).join("")}
-            </ul>
-          </li>` : ""}`;
-        }).join("")}
-      </ul>`}
-    </div>
-
-    <div class="card">
-      <h2>Como acertar contas</h2>
-      ${settlements.length === 0
-        ? `<p class="empty">Está tudo em dia 🎉</p>`
-        : settlements.map((s, i) => `
-          <div class="settle-line">
-            <span class="settle-avatars">
-              ${avatarHtml(s.from.name)}${avatarHtml(s.to.name)}
-            </span>
-            <div class="item-main">
-              <span class="item-title">${esc(shortName(s.from.name))} <span class="settle-arrow">→</span> ${esc(shortName(s.to.name))}</span>
-            </div>
-            <span class="settle-right">
-              <span class="amount">${fmtMoney(s.cents, cur)}</span>
-              ${paymentsReady ? `<button class="small" data-settle="${i}">Pagar</button>` : ""}
-            </span>
-          </div>`).join("")}
-    </div>
-
-    <div class="card">
-      <div class="card-title-row">
-        <h2>Pagamentos</h2>
-        ${paymentsReady ? `<button class="secondary small" id="btn-add-payment">+ Registar</button>` : ""}
-      </div>
-      ${!paymentsReady ? `<p class="muted">Para ativar o registo de pagamentos, corre a versão mais
-        recente de <code>supabase/schema.sql</code> no SQL Editor do Supabase.</p>` : `
-      <div id="payment-form-slot"></div>
-      ${payments.length === 0
-        ? `<p class="empty">Ainda não há pagamentos registados.</p>`
-        : `<ul class="list">
-            ${payments.map(p => `
-              <li>
-                <div class="item-main">
-                  <span class="item-title payment-line">
-                    ${esc(memberName(p.from_member))} <span class="settle-arrow">→</span> ${esc(memberName(p.to_member))}
-                  </span>
-                  <span class="item-sub">${fmtDate(p.payment_date)}${p.note ? ` · ${esc(p.note)}` : ""}</span>
-                </div>
-                <span class="amount">${fmtMoney(toCents(p.amount), cur)}</span>
-                <button class="ghost small" data-pdel="${p.id}" title="Apagar pagamento">✕</button>
-              </li>`).join("")}
-          </ul>
-          ${totalPaid > 0 ? `<p class="muted" style="text-align:right;margin:.5rem 0 0;">total acertado: ${fmtMoney(totalPaid, cur)}</p>` : ""}`}`}
+      <div class="collapse-body ${open ? "" : "hidden"}" data-body="${id}">${body}</div>
     </div>`;
+
+  const summaryBody = `
+    <div class="collapse-actions">
+      <button type="button" class="secondary small date-toggle-txt" id="bp-toggle">📅 Período</button>
+    </div>
+    <div class="date-range hidden" id="bp-range">
+      <div class="field"><label>De</label><input type="date" id="bp-from" /></div>
+      <div class="field"><label>Até</label><input type="date" id="bp-to" /></div>
+      <button type="button" class="secondary small" id="bp-clear">Limpar</button>
+    </div>
+    <div id="balance-summary"></div>`;
+
+  const balancesBody = members.length === 0 ? `<p class="empty">Sem membros.</p>` : `
+    <ul class="list balances">
+      ${members.map(m => {
+        const b = balance[m.id];
+        const list = b < 0 ? owesTo[m.id] : b > 0 ? getsFrom[m.id] : null;
+        const expandable = (list?.length || 0) > 1;
+        return `<li class="${expandable ? "clickable" : ""}" ${expandable ? `data-bal="${m.id}"` : ""}>
+          ${avatarHtml(m.name)}
+          <div class="item-main">
+            <span class="item-title">${esc(m.name)}</span>
+            ${subline(m.id, b)}
+          </div>
+          <span class="chip ${b > 0 ? "positive" : b < 0 ? "negative" : "zero"}">
+            ${b === 0 ? "✓ em dia" : (b > 0 ? "recebe " : "deve ") + fmtMoney(Math.abs(b), cur)}
+          </span>
+        </li>
+        ${expandable ? `<li class="balance-detail hidden" data-bdetail="${m.id}">
+          <ul class="detail-list">
+            ${list.map(x => `<li>
+              <span>${b < 0 ? "a" : "de"} ${esc(x.name)}</span>
+              <span class="amount">${fmtMoney(x.cents, cur)}</span>
+            </li>`).join("")}
+          </ul>
+        </li>` : ""}`;
+      }).join("")}
+    </ul>`;
+
+  const settleBody = settlements.length === 0
+    ? `<p class="empty">Está tudo em dia 🎉</p>`
+    : settlements.map((s, i) => `
+      <div class="settle-line">
+        <span class="settle-avatars">
+          ${avatarHtml(s.from.name)}${avatarHtml(s.to.name)}
+        </span>
+        <div class="item-main">
+          <span class="item-title">${esc(shortName(s.from.name))} <span class="settle-arrow">→</span> ${esc(shortName(s.to.name))}</span>
+        </div>
+        <span class="settle-right">
+          <span class="amount">${fmtMoney(s.cents, cur)}</span>
+          ${paymentsReady ? `<button class="small" data-settle="${i}">Pagar</button>` : ""}
+        </span>
+      </div>`).join("");
+
+  const paymentsBody = !paymentsReady
+    ? `<p class="muted">Para ativar o registo de pagamentos, corre a versão mais
+      recente de <code>supabase/schema.sql</code> no SQL Editor do Supabase.</p>`
+    : `
+    <div class="collapse-actions">
+      <button type="button" class="secondary small" id="btn-add-payment">+ Registar</button>
+    </div>
+    <div id="payment-form-slot"></div>
+    ${payments.length === 0
+      ? `<p class="empty">Ainda não há pagamentos registados.</p>`
+      : `<ul class="list">
+          ${payments.map(p => `
+            <li>
+              <div class="item-main">
+                <span class="item-title payment-line">
+                  ${esc(memberName(p.from_member))} <span class="settle-arrow">→</span> ${esc(memberName(p.to_member))}
+                </span>
+                <span class="item-sub">${fmtDate(p.payment_date)}${p.note ? ` · ${esc(p.note)}` : ""}</span>
+              </div>
+              <span class="amount">${fmtMoney(toCents(p.amount), cur)}</span>
+              <button class="ghost small" data-pdel="${p.id}" title="Apagar pagamento">✕</button>
+            </li>`).join("")}
+        </ul>
+        ${totalPaid > 0 ? `<p class="muted" style="text-align:right;margin:.5rem 0 0;">total acertado: ${fmtMoney(totalPaid, cur)}</p>` : ""}`}`;
+
+  $c.innerHTML = `
+    ${section("resumo", "Resumo dos gastos", summaryBody, true)}
+    ${section("saldos", "Saldos", balancesBody)}
+    ${section("acertos", "Como acertar contas", settleBody)}
+    ${section("pagamentos", "Pagamentos", paymentsBody)}`;
+
+  // abrir/fechar cada secção ao toque no título
+  $c.querySelectorAll("[data-collapse]").forEach(h => {
+    h.onclick = () => {
+      $c.querySelector(`[data-body="${h.dataset.collapse}"]`).classList.toggle("hidden");
+      h.querySelector(".collapse-arrow").classList.toggle("open");
+    };
+  });
 
   // expandir/encolher o detalhe de um saldo com várias pessoas
   $c.querySelectorAll("[data-bal]").forEach(li => {
@@ -2007,10 +2039,6 @@ function renderBalancesTab($c, ctx) {
           <span class="stat-label">A tua quota</span>
           <span class="stat-value">${fmtMoney(share[myMember.id] || 0, cur)}</span>
         </div>` : ""}
-        <div class="stat">
-          <span class="stat-label">Despesas</span>
-          <span class="stat-value">${xs.length}</span>
-        </div>
       </div>
       ${active ? `<p class="muted period-note">período: ${period.from ? fmtDate(period.from) : "início"} → ${period.to ? fmtDate(period.to) : "hoje"}</p>` : ""}
       ${chart}
@@ -2041,7 +2069,15 @@ function renderBalancesTab($c, ctx) {
 
   const slot = $c.querySelector("#payment-form-slot");
 
+  // garante que a secção Pagamentos está aberta (o «Pagar» de um acerto
+  // pode ser tocado com ela colapsada — o formulário vive lá dentro)
+  const openPayments = () => {
+    $c.querySelector(`[data-body="pagamentos"]`).classList.remove("hidden");
+    $c.querySelector(`[data-collapse="pagamentos"] .collapse-arrow`).classList.add("open");
+  };
+
   function paymentForm(prefill) {
+    openPayments();
     slot.innerHTML = `
       <div class="card inner-card">
         <h2>Registar pagamento</h2>
@@ -2176,6 +2212,7 @@ function renderMembersSection($c, ctx) {
 
   // detalhe de um membro: esconde a lista, mostra o formulário de edição
   function openMember(m) {
+    const others = members.filter(x => x.id !== m.id);
     $wrap.style.display = "none";
     $slot.innerHTML = `
       <div class="card">
@@ -2193,6 +2230,15 @@ function renderMembersSection($c, ctx) {
         ${inviteBlockHtml(m, ctx.group)}
         ${useWeights ? `<div class="field" style="max-width:120px;"><label>Peso</label>
           <input id="m-weight" type="number" step="0.1" min="0" value="${m.default_weight}" /></div>` : ""}
+        ${others.length ? `
+        <div class="field"><label>Liquida preferencialmente com (opcional)</label>
+          <select id="m-settle">
+            <option value="">— sem preferência —</option>
+            ${others.map(o => `<option value="${o.id}" ${m.settle_with === o.id ? "selected" : ""}>${esc(o.name)}</option>`).join("")}
+          </select></div>
+        <p class="muted" style="margin:-.3rem 0 .7rem;">Útil para convidados: se ${esc(shortName(m.name))}
+          tiver a pagar e a pessoa escolhida a receber, o acerto de contas sugere primeiro
+          que liquide com ela, antes da distribuição normal.</p>` : ""}
         <div class="form-actions">
           <button id="m-save">Guardar</button>
           <button class="danger" id="m-del">Remover do grupo</button>
@@ -2209,7 +2255,15 @@ function renderMembersSection($c, ctx) {
       const payload = { name };
       if (!m.user_id) payload.email = $slot.querySelector("#m-email").value.trim() || null;
       if (useWeights) payload.default_weight = parseFloat($slot.querySelector("#m-weight").value) || 0;
-      const { error } = await sb.from("group_members").update(payload).eq("id", m.id);
+      const $settle = $slot.querySelector("#m-settle");
+      if ($settle) payload.settle_with = $settle.value || null;
+      let { error } = await sb.from("group_members").update(payload).eq("id", m.id);
+      // schema antigo sem a coluna settle_with: grava o resto na mesma
+      if (error && "settle_with" in payload && /settle_with/i.test(error.message)) {
+        toast("Preferência de liquidação não gravada — corre o schema.sql mais recente no Supabase", true);
+        delete payload.settle_with;
+        ({ error } = await sb.from("group_members").update(payload).eq("id", m.id));
+      }
       if (error) return toast(error.message, true);
       toast("Membro atualizado");
       refresh();
