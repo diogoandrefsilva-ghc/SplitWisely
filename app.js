@@ -2383,23 +2383,22 @@ function gerarRelatorioGrupo(ctx) {
     </table>`;
 
   // ---- despesas ----
-  // data compacta (dd/mm/aa) para deixar mais espaço às outras colunas e
-  // reduzir as quebras de linha na tabela
+  // data compacta (dia/mês abreviado, ex.: 18/jul) para ganhar espaço e
+  // reduzir as quebras de linha nas restantes colunas
   const shortDate = d => {
     const dt = new Date(d + "T00:00:00");
-    return `${String(dt.getDate()).padStart(2, "0")}/${String(dt.getMonth() + 1).padStart(2, "0")}/${String(dt.getFullYear()).slice(2)}`;
+    const mes = dt.toLocaleDateString("pt-PT", { month: "short" }).replace(".", "");
+    return `${dt.getDate()}/${mes}`;
   };
   const despRows = [...expenses]
     .sort((a, b) => (a.expense_date < b.expense_date ? 1 : a.expense_date > b.expense_date ? -1 : 0))
     .map((x, i) => {
       const c = x.category ? catOf(x.category) : null;
       const quem = x.expense_payers.map(p => memberName(p.member_id)).join(", ") || "—";
-      const nShares = x.expense_shares.length;
       return `<tr style="background:${zebra(i)}">
         <td style="${td}color:#66788a;white-space:nowrap;">${shortDate(x.expense_date)}</td>
         <td style="${td}font-weight:600;">${c ? c.icon + " " : ""}${esc(x.description || "—")}</td>
         <td style="${td}color:#4a534e;font-size:12px;">${esc(quem)}</td>
-        <td style="${td}text-align:center;color:#66788a;">${nShares}</td>
         <td style="${td}text-align:right;font-weight:700;color:#0f9d76;">${fmtMoney(toCents(x.amount), cur)}</td>
       </tr>`;
     }).join("");
@@ -2408,7 +2407,7 @@ function gerarRelatorioGrupo(ctx) {
     <table style="border-radius:8px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.08);font-size:12.5px;">
       <thead><tr style="background:#0b5f47;color:#fff;">
         <th style="${th()}">Data</th><th style="${th()}">Descrição</th>
-        <th style="${th()}">Quem pagou</th><th style="${th("center")}">÷</th><th style="${th("right")}">Valor</th>
+        <th style="${th()}">Quem pagou</th><th style="${th("right")}">Valor</th>
       </tr></thead>
       <tbody>${despRows}</tbody>
     </table>`;
