@@ -1167,7 +1167,9 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
           <span class="rec-ico">🔁</span>
           <div class="rec-banner-text">
             <strong>Despesa recorrente</strong>
-            <span>Repete-se todos os meses. As alterações valem para as próximas ocorrências.</span>
+            <span>${existing
+              ? "Repete-se todos os meses. As alterações valem para as próximas ocorrências."
+              : "Vai repetir-se todos os meses e ser lançada automaticamente."}</span>
           </div>
         </div>`;
     } else if (isOccurrence) {
@@ -2070,7 +2072,7 @@ function renderRecurringSection($c, ctx) {
         ? (next ? `próxima: ${fmtDate(next.toISOString().slice(0, 10))}` : "sem próximas ocorrências")
         : "em pausa";
       return `<li class="clickable" data-open="${r.id}">
-          <span class="date-block"><span class="d">${r.day_of_month}</span><span class="m">todo mês</span></span>
+          <span class="date-block"><span class="m">dia</span><span class="d">${r.day_of_month}</span></span>
           ${catIconHtml(r.category)}
           <div class="item-main">
             <span class="item-title">${esc(r.description)}${r.active ? "" : ' <span class="badge">pausada</span>'}</span>
@@ -2083,37 +2085,22 @@ function renderRecurringSection($c, ctx) {
 
     $c.innerHTML = `
       <div class="card">
-        <div class="header-row" id="rec-head">
+        <div class="header-row">
           <h2 style="margin:0;">Despesas recorrentes ${recurring.length ? `<span class="muted">· ${recurring.length}</span>` : ""}</h2>
           <button id="btn-add-rec" ${members.length === 0 ? "disabled" : ""}>+ Nova</button>
         </div>
         <p class="muted" style="margin-top:-.4rem;">Repetem-se todos os meses num certo dia (renda, ginásio, subscrições…).
           São lançadas automaticamente quando alguém abre a app.</p>
         ${members.length === 0 ? `<p class="empty">Adiciona primeiro membros em baixo.</p>` : ""}
-        <div id="rec-form-slot"></div>
-        <div id="rec-list">
-          ${recurring.length === 0 && members.length > 0
-            ? `<p class="empty">Sem despesas recorrentes ainda.</p>`
-            : `<ul class="list">${rows}</ul>`}
-        </div>
+        ${recurring.length === 0 && members.length > 0
+          ? `<p class="empty">Sem despesas recorrentes ainda.</p>`
+          : `<ul class="list">${rows}</ul>`}
       </div>`;
 
-    const slot = $c.querySelector("#rec-form-slot");
-    const $list = $c.querySelector("#rec-list");
-    const $head = $c.querySelector("#rec-head");
-    const openForm = (r) => {
-      $list.style.display = "none";
-      $head.style.display = "none";
-      renderExpenseForm(slot, ctx, r, () => {
-        slot.innerHTML = "";
-        $list.style.display = "";
-        $head.style.display = "";
-      }, { recurring: true, backLabel: "Recorrentes" });
-      slot.scrollIntoView({ behavior: "smooth", block: "start" });
-    };
-    $c.querySelector("#btn-add-rec")?.addEventListener("click", () => openForm(null));
+    // criar/editar abre no mesmo pop-up usado a partir da lista de despesas
+    $c.querySelector("#btn-add-rec")?.addEventListener("click", () => openRecurringModal(ctx, null));
     $c.querySelectorAll("[data-open]").forEach(li => {
-      li.onclick = () => openForm(recurring.find(x => x.id === li.dataset.open));
+      li.onclick = () => openRecurringModal(ctx, recurring.find(x => x.id === li.dataset.open));
     });
   }
   draw();
