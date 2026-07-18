@@ -380,7 +380,7 @@ async function fetchGroups() {
 }
 
 async function fetchGroupBundle(groupId) {
-  const [g, m, e, p] = await Promise.all([
+  const [g, m, e, p, r] = await Promise.all([
     sb.from("groups").select("*").eq("id", groupId).single(),
     sb.from("group_members").select("*").eq("group_id", groupId).order("created_at"),
     sb.from("expenses")
@@ -391,15 +391,22 @@ async function fetchGroupBundle(groupId) {
     sb.from("payments").select("*").eq("group_id", groupId)
       .order("payment_date", { ascending: false })
       .order("created_at", { ascending: false }),
+    sb.from("recurring_expenses")
+      .select("*, recurring_expense_payers(member_id, amount), recurring_expense_shares(member_id, amount)")
+      .eq("group_id", groupId)
+      .order("created_at"),
   ]);
-  for (const r of [g, m, e]) if (r.error) throw r.error;
-  // A tabela payments pode ainda não existir (schema antigo por atualizar):
-  // degrada sem partir a app, só sem a funcionalidade de pagamentos.
+  for (const rr of [g, m, e]) if (rr.error) throw rr.error;
+  // payments e recurring podem ainda não existir (schema antigo por atualizar):
+  // degrada sem partir a app, só sem essas funcionalidades.
   if (p.error) console.warn("payments indisponível:", p.error.message);
+  if (r.error) console.warn("recurring indisponível:", r.error.message);
   return {
     group: g.data, members: m.data, expenses: e.data,
     payments: p.error ? [] : p.data,
     paymentsReady: !p.error,
+    recurring: r.error ? [] : r.data,
+    recurringReady: !r.error,
   };
 }
 
@@ -773,7 +780,7 @@ async function renderGroup(groupId, tab) {
     bundle = await fetchGroupBundle(groupId);
     groupCache = { id: groupId, data: bundle };
   }
-  const { group, members, expenses, payments, paymentsReady } = bundle;
+  const { group, members, expenses, payments, paymentsReady, recurring, recurringReady } = bundle;
   const isOwner = group.created_by === session.user.id;
 
   const tabs = [
@@ -803,7 +810,7 @@ async function renderGroup(groupId, tab) {
     b.onclick = () => { location.hash = `#/g/${groupId}/${b.dataset.tab}`; };
   });
 
-  const ctx = { group, members, expenses, payments, paymentsReady, isOwner };
+  const ctx = { group, members, expenses, payments, paymentsReady, recurring, recurringReady, isOwner };
   const $c = document.getElementById("tab-content");
   if (tab === "despesas") renderExpensesTab($c, ctx);
   else if (tab === "saldos") renderBalancesTab($c, ctx);
@@ -889,7 +896,7 @@ function renderExpensesTab($c, ctx) {
           ${catIconHtml(x.category)}
           <div class="item-main">
             <span class="item-title">${esc(x.description)}</span>
-            <span class="item-sub">pago por ${esc(payers)} · ${nShares} pessoa${nShares === 1 ? "" : "s"}</span>
+            <span class="item-sub">pago por ${esc(payers)} · ${nShares} pessoa${nShares === 1 ? "" : "s"}${x.recurring_id ? " · 🔁 recorrente" : ""}</span>
           </div>
           <div class="item-end">
             <span class="amount">${fmtMoney(toCents(x.amount), cur)}</span>
@@ -960,22 +967,34 @@ function renderExpensesTab($c, ctx) {
 // Formulário de despesa (nova ou edição), com defaults do grupo.
 // Dividido em secções (Dados / Quem pagou / Divisão) para não ficar
 // um formulário interminável no telemóvel. `onClose` devolve à lista.
-function renderExpenseForm(slot, ctx, existing, onClose) {
+function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
   const { group, members } = ctx;
+  // isRecurringRecord: o registo aberto é um molde recorrente (vs despesa
+  // normal) — fixa de que tabelas se lê o `existing`. O TIPO em si (ocasional/
+  // recorrente) é escolhido no formulário e vive em state.recurring; só é
+  // editável ao criar (uma despesa não se converte em molde e vice-versa).
+  const isRecurringRecord = !!opts.recurring;
+  const lockType = !!existing || !!opts.lockType;
+  const today = new Date().toISOString().slice(0, 10);
   const close = onClose || (() => { slot.innerHTML = ""; });
   const useWeights = !!group.use_weights; // opção do grupo: divisão por proporções
+
+  // pagadores/quotas do registo existente — vêm das tabelas próprias do molde
+  // quando é recorrente, das da despesa quando é normal
+  const exPayers = existing ? (isRecurringRecord ? existing.recurring_expense_payers : existing.expense_payers) : [];
+  const exShares = existing ? (isRecurringRecord ? existing.recurring_expense_shares : existing.expense_shares) : [];
 
   // estado inicial: quem insere a despesa é o pagador pré-selecionado
   const myMember = members.find(m => m.user_id === session.user.id);
   const initPayers = existing
-    ? existing.expense_payers.map(p => p.member_id)
+    ? exPayers.map(p => p.member_id)
     : [myMember ? myMember.id : members[0].id];
 
   const initPayerAmounts = {};
-  if (existing) existing.expense_payers.forEach(p => { initPayerAmounts[p.member_id] = toCents(p.amount); });
+  if (existing) exPayers.forEach(p => { initPayerAmounts[p.member_id] = toCents(p.amount); });
 
   const initShares = {};
-  if (existing) existing.expense_shares.forEach(s => { initShares[s.member_id] = toCents(s.amount); });
+  if (existing) exShares.forEach(s => { initShares[s.member_id] = toCents(s.amount); });
 
   // ao reabrir uma despesa, volta ao modo em que foi gravada (split_mode);
   // despesas de schemas antigos sem a coluna caem no modo "exatos", o
@@ -998,12 +1017,19 @@ function renderExpenseForm(slot, ctx, existing, onClose) {
     payers: new Set(initPayers),
     payerAmounts: { ...initPayerAmounts },
     participants: new Set(existing
-      ? existing.expense_shares.map(s => s.member_id)
+      ? exShares.map(s => s.member_id)
       : useWeights
         ? members.filter(m => Number(m.default_weight) > 0).map(m => m.id)
         : members.map(m => m.id)),
     weights: Object.fromEntries(members.map(m => [m.id, Number(m.default_weight) || 0])),
     exact: { ...initShares },
+    // tipo escolhido no formulário (ocasional vs recorrente)
+    recurring: isRecurringRecord,
+    // campos do molde recorrente (só usados quando state.recurring)
+    dayOfMonth: existing && isRecurringRecord ? existing.day_of_month : new Date().getDate(),
+    startDate: existing && isRecurringRecord ? existing.start_date : today,
+    endDate: existing && isRecurringRecord ? (existing.end_date || "") : "",
+    active: existing && isRecurringRecord ? !!existing.active : true,
   };
 
   function computedShares() {
@@ -1033,22 +1059,52 @@ function renderExpenseForm(slot, ctx, existing, onClose) {
     const okDados = !!state.desc.trim() && state.totalCents > 0;
     const cur = group.currency;
 
+    const amountField = `
+      <div class="field">
+        <label>Valor (${esc(cur)})</label>
+        <input id="x-amount" type="number" step="0.01" min="0" value="${state.totalCents ? (state.totalCents / 100).toFixed(2) : ""}" />
+      </div>`;
+    // seletor do tipo: ocasional (com data) vs recorrente (dia do mês + fim).
+    // bloqueado ao editar — uma despesa não se converte em molde nem o inverso.
+    const typeToggle = `
+      <div class="tabs type-toggle" style="margin-bottom:.7rem;">
+        <button type="button" data-type="occ" class="${state.recurring ? "" : "active"}" ${lockType ? "disabled" : ""}>Ocasional</button>
+        <button type="button" data-type="rec" class="${state.recurring ? "active" : ""}" ${lockType ? "disabled" : ""}>Recorrente</button>
+      </div>`;
+    // recorrente: dia do mês + terminar em (>= hoje) + ativa;  ocasional: data
+    const scheduleFields = state.recurring ? `
+      <div class="row">
+        ${amountField}
+        <div class="field">
+          <label>Dia do mês</label>
+          <input id="x-dom" type="number" min="1" max="31" value="${state.dayOfMonth}" />
+        </div>
+      </div>
+      <div class="row">
+        <div class="field"><label>Terminar em (opcional)</label>
+          <input id="x-end" type="date" min="${today}" value="${esc(state.endDate)}" /></div>
+        <label class="check-line" style="flex:1;align-items:center;">
+          <input type="checkbox" id="x-active" ${state.active ? "checked" : ""} /> Ativa
+        </label>
+      </div>
+      <p class="check-note" style="margin-top:-.3rem;">Repete-se todo o mês neste dia (ajustado ao último dia nos meses mais curtos).
+        É lançada automaticamente quando alguém abre a app.</p>` : `
+      <div class="row">
+        ${amountField}
+        <div class="field">
+          <label>Data</label>
+          <input id="x-date" type="date" value="${esc(state.date)}" />
+        </div>
+      </div>`;
+
     const sections = {
       dados: `
+        ${typeToggle}
         <div class="field">
           <label>Descrição</label>
           <input id="x-desc" value="${esc(state.desc)}" placeholder="Ex.: Jantar no restaurante" />
         </div>
-        <div class="row">
-          <div class="field">
-            <label>Valor (${esc(cur)})</label>
-            <input id="x-amount" type="number" step="0.01" min="0" value="${state.totalCents ? (state.totalCents / 100).toFixed(2) : ""}" />
-          </div>
-          <div class="field">
-            <label>Data</label>
-            <input id="x-date" type="date" value="${esc(state.date)}" />
-          </div>
-        </div>
+        ${scheduleFields}
         <div class="field" style="margin-bottom:.3rem;">
           <label>Categoria <span class="cat-hint" id="x-cat-hint">${state.catAuto && state.category ? "· sugerida automaticamente" : ""}</span></label>
           <div class="cat-row" id="x-cat-row">
@@ -1138,8 +1194,10 @@ function renderExpenseForm(slot, ctx, existing, onClose) {
     slot.innerHTML = `
     <div class="expense-detail">
       <div class="form-head">
-        <button class="back-pill" id="x-back"><span class="arr">←</span> Despesas</button>
-        <h2 style="margin:0;">${existing ? "Detalhe da despesa" : "Nova despesa"}</h2>
+        <button class="back-pill" id="x-back"><span class="arr">←</span> ${esc(opts.backLabel || "Despesas")}</button>
+        <h2 style="margin:0;">${existing
+          ? (state.recurring ? "Despesa recorrente" : "Detalhe da despesa")
+          : "Nova despesa"}</h2>
       </div>
       <div class="tabs form-tabs">
         ${secTab("dados", "Dados", okDados)}
@@ -1149,7 +1207,8 @@ function renderExpenseForm(slot, ctx, existing, onClose) {
       <div class="form-section">${sections[state.section]}</div>
       ${summary}
       <div class="form-actions">
-        <button id="x-save">${existing ? "Guardar alterações" : "Adicionar despesa"}</button>
+        <button id="x-save">${existing ? "Guardar alterações"
+          : (state.recurring ? "Criar recorrente" : "Adicionar despesa")}</button>
         ${existing ? `<button class="danger" id="x-del">Apagar</button>` : ""}
       </div>
     </div>`;
@@ -1158,6 +1217,14 @@ function renderExpenseForm(slot, ctx, existing, onClose) {
     slot.querySelector("#x-back").onclick = close;
     slot.querySelectorAll("[data-sec]").forEach(b => {
       b.onclick = () => { state.section = b.dataset.sec; draw(); };
+    });
+    slot.querySelectorAll("[data-type]").forEach(b => {
+      b.onclick = () => {
+        const rec = b.dataset.type === "rec";
+        if (rec === state.recurring) return;
+        state.recurring = rec;
+        draw();
+      };
     });
 
     const $desc = slot.querySelector("#x-desc");
@@ -1180,6 +1247,15 @@ function renderExpenseForm(slot, ctx, existing, onClose) {
     };
     const $date = slot.querySelector("#x-date");
     if ($date) $date.onchange = () => { state.date = $date.value; };
+    const $dom = slot.querySelector("#x-dom");
+    if ($dom) $dom.onchange = () => {
+      state.dayOfMonth = Math.min(31, Math.max(1, parseInt($dom.value, 10) || 1));
+      $dom.value = state.dayOfMonth;
+    };
+    const $end = slot.querySelector("#x-end");
+    if ($end) $end.onchange = () => { state.endDate = $end.value; };
+    const $active = slot.querySelector("#x-active");
+    if ($active) $active.onchange = () => { state.active = $active.checked; };
     const $amount = slot.querySelector("#x-amount");
     if ($amount) $amount.onchange = () => {
       state.totalCents = toCents($amount.value);
@@ -1242,6 +1318,13 @@ function renderExpenseForm(slot, ctx, existing, onClose) {
     });
 
     slot.querySelector("#x-del")?.addEventListener("click", async () => {
+      if (state.recurring) {
+        if (!confirm("Apagar esta despesa recorrente? As despesas já lançadas mantêm-se — só deixa de lançar novas.")) return;
+        const { error } = await sb.from("recurring_expenses").delete().eq("id", existing.id);
+        if (error) return toast(error.message, true);
+        toast("Recorrente apagada");
+        return refresh();
+      }
       if (!confirm("Apagar esta despesa?")) return;
       const { error } = await sb.from("expenses").delete().eq("id", existing.id);
       if (error) return toast(error.message, true);
@@ -1263,6 +1346,50 @@ function renderExpenseForm(slot, ctx, existing, onClose) {
       if (paidSum2 !== state.totalCents) return fail("pagou", "Os valores pagos não somam o total");
       if (Object.keys(shares2).length === 0) return fail("divide", "Escolhe por quem se divide");
       if (shareSum2 !== state.totalCents) return fail("divide", "A divisão não soma o total");
+
+      // ----- molde recorrente: grava em recurring_* e materializa já -----
+      if (state.recurring) {
+        if (state.dayOfMonth < 1 || state.dayOfMonth > 31) return fail("dados", "Dia do mês tem de ser entre 1 e 31");
+        if (state.endDate && state.endDate < today) return fail("dados", "A data de fim não pode ser anterior a hoje");
+
+        const rpayload = {
+          group_id: group.id,
+          description: desc,
+          amount: (state.totalCents / 100).toFixed(2),
+          category: state.category,
+          split_mode: state.mode,
+          day_of_month: state.dayOfMonth,
+          start_date: state.startDate,
+          end_date: state.endDate || null,
+          active: state.active,
+        };
+        let recId = existing?.id;
+        if (existing) {
+          const { error } = await sb.from("recurring_expenses").update(rpayload).eq("id", existing.id);
+          if (error) return toast(error.message, true);
+          await sb.from("recurring_expense_payers").delete().eq("recurring_id", existing.id);
+          await sb.from("recurring_expense_shares").delete().eq("recurring_id", existing.id);
+        } else {
+          const { data, error } = await sb.from("recurring_expenses").insert(rpayload).select().single();
+          if (error) return toast(error.message, true);
+          recId = data.id;
+        }
+        const rPayerRows = [...state.payers]
+          .filter(id => (state.payerAmounts[id] || 0) > 0)
+          .map(id => ({ recurring_id: recId, member_id: id, amount: (state.payerAmounts[id] / 100).toFixed(2) }));
+        const rShareRows = Object.entries(shares2)
+          .filter(([, c]) => c > 0)
+          .map(([id, c]) => ({ recurring_id: recId, member_id: id, amount: (c / 100).toFixed(2) }));
+        const e1 = await sb.from("recurring_expense_payers").insert(rPayerRows);
+        const e2 = await sb.from("recurring_expense_shares").insert(rShareRows);
+        if (e1.error || e2.error) return toast((e1.error || e2.error).message, true);
+
+        if (state.category) learnCategory(desc, state.category);
+        // materializa já as ocorrências em atraso deste molde (idempotente)
+        try { await sb.rpc("generate_due_recurring"); } catch (_) { /* schema sem RPC */ }
+        toast(existing ? "Despesa recorrente atualizada" : "Despesa recorrente criada");
+        return refresh();
+      }
 
       const payload = {
         group_id: group.id,
@@ -1692,6 +1819,95 @@ function renderMembersSection($c, ctx) {
 }
 
 // ------------------------------------------------ tab: definições
+// próxima ocorrência (>= hoje) de um molde recorrente, ou null se em pausa/terminado
+function nextRecurringDate(r) {
+  if (!r.active) return null;
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const start = new Date(r.start_date + "T00:00:00");
+  const end = r.end_date ? new Date(r.end_date + "T00:00:00") : null;
+  const from = today > start ? today : start;
+  let y = from.getFullYear(), mo = from.getMonth();
+  for (let i = 0; i < 25; i++) {
+    const dim = new Date(y, mo + 1, 0).getDate(); // último dia do mês
+    const occ = new Date(y, mo, Math.min(r.day_of_month, dim)); occ.setHours(0, 0, 0, 0);
+    if (occ >= today && occ >= start && (!end || occ <= end)) return occ;
+    if (end && occ > end) return null;
+    if (++mo > 11) { mo = 0; y++; }
+  }
+  return null;
+}
+
+// secção «Despesas recorrentes» (dentro das Definições do grupo)
+function renderRecurringSection($c, ctx) {
+  const { group, members, recurring, recurringReady } = ctx;
+  const cur = group.currency;
+  const memberName = id => members.find(m => m.id === id)?.name || "?";
+
+  if (!recurringReady) {
+    $c.innerHTML = `<div class="card"><h2>Despesas recorrentes</h2>
+      <p class="empty">Indisponível — corre o <code>schema.sql</code> mais recente no Supabase para ativar.</p></div>`;
+    return;
+  }
+
+  const modeTxt = m => m === "weights" ? "por proporção" : m === "exact" ? "valores exatos" : "partes iguais";
+
+  function draw() {
+    const rows = (recurring || []).map(r => {
+      const payers = (r.recurring_expense_payers || []).map(p => shortName(memberName(p.member_id))).join(", ");
+      const next = nextRecurringDate(r);
+      const sub = r.active
+        ? (next ? `próxima: ${fmtDate(next.toISOString().slice(0, 10))}` : "sem próximas ocorrências")
+        : "em pausa";
+      return `<li class="clickable" data-open="${r.id}">
+          <span class="date-block"><span class="d">${r.day_of_month}</span><span class="m">todo mês</span></span>
+          ${catIconHtml(r.category)}
+          <div class="item-main">
+            <span class="item-title">${esc(r.description)}${r.active ? "" : ' <span class="badge">pausada</span>'}</span>
+            <span class="item-sub">pago por ${esc(payers || "?")} · ${modeTxt(r.split_mode)} · ${esc(sub)}</span>
+          </div>
+          <div class="item-end"><span class="amount">${fmtMoney(toCents(r.amount), cur)}</span></div>
+          <span class="chevron">›</span>
+        </li>`;
+    }).join("");
+
+    $c.innerHTML = `
+      <div class="card">
+        <div class="header-row" id="rec-head">
+          <h2 style="margin:0;">Despesas recorrentes ${recurring.length ? `<span class="muted">· ${recurring.length}</span>` : ""}</h2>
+          <button id="btn-add-rec" ${members.length === 0 ? "disabled" : ""}>+ Nova</button>
+        </div>
+        <p class="muted" style="margin-top:-.4rem;">Repetem-se todos os meses num certo dia (renda, ginásio, subscrições…).
+          São lançadas automaticamente quando alguém abre a app.</p>
+        ${members.length === 0 ? `<p class="empty">Adiciona primeiro membros em baixo.</p>` : ""}
+        <div id="rec-form-slot"></div>
+        <div id="rec-list">
+          ${recurring.length === 0 && members.length > 0
+            ? `<p class="empty">Sem despesas recorrentes ainda.</p>`
+            : `<ul class="list">${rows}</ul>`}
+        </div>
+      </div>`;
+
+    const slot = $c.querySelector("#rec-form-slot");
+    const $list = $c.querySelector("#rec-list");
+    const $head = $c.querySelector("#rec-head");
+    const openForm = (r) => {
+      $list.style.display = "none";
+      $head.style.display = "none";
+      renderExpenseForm(slot, ctx, r, () => {
+        slot.innerHTML = "";
+        $list.style.display = "";
+        $head.style.display = "";
+      }, { recurring: true, lockType: true, backLabel: "Recorrentes" });
+      slot.scrollIntoView({ behavior: "smooth", block: "start" });
+    };
+    $c.querySelector("#btn-add-rec")?.addEventListener("click", () => openForm(null));
+    $c.querySelectorAll("[data-open]").forEach(li => {
+      li.onclick = () => openForm(recurring.find(x => x.id === li.dataset.open));
+    });
+  }
+  draw();
+}
+
 function renderSettingsTab($c, ctx) {
   const { group, isOwner } = ctx;
 
@@ -1720,6 +1936,7 @@ function renderSettingsTab($c, ctx) {
       </form>
     </div>
     <div id="members-section"></div>
+    <div id="recurring-section"></div>
     ${isOwner ? `
     <button type="submit" form="edit-group" id="btn-save-group" style="width:100%;margin-bottom:.8rem;">Guardar definições</button>
     <div class="card">
@@ -1733,6 +1950,9 @@ function renderSettingsTab($c, ctx) {
     $c.querySelector("#members-section"),
     { ...ctx, group: { ...ctx.group, use_weights: useWeights } });
   drawMembers(!!group.use_weights);
+
+  // despesas recorrentes — geríveis por qualquer membro, como as despesas
+  renderRecurringSection($c.querySelector("#recurring-section"), ctx);
 
   if (!isOwner) return;
 
@@ -1791,6 +2011,13 @@ async function initProfile() {
   if (canUse()) {
     const { data: n } = await sb.rpc("claim_memberships");
     if (n > 0) toast(`Foste ligado a ${n} grupo${n === 1 ? "" : "s"} onde te tinham convidado 🎉`);
+    // Materializa despesas recorrentes em atraso (idempotente). Sem servidor:
+    // corre sempre que alguém abre a app. Degrada em silêncio se a RPC ainda
+    // não existir (schema antigo por atualizar).
+    try {
+      const { data: gen } = await sb.rpc("generate_due_recurring");
+      if (gen > 0) toast(`${gen} despesa${gen === 1 ? "" : "s"} recorrente${gen === 1 ? "" : "s"} lançada${gen === 1 ? "" : "s"} 🔁`);
+    } catch (_) { /* schema sem recorrentes */ }
   }
 }
 
