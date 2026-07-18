@@ -80,13 +80,6 @@ function fmtMoney(cents, currency = "EUR") {
     .format((cents || 0) / 100);
 }
 
-// dinheiro arredondado à unidade (sem cêntimos) — para chips/totais compactos
-function fmtMoney0(cents, currency = "EUR") {
-  return new Intl.NumberFormat("pt-PT", {
-    style: "currency", currency, minimumFractionDigits: 0, maximumFractionDigits: 0,
-  }).format(Math.round((cents || 0) / 100));
-}
-
 function toCents(v) {
   const n = parseFloat(String(v).replace(",", "."));
   return Number.isFinite(n) ? Math.round(n * 100) : 0;
@@ -907,7 +900,7 @@ async function renderGroup(groupId, tab) {
         <div class="head-balance">
           <span class="head-balance-label">O teu saldo</span>
           <span class="chip ${myBal > 0 ? "positive" : myBal < 0 ? "negative" : "zero"}">
-            ${myBal === 0 ? "✓ em dia" : (myBal > 0 ? "recebes " : "deves ") + fmtMoney(Math.abs(myBal), group.currency)}
+            ${myBal === 0 ? "✓ em dia" : (myBal > 0 ? "+" : "−") + fmtMoney(Math.abs(myBal), group.currency)}
           </span>
         </div>`;
 
@@ -1034,11 +1027,12 @@ function renderExpensesTab($c, ctx) {
       // a categoria filtrada nunca desaparece da fila, mesmo a zeros —
       // senão não havia forma de a desligar
       if (filter.cat && !catTotals.has(filter.cat)) catTotals.set(filter.cat, 0);
-      const catChip = ([id, cents]) => {
+      // o total de cada categoria não vai no chip — aparece na linha de
+      // resultados (#f-result) por baixo assim que se toca no chip
+      const catChip = ([id]) => {
         const c = id === "none" ? { icon: "🏷️", label: "Sem categoria" } : catOf(id);
         return `<button type="button" class="cat-chip ${filter.cat === id ? "active" : ""}" data-catfilter="${id}">
-          <span class="cc-top">${c.icon}<span>${esc(c.label)}</span></span>
-          <span class="cat-total">${fmtMoney0(cents, cur)}</span></button>`;
+          ${c.icon}<span>${esc(c.label)}</span></button>`;
       };
       $catStrip.innerHTML = [...catTotals.entries()].sort((a, b) => b[1] - a[1]).map(catChip).join("");
       $catStrip.querySelectorAll("[data-catfilter]").forEach(b => {
