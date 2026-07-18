@@ -20,9 +20,13 @@
     <div class="topbar-right" id="topbar-user"></div>
   </header>
 
-  <main id="app">
-    <div class="loading">A carregar…</div>
-  </main>
+  <main id="app"></main>
+
+  <!-- Ecrã de arranque: fica por cima de tudo enquanto os dados carregam -->
+  <div id="splash" class="splash">
+    <div class="splash-brand">💸 SplitWisely</div>
+    <div class="spinner" role="status" aria-label="A carregar"></div>
+  </div>
 
   <div id="toast" class="toast hidden"></div>
 

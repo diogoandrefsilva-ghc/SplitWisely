@@ -85,6 +85,43 @@ main {
 
 .loading { text-align: center; color: var(--muted); padding: 3rem 0; }
 .hidden { display: none; }
+
+/* ================================================================ splash */
+/* ecrã de carregamento a full-screen, com o verde do cabeçalho */
+.splash {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1.5rem;
+  background: linear-gradient(135deg, var(--primary-2), var(--primary));
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  transition: opacity .35s ease, visibility .35s ease;
+}
+.splash.splash-out {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+.splash-brand {
+  color: #fff;
+  font-weight: 800;
+  font-size: 1.6rem;
+  letter-spacing: -.02em;
+  text-shadow: 0 1px 12px rgba(0, 0, 0, .12);
+}
+.spinner {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 3px solid rgba(255, 255, 255, .35);
+  border-top-color: #fff;
+  animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
 .muted { color: var(--muted); font-size: .85rem; }
 
 h1 { font-size: 1.35rem; font-weight: 800; letter-spacing: -.02em; margin: 0; }
@@ -687,6 +724,27 @@ input.saved {
 /* ao editar, o tipo fica bloqueado: mantém o ativo destacado, apaga o outro */
 .tabs button:disabled { cursor: default; }
 .tabs button:disabled:not(.active) { opacity: .5; }
+
+/* aviso de despesa recorrente/ocorrência no topo do formulário (em vez do
+   seletor de tipo, que só faz sentido numa despesa ocasional convertível) */
+.rec-banner {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  margin-bottom: .8rem;
+  padding: .6rem .75rem;
+  background: var(--chip-pos-bg);
+  border: 1px solid rgba(15, 157, 118, .22);
+  border-radius: var(--radius-s);
+}
+@media (prefers-color-scheme: dark) {
+  .rec-banner { border-color: rgba(18, 184, 134, .3); }
+}
+.rec-banner .rec-ico { font-size: 1.2rem; line-height: 1; }
+.rec-banner-text { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.rec-banner-text strong { font-size: .9rem; }
+.rec-banner-text span { font-size: .8rem; color: var(--muted); }
+.rec-banner button { flex-shrink: 0; }
 
 /* ================================================================ formulário de despesa */
 .form-head {
