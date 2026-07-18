@@ -181,6 +181,10 @@ alter table splitwisely.groups
 -- automaticamente quando esse utilizador fizer login (claim_memberships).
 -- default_weight  -> proporção default na divisão de despesas (0 = não entra)
 -- is_default_payer-> pré-selecionado como pagador nas novas despesas
+-- settle_with     -> membro com quem liquida preferencialmente os acertos
+--                    (ex.: um convidado acerta primeiro com o anfitrião que
+--                    o trouxe, se um deve e o outro tem a receber). Opcional;
+--                    null = distribuição normal das sugestões de acerto.
 create table if not exists splitwisely.group_members (
   id uuid primary key default gen_random_uuid(),
   group_id uuid not null references splitwisely.groups (id) on delete cascade,
@@ -189,9 +193,15 @@ create table if not exists splitwisely.group_members (
   user_id uuid references auth.users (id) on delete set null,
   default_weight numeric not null default 1 check (default_weight >= 0),
   is_default_payer boolean not null default false,
+  settle_with uuid references splitwisely.group_members (id) on delete set null,
   created_at timestamptz not null default now(),
   unique (group_id, user_id)
 );
+
+-- migração para instalações antigas (re-executar este ficheiro é seguro)
+alter table splitwisely.group_members
+  add column if not exists settle_with uuid
+    references splitwisely.group_members (id) on delete set null;
 
 -- ---------- CONVITE PENDENTE? ----------
 -- Há um convite por email à espera deste endereço, i.e. alguém com acesso

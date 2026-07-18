@@ -12,6 +12,7 @@ App web estilo Splitwise para gerir despesas partilhadas, feita em HTML/JS puro 
 - **Defaults por grupo** — cada membro tem um *peso* default (a proporção com que entra nas divisões) e pode ser marcado como *pagador default*; as novas despesas vêm pré-preenchidas com isso.
 - **Despesas recorrentes** — ao criar uma despesa escolhes **Ocasional** ou **Recorrente**; na recorrente indicas o **dia do mês** e, se quiseres, uma data para **terminar** (renda, ginásio, subscrições…), com a mesma flexibilidade de divisão das despesas normais. Não há servidor: são **lançadas automaticamente** (no dia marcado, ajustado ao último dia nos meses mais curtos) quando alguém abre a app — sem nunca duplicar, mesmo com várias pessoas a abrir ao mesmo tempo. Os moldes ativos gerem-se também no separador **Definições** do grupo.
 - **Saldos e acerto de contas** — quem deve a quem (com o detalhe de *a quem* por baixo do saldo), sugestões de pagamentos mínimos e **registo de pagamentos**: um clique em «Pagar» numa sugestão pré-preenche o pagamento; os pagamentos registados abatem nos saldos e podem ser apagados.
+- **Liquidação preferencial** — no detalhe de um membro podes indicar com quem ele **liquida preferencialmente** (opcional). Útil para convidados: se o Y é convidado do X, o Y tem a pagar e o X a receber, os acertos sugerem primeiro Y → X, antes da distribuição normal.
 - **PWA para telemóvel** — instalável no ecrã inicial (Android e iOS), abre em ecrã inteiro sem barra do browser, funciona offline para consulta e tem o zoom bloqueado.
 
 ## Configuração (uma vez)
@@ -100,8 +101,9 @@ A app abre depois como qualquer outra, em ecrã inteiro e com o ícone próprio.
 
 > **Já tinhas uma versão anterior do schema?** Volta a correr `supabase/schema.sql` no SQL
 > Editor (é idempotente) para apanhar as novidades — a tabela `payments` dos pagamentos, a
-> aprovação automática de quem é convidado por email e as **despesas recorrentes** (tabelas
-> `recurring_expenses` + a RPC `generate_due_recurring`).
+> aprovação automática de quem é convidado por email, as **despesas recorrentes** (tabelas
+> `recurring_expenses` + a RPC `generate_due_recurring`) e a coluna `settle_with` da
+> **liquidação preferencial** nos membros.
 
 ## Estrutura
 
