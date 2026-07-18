@@ -169,6 +169,21 @@ function splitByWeights(totalCents, weights) {
   return base;
 }
 
+// Saldo líquido de um membro no grupo (cêntimos): o que pagou em despesas e
+// acertos, menos a parte que lhe coube e o que recebeu em acertos.
+function memberNetCents(memberId, expenses, payments) {
+  let b = 0;
+  for (const x of expenses) {
+    for (const p of x.expense_payers) if (p.member_id === memberId) b += toCents(p.amount);
+    for (const s of x.expense_shares) if (s.member_id === memberId) b -= toCents(s.amount);
+  }
+  for (const p of payments) {
+    if (p.from_member === memberId) b += toCents(p.amount);
+    if (p.to_member === memberId) b -= toCents(p.amount);
+  }
+  return b;
+}
+
 // ---------------------------------------------------------------- categorias
 // Lista fixa de categorias de despesa, cada uma com um ícone simples.
 // Na base de dados grava-se só o id (coluna expenses.category, nullable).
@@ -821,6 +836,17 @@ async function renderGroup(groupId, tab) {
   const { group, members, expenses, payments, paymentsReady, recurring, recurringReady } = bundle;
   const isOwner = group.created_by === session.user.id;
 
+  // o saldo atual do utilizador vive aqui, alinhado com o título do grupo
+  const myMember = members.find(m => m.user_id === session.user.id);
+  const myBal = myMember ? memberNetCents(myMember.id, expenses, payments) : null;
+  const headBalance = myBal === null ? "" : `
+        <div class="head-balance">
+          <span class="head-balance-label">O teu saldo</span>
+          <span class="chip ${myBal > 0 ? "positive" : myBal < 0 ? "negative" : "zero"}">
+            ${myBal === 0 ? "✓ em dia" : (myBal > 0 ? "recebes " : "deves ") + fmtMoney(Math.abs(myBal), group.currency)}
+          </span>
+        </div>`;
+
   const tabs = [
     ["despesas", "Despesas"],
     ["saldos", "Saldos"],
@@ -835,6 +861,7 @@ async function renderGroup(groupId, tab) {
           <h1>${esc(group.name)}</h1>
           <span class="badge">${esc(group.currency)}</span>
         </div>
+        ${headBalance}
       </div>
       ${group.description ? `<p class="page-desc">${esc(group.description)}</p>` : ""}
     </div>
@@ -857,7 +884,7 @@ async function renderGroup(groupId, tab) {
 
 // ------------------------------------------------ tab: despesas
 function renderExpensesTab($c, ctx) {
-  const { group, members, expenses, payments } = ctx;
+  const { group, members, expenses } = ctx;
   const memberName = id => members.find(m => m.id === id)?.name || "?";
   const myMember = members.find(m => m.user_id === session.user.id);
   const cur = group.currency;
@@ -875,33 +902,6 @@ function renderExpensesTab($c, ctx) {
       ${net > 0 ? "+" : ""}${fmtMoney(net, cur)}</span>`;
   };
 
-  // resumo: total do grupo + o meu saldo (despesas e pagamentos)
-  const total = expenses.reduce((a, x) => a + toCents(x.amount), 0);
-  let myBalance = 0;
-  if (myMember) {
-    for (const x of expenses) {
-      for (const p of x.expense_payers) if (p.member_id === myMember.id) myBalance += toCents(p.amount);
-      for (const s of x.expense_shares) if (s.member_id === myMember.id) myBalance -= toCents(s.amount);
-    }
-    for (const p of payments) {
-      if (p.from_member === myMember.id) myBalance += toCents(p.amount);
-      if (p.to_member === myMember.id) myBalance -= toCents(p.amount);
-    }
-  }
-  const statStrip = members.length === 0 ? "" : `
-    <div class="stat-strip">
-      <div class="stat">
-        <span class="stat-label">Total do grupo</span>
-        <span class="stat-value">${fmtMoney(total, cur)}</span>
-      </div>
-      ${myMember ? `
-      <div class="stat">
-        <span class="stat-label">O teu saldo</span>
-        <span class="stat-value ${myBalance > 0 ? "positive" : myBalance < 0 ? "negative" : "zero"}">
-          ${myBalance === 0 ? "em dia" : (myBalance > 0 ? "+" : "−") + fmtMoney(Math.abs(myBalance), cur)}</span>
-      </div>` : ""}
-    </div>`;
-
   // linhas agrupadas por mês; a data fica num bloco compacto à esquerda
   const monthLabel = (d) =>
     new Date(d + "T00:00:00").toLocaleDateString("pt-PT", { month: "long", year: "numeric" });
@@ -911,16 +911,85 @@ function renderExpensesTab($c, ctx) {
       <span class="m">${dt.toLocaleDateString("pt-PT", { month: "short" }).replace(".", "")}</span></span>`;
   };
 
-  // totais por categoria — a fila de chips por cima da lista mostra quanto
-  // já foi em cada uma e serve de filtro (toca numa para ver só essas)
+  // filtros da lista: categoria (chips), texto e intervalo de datas.
+  // Os totais dos chips são calculados sobre o recorte de texto/datas,
+  // por isso mostram quanto foi em cada categoria nesse recorte.
   const catKey = (x) => (x.category && catOf(x.category)) ? x.category : "none";
-  const catTotals = new Map();
-  for (const x of expenses) catTotals.set(catKey(x), (catTotals.get(catKey(x)) || 0) + toCents(x.amount));
-  const hasCats = [...catTotals.keys()].some(k => k !== "none");
-  let filterCat = null; // id da categoria, "none" (sem categoria) ou null = todas
+  const hasCats = expenses.some(x => catKey(x) !== "none");
+  const filter = { cat: null, q: "", from: "", to: "" };
+  const searching = () => !!(filter.q.trim() || filter.from || filter.to);
+  const matches = (x) =>
+    (!filter.q.trim() || catNorm(x.description).includes(catNorm(filter.q.trim())))
+    && (!filter.from || x.expense_date >= filter.from)
+    && (!filter.to || x.expense_date <= filter.to);
 
-  function drawTab() {
-    const shown = filterCat ? expenses.filter(x => catKey(x) === filterCat) : expenses;
+  // o shell (pesquisa + datas) desenha-se uma única vez — só a lista e os
+  // chips de categoria voltam a desenhar-se, para o input não perder o foco
+  $c.innerHTML = `
+    ${hasCats ? `<div class="cat-strip" id="cat-strip"></div>` : ""}
+    <div class="card">
+      <div class="header-row" id="expense-list-head">
+        <h2 style="margin:0;" id="expense-count">Despesas</h2>
+        <button id="btn-add-expense" ${members.length === 0 ? "disabled" : ""}>+ Nova despesa</button>
+      </div>
+      ${members.length === 0 ? `<p class="empty">Adiciona primeiro membros no separador «Definições».</p>` : ""}
+      <div id="expense-filters" ${expenses.length === 0 ? `class="hidden"` : ""}>
+        <div class="filter-bar">
+          <div class="search-box">
+            <span class="search-ico">🔍</span>
+            <input id="f-q" type="search" placeholder="Pesquisar por descrição…" autocomplete="off" />
+          </div>
+          <button type="button" class="secondary date-toggle" id="f-dates-btn"
+            title="Filtrar por intervalo de datas">📅</button>
+        </div>
+        <div class="date-range hidden" id="f-dates">
+          <div class="field"><label>De</label><input type="date" id="f-from" /></div>
+          <div class="field"><label>Até</label><input type="date" id="f-to" /></div>
+          <button type="button" class="secondary small" id="f-clear">Limpar</button>
+        </div>
+      </div>
+      <div id="expense-form-slot"></div>
+      <div id="expense-list"></div>
+    </div>`;
+
+  const slot = $c.querySelector("#expense-form-slot");
+  const $list = $c.querySelector("#expense-list");
+  const $head = $c.querySelector("#expense-list-head");
+  const $filters = $c.querySelector("#expense-filters");
+  const $count = $c.querySelector("#expense-count");
+  const $catStrip = $c.querySelector("#cat-strip");
+
+  function drawList() {
+    const base = expenses.filter(matches);
+
+    // chips de categoria (com o total de cada uma dentro do recorte atual)
+    if ($catStrip) {
+      const catTotals = new Map();
+      for (const x of base) catTotals.set(catKey(x), (catTotals.get(catKey(x)) || 0) + toCents(x.amount));
+      // a categoria filtrada nunca desaparece da fila, mesmo a zeros —
+      // senão não havia forma de a desligar
+      if (filter.cat && !catTotals.has(filter.cat)) catTotals.set(filter.cat, 0);
+      const catChip = ([id, cents]) => {
+        const c = id === "none" ? { icon: "🏷️", label: "Sem categoria" } : catOf(id);
+        return `<button type="button" class="cat-chip ${filter.cat === id ? "active" : ""}" data-catfilter="${id}">
+          ${c.icon}<span>${esc(c.label)}</span><span class="cat-total">${fmtMoney(cents, cur)}</span></button>`;
+      };
+      $catStrip.innerHTML = [...catTotals.entries()].sort((a, b) => b[1] - a[1]).map(catChip).join("");
+      $catStrip.querySelectorAll("[data-catfilter]").forEach(b => {
+        b.onclick = () => {
+          filter.cat = filter.cat === b.dataset.catfilter ? null : b.dataset.catfilter;
+          drawList();
+        };
+      });
+    }
+
+    const shown = filter.cat ? base.filter(x => catKey(x) === filter.cat) : base;
+    const filtered = !!filter.cat || searching();
+    const totalShown = shown.reduce((a, x) => a + toCents(x.amount), 0);
+    // com filtros ativos, o título mostra também o total do que está à vista
+    $count.innerHTML = `Despesas ${shown.length
+      ? `<span class="muted">· ${shown.length}${filtered ? ` · ${fmtMoney(totalShown, cur)}` : ""}</span>` : ""}`;
+
     let lastMonth = null;
     const rows = shown.map(x => {
       const payers = x.expense_payers.map(p => memberName(p.member_id)).join(", ");
@@ -944,62 +1013,53 @@ function renderExpensesTab($c, ctx) {
         </li>`;
     }).join("");
 
-    const catChip = ([id, cents]) => {
-      const c = id === "none" ? { icon: "🏷️", label: "Sem categoria" } : catOf(id);
-      return `<button type="button" class="cat-chip ${filterCat === id ? "active" : ""}" data-catfilter="${id}">
-        ${c.icon}<span>${esc(c.label)}</span><span class="cat-total">${fmtMoney(cents, cur)}</span></button>`;
-    };
-    const catStrip = !hasCats ? "" : `
-      <div class="cat-strip">
-        ${[...catTotals.entries()].sort((a, b) => b[1] - a[1]).map(catChip).join("")}
-      </div>`;
+    $list.innerHTML = shown.length === 0 && members.length > 0
+      ? `<p class="empty">${filtered ? "Nenhuma despesa encontrada com estes filtros." : "Sem despesas ainda."}</p>`
+      : `<ul class="list">${rows}</ul>`;
 
-    $c.innerHTML = `
-      ${statStrip}
-      ${catStrip}
-      <div class="card">
-        <div class="header-row" id="expense-list-head">
-          <h2 style="margin:0;">Despesas ${shown.length ? `<span class="muted">· ${shown.length}</span>` : ""}</h2>
-          <button id="btn-add-expense" ${members.length === 0 ? "disabled" : ""}>+ Nova despesa</button>
-        </div>
-        ${members.length === 0 ? `<p class="empty">Adiciona primeiro membros no separador «Definições».</p>` : ""}
-        <div id="expense-form-slot"></div>
-        <div id="expense-list">
-        ${shown.length === 0 && members.length > 0
-          ? `<p class="empty">${filterCat ? "Sem despesas nesta categoria." : "Sem despesas ainda."}</p>`
-          : `<ul class="list">${rows}</ul>`}
-        </div>
-      </div>`;
-
-    const slot = $c.querySelector("#expense-form-slot");
-    const $list = $c.querySelector("#expense-list");
-    const $head = $c.querySelector("#expense-list-head");
-
-    // abre o "detalhe" da despesa: esconde a lista, mostra o formulário
-    const openForm = (x) => {
-      $list.style.display = "none";
-      $head.style.display = "none";
-      renderExpenseForm(slot, ctx, x, () => {
-        slot.innerHTML = "";
-        $list.style.display = "";
-        $head.style.display = "";
-      });
-      slot.scrollIntoView({ behavior: "smooth", block: "start" });
-    };
-
-    $c.querySelector("#btn-add-expense")?.addEventListener("click", () => openForm(null));
-    $c.querySelectorAll("[data-open]").forEach(li => {
+    $list.querySelectorAll("[data-open]").forEach(li => {
       li.onclick = () => openForm(expenses.find(e => e.id === li.dataset.open));
-    });
-    $c.querySelectorAll("[data-catfilter]").forEach(b => {
-      b.onclick = () => {
-        filterCat = filterCat === b.dataset.catfilter ? null : b.dataset.catfilter;
-        drawTab();
-      };
     });
   }
 
-  drawTab();
+  // abre o "detalhe" da despesa: esconde lista, filtros e cabeçalho
+  const openForm = (x) => {
+    $list.style.display = "none";
+    $head.style.display = "none";
+    $filters.style.display = "none";
+    renderExpenseForm(slot, ctx, x, () => {
+      slot.innerHTML = "";
+      $list.style.display = "";
+      $head.style.display = "";
+      $filters.style.display = "";
+    });
+    slot.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  $c.querySelector("#btn-add-expense")?.addEventListener("click", () => openForm(null));
+
+  // pesquisa por descrição e intervalo de datas
+  const $q = $c.querySelector("#f-q");
+  const $from = $c.querySelector("#f-from");
+  const $to = $c.querySelector("#f-to");
+  const $datesBtn = $c.querySelector("#f-dates-btn");
+  const $dates = $c.querySelector("#f-dates");
+  // o botão 📅 fica realçado enquanto houver datas aplicadas, mesmo com o
+  // painel fechado — para o filtro nunca ficar "escondido" sem se notar
+  const syncDatesBtn = () => $datesBtn.classList.toggle("active", !!(filter.from || filter.to));
+  $q.oninput = () => { filter.q = $q.value; drawList(); };
+  $from.onchange = () => { filter.from = $from.value; syncDatesBtn(); drawList(); };
+  $to.onchange = () => { filter.to = $to.value; syncDatesBtn(); drawList(); };
+  $datesBtn.onclick = () => $dates.classList.toggle("hidden");
+  $c.querySelector("#f-clear").onclick = () => {
+    filter.from = filter.to = "";
+    $from.value = "";
+    $to.value = "";
+    syncDatesBtn();
+    drawList();
+  };
+
+  drawList();
 }
 
 // Formulário de despesa (nova ou edição), com defaults do grupo.
@@ -1716,8 +1776,26 @@ function renderBalancesTab($c, ctx) {
   };
 
   const totalPaid = payments.reduce((a, p) => a + toCents(p.amount), 0);
+  const myMember = members.find(m => m.user_id === session.user.id);
+
+  // intervalo de datas do resumo: recorta o total, as quotas e o gráfico.
+  // Os saldos e os acertos ficam sempre sobre tudo — dívida é dívida.
+  const period = { from: "", to: "" };
 
   $c.innerHTML = `
+    <div class="card">
+      <div class="card-title-row">
+        <h2>Resumo dos gastos</h2>
+        <button type="button" class="secondary small date-toggle-txt" id="bp-toggle">📅 Período</button>
+      </div>
+      <div class="date-range hidden" id="bp-range">
+        <div class="field"><label>De</label><input type="date" id="bp-from" /></div>
+        <div class="field"><label>Até</label><input type="date" id="bp-to" /></div>
+        <button type="button" class="secondary small" id="bp-clear">Limpar</button>
+      </div>
+      <div id="balance-summary"></div>
+    </div>
+
     <div class="card">
       <h2>Saldos</h2>
       ${members.length === 0 ? `<p class="empty">Sem membros.</p>` : `
@@ -1801,6 +1879,117 @@ function renderBalancesTab($c, ctx) {
       li.querySelector(".expand-arrow")?.classList.toggle("open");
     };
   });
+
+  // ---- resumo dos gastos: total, quota por pessoa e mini gráfico mensal ----
+  const $sum = $c.querySelector("#balance-summary");
+
+  function drawSummary() {
+    const xs = expenses.filter(x =>
+      (!period.from || x.expense_date >= period.from) && (!period.to || x.expense_date <= period.to));
+    const active = !!(period.from || period.to);
+    const total = xs.reduce((a, x) => a + toCents(x.amount), 0);
+
+    // quota (a parte que coube a cada um) e pago (o que cada um adiantou)
+    const share = {}, paid = {};
+    for (const m of members) { share[m.id] = 0; paid[m.id] = 0; }
+    for (const x of xs) {
+      for (const p of x.expense_payers) if (p.member_id in paid) paid[p.member_id] += toCents(p.amount);
+      for (const s of x.expense_shares) if (s.member_id in share) share[s.member_id] += toCents(s.amount);
+    }
+
+    // gastos por mês para o mini gráfico, com os meses sem despesas a zero
+    const byMonth = new Map();
+    for (const x of xs) {
+      const ym = x.expense_date.slice(0, 7);
+      byMonth.set(ym, (byMonth.get(ym) || 0) + toCents(x.amount));
+    }
+    let chart = "";
+    if (byMonth.size >= 2) {
+      const keys = [...byMonth.keys()].sort();
+      const months = [];
+      let [y, mo] = keys[0].split("-").map(Number);
+      const [ey, emo] = keys[keys.length - 1].split("-").map(Number);
+      while (y < ey || (y === ey && mo <= emo)) {
+        const ym = `${y}-${String(mo).padStart(2, "0")}`;
+        months.push([ym, byMonth.get(ym) || 0]);
+        if (++mo > 12) { mo = 1; y++; }
+      }
+      const bars = months.slice(-12); // no máximo o último ano de barras
+      const max = Math.max(...bars.map(b => b[1]), 1);
+      const multiYear = new Set(bars.map(([ym]) => ym.slice(0, 4))).size > 1;
+      const lbl = (ym) => {
+        const d = new Date(ym + "-01T00:00:00");
+        const m2 = d.toLocaleDateString("pt-PT", { month: "short" }).replace(".", "");
+        return multiYear ? `${m2} ${String(d.getFullYear()).slice(2)}` : m2;
+      };
+      chart = `<div class="mini-chart">${bars.map(([ym, c]) => `
+        <div class="mc-col" title="${lbl(ym)}: ${fmtMoney(c, cur)}">
+          ${bars.length <= 8 ? `<span class="mc-val">${c ? Math.round(c / 100) : ""}</span>` : ""}
+          <div class="mc-bar-wrap"><div class="mc-bar" style="height:${Math.max(3, Math.round(c / max * 100))}%"></div></div>
+          <span class="mc-lbl">${lbl(ym)}</span>
+        </div>`).join("")}</div>`;
+    }
+
+    const maxShare = Math.max(...members.map(m => share[m.id]), 1);
+    const rows = [...members].sort((a, b) => share[b.id] - share[a.id]).map(m => {
+      const s = share[m.id], p = paid[m.id];
+      const pct = total > 0 ? Math.round(s / total * 100) : 0;
+      return `<div class="quota-row">
+        ${avatarHtml(m.name)}
+        <div class="quota-main">
+          <div class="quota-top">
+            <span class="quota-name">${esc(m.name)}</span>
+            <span class="quota-amt">${fmtMoney(s, cur)}</span>
+          </div>
+          <div class="quota-bar"><div class="quota-fill" style="width:${Math.round(s / maxShare * 100)}%"></div></div>
+          <div class="quota-foot">
+            <span>${pct}% do total</span>
+            <span>pagou ${fmtMoney(p, cur)}</span>
+          </div>
+        </div>
+      </div>`;
+    }).join("");
+
+    $sum.innerHTML = `
+      <div class="stat-strip in-card">
+        <div class="stat">
+          <span class="stat-label">Total do grupo</span>
+          <span class="stat-value">${fmtMoney(total, cur)}</span>
+        </div>
+        ${myMember ? `
+        <div class="stat">
+          <span class="stat-label">A tua quota</span>
+          <span class="stat-value">${fmtMoney(share[myMember.id] || 0, cur)}</span>
+        </div>` : ""}
+        <div class="stat">
+          <span class="stat-label">Despesas</span>
+          <span class="stat-value">${xs.length}</span>
+        </div>
+      </div>
+      ${active ? `<p class="muted period-note">período: ${period.from ? fmtDate(period.from) : "início"} → ${period.to ? fmtDate(period.to) : "hoje"}</p>` : ""}
+      ${chart}
+      ${members.length === 0 ? "" : xs.length === 0
+        ? `<p class="empty">Sem despesas ${active ? "neste período" : "ainda"}.</p>`
+        : `<p class="muted quota-hint">Quota por pessoa — a parte das despesas que coube a cada um.</p>${rows}`}`;
+  }
+
+  const $bpToggle = $c.querySelector("#bp-toggle");
+  const $bpRange = $c.querySelector("#bp-range");
+  const $bpFrom = $c.querySelector("#bp-from");
+  const $bpTo = $c.querySelector("#bp-to");
+  // como nas despesas: o botão fica realçado enquanto o período estiver ativo
+  const syncPeriodBtn = () => $bpToggle.classList.toggle("active", !!(period.from || period.to));
+  $bpToggle.onclick = () => $bpRange.classList.toggle("hidden");
+  $bpFrom.onchange = () => { period.from = $bpFrom.value; syncPeriodBtn(); drawSummary(); };
+  $bpTo.onchange = () => { period.to = $bpTo.value; syncPeriodBtn(); drawSummary(); };
+  $c.querySelector("#bp-clear").onclick = () => {
+    period.from = period.to = "";
+    $bpFrom.value = "";
+    $bpTo.value = "";
+    syncPeriodBtn();
+    drawSummary();
+  };
+  drawSummary();
 
   if (!paymentsReady) return;
 
