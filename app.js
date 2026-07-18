@@ -974,7 +974,12 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
   // recorrente) é escolhido no formulário e vive em state.recurring; só é
   // editável ao criar (uma despesa não se converte em molde e vice-versa).
   const isRecurringRecord = !!opts.recurring;
-  const lockType = !!existing || !!opts.lockType;
+  // o seletor só se bloqueia ao editar um MOLDE já existente (um molde não se
+  // converte em despesa ocasional). Ao criar, ou ao editar uma despesa
+  // ocasional (que se pode tornar recorrente daí para a frente), fica livre.
+  const lockType = !!existing && isRecurringRecord;
+  // ao editar uma despesa ocasional e ligar «Recorrente», estamos a convertê-la
+  const converting = !!existing && !isRecurringRecord;
   const today = new Date().toISOString().slice(0, 10);
   const close = onClose || (() => { slot.innerHTML = ""; });
   const useWeights = !!group.use_weights; // opção do grupo: divisão por proporções
@@ -1026,7 +1031,9 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     // tipo escolhido no formulário (ocasional vs recorrente)
     recurring: isRecurringRecord,
     // campos do molde recorrente (só usados quando state.recurring)
-    dayOfMonth: existing && isRecurringRecord ? existing.day_of_month : new Date().getDate(),
+    // ao converter uma despesa, o dia default é o dia da própria despesa
+    dayOfMonth: existing && isRecurringRecord ? existing.day_of_month
+      : (existing ? new Date(existing.expense_date + "T00:00:00").getDate() : new Date().getDate()),
     startDate: existing && isRecurringRecord ? existing.start_date : today,
     endDate: existing && isRecurringRecord ? (existing.end_date || "") : "",
     active: existing && isRecurringRecord ? !!existing.active : true,
@@ -1088,7 +1095,7 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
         </label>
       </div>
       <p class="check-note" style="margin-top:-.3rem;">Repete-se todo o mês neste dia (ajustado ao último dia nos meses mais curtos).
-        É lançada automaticamente quando alguém abre a app.</p>` : `
+        É lançada automaticamente quando alguém abre a app.${converting ? " Esta despesa passa a ser a primeira ocorrência." : ""}</p>` : `
       <div class="row">
         ${amountField}
         <div class="field">
@@ -1207,7 +1214,8 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
       <div class="form-section">${sections[state.section]}</div>
       ${summary}
       <div class="form-actions">
-        <button id="x-save">${existing ? "Guardar alterações"
+        <button id="x-save">${converting && state.recurring ? "Tornar recorrente"
+          : existing ? "Guardar alterações"
           : (state.recurring ? "Criar recorrente" : "Adicionar despesa")}</button>
         ${existing ? `<button class="danger" id="x-del">Apagar</button>` : ""}
       </div>
@@ -1318,7 +1326,7 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     });
 
     slot.querySelector("#x-del")?.addEventListener("click", async () => {
-      if (state.recurring) {
+      if (isRecurringRecord) {
         if (!confirm("Apagar esta despesa recorrente? As despesas já lançadas mantêm-se — só deixa de lançar novas.")) return;
         const { error } = await sb.from("recurring_expenses").delete().eq("id", existing.id);
         if (error) return toast(error.message, true);
@@ -1346,6 +1354,67 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
       if (paidSum2 !== state.totalCents) return fail("pagou", "Os valores pagos não somam o total");
       if (Object.keys(shares2).length === 0) return fail("divide", "Escolhe por quem se divide");
       if (shareSum2 !== state.totalCents) return fail("divide", "A divisão não soma o total");
+
+      // ----- converter uma despesa ocasional em recorrente daí para a frente -----
+      // cria um molde a partir desta despesa e liga-a como 1.ª ocorrência (o
+      // índice único impede que a geração a duplique). Guarda: não pode existir
+      // outra despesa com a mesma descrição em data POSTERIOR, senão a geração
+      // criaria duplicados dos meses que já foram lançados à mão.
+      if (state.recurring && converting) {
+        if (state.dayOfMonth < 1 || state.dayOfMonth > 31) return fail("dados", "Dia do mês tem de ser entre 1 e 31");
+        if (state.endDate && state.endDate < today) return fail("dados", "A data de fim não pode ser anterior a hoje");
+
+        const { data: later, error: qErr } = await sb.from("expenses")
+          .select("id, expense_date")
+          .eq("group_id", group.id)
+          .eq("description", desc)
+          .gt("expense_date", existing.expense_date)
+          .order("expense_date").limit(1);
+        if (qErr) return toast(qErr.message, true);
+        if (later && later.length) {
+          return fail("dados", `Já existe uma despesa «${desc}» em ${fmtDate(later[0].expense_date)}, posterior a esta. `
+            + "Apaga-a ou muda a descrição antes de tornar recorrente (senão ficavam duplicadas).");
+        }
+
+        const period = existing.expense_date.slice(0, 8) + "01"; // 1.º dia do mês (YYYY-MM-01)
+        // 1) cria o molde a partir dos valores atuais do formulário
+        const rpayload = {
+          group_id: group.id, description: desc, amount: (state.totalCents / 100).toFixed(2),
+          category: state.category, split_mode: state.mode, day_of_month: state.dayOfMonth,
+          start_date: period, end_date: state.endDate || null, active: state.active,
+        };
+        const { data: rec, error: rErr } = await sb.from("recurring_expenses").insert(rpayload).select().single();
+        if (rErr) return toast(rErr.message, true);
+        const rPayerRows = [...state.payers].filter(id => (state.payerAmounts[id] || 0) > 0)
+          .map(id => ({ recurring_id: rec.id, member_id: id, amount: (state.payerAmounts[id] / 100).toFixed(2) }));
+        const rShareRows = Object.entries(shares2).filter(([, c]) => c > 0)
+          .map(([id, c]) => ({ recurring_id: rec.id, member_id: id, amount: (c / 100).toFixed(2) }));
+        const re1 = await sb.from("recurring_expense_payers").insert(rPayerRows);
+        const re2 = await sb.from("recurring_expense_shares").insert(rShareRows);
+        if (re1.error || re2.error) return toast((re1.error || re2.error).message, true);
+
+        // 2) atualiza a despesa (aplica edições) e liga-a ao molde como 1.ª ocorrência
+        const { error: uErr } = await sb.from("expenses").update({
+          description: desc, amount: (state.totalCents / 100).toFixed(2),
+          split_mode: state.mode, category: state.category,
+          recurring_id: rec.id, recurring_period: period,
+        }).eq("id", existing.id);
+        if (uErr) return toast(uErr.message, true);
+        await sb.from("expense_payers").delete().eq("expense_id", existing.id);
+        await sb.from("expense_shares").delete().eq("expense_id", existing.id);
+        const pRows = [...state.payers].filter(id => (state.payerAmounts[id] || 0) > 0)
+          .map(id => ({ expense_id: existing.id, member_id: id, amount: (state.payerAmounts[id] / 100).toFixed(2) }));
+        const sRows = Object.entries(shares2).filter(([, c]) => c > 0)
+          .map(([id, c]) => ({ expense_id: existing.id, member_id: id, amount: (c / 100).toFixed(2) }));
+        const pi1 = await sb.from("expense_payers").insert(pRows);
+        const pi2 = await sb.from("expense_shares").insert(sRows);
+        if (pi1.error || pi2.error) return toast((pi1.error || pi2.error).message, true);
+
+        if (state.category) learnCategory(desc, state.category);
+        try { await sb.rpc("generate_due_recurring"); } catch (_) { /* schema sem RPC */ }
+        toast("Despesa convertida em recorrente");
+        return refresh();
+      }
 
       // ----- molde recorrente: grava em recurring_* e materializa já -----
       if (state.recurring) {
@@ -1897,7 +1966,7 @@ function renderRecurringSection($c, ctx) {
         slot.innerHTML = "";
         $list.style.display = "";
         $head.style.display = "";
-      }, { recurring: true, lockType: true, backLabel: "Recorrentes" });
+      }, { recurring: true, backLabel: "Recorrentes" });
       slot.scrollIntoView({ behavior: "smooth", block: "start" });
     };
     $c.querySelector("#btn-add-rec")?.addEventListener("click", () => openForm(null));
