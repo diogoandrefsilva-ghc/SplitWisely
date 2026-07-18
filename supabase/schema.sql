@@ -606,6 +606,11 @@ grant select, insert, update, delete
   to authenticated;
 grant execute on all functions in schema splitwisely to authenticated;
 
+-- Recarrega a cache de schema do PostgREST já — sem isto, colunas novas
+-- (ex.: group_members.settle_with) podem demorar a aparecer na Data API
+-- e a app dá «Could not find the column ... in the schema cache».
+notify pgrst, 'reload schema';
+
 -- ============================================================
 -- LIMPEZA (opcional): se chegaste a correr a versão ANTIGA deste
 -- schema (que criava tudo em `public` + trigger em auth.users),

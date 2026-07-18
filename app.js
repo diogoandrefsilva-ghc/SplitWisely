@@ -71,7 +71,8 @@ function toast(msg, isError = false) {
   $toast.classList.toggle("error", isError);
   $toast.classList.remove("hidden");
   clearTimeout(toast._t);
-  toast._t = setTimeout(() => $toast.classList.add("hidden"), 3500);
+  // erros ficam mais tempo no ecrã — há tempo para os ler
+  toast._t = setTimeout(() => $toast.classList.add("hidden"), isError ? 7000 : 3500);
 }
 
 function fmtMoney(cents, currency = "EUR") {
@@ -1842,15 +1843,90 @@ function renderBalancesTab($c, ctx) {
   // Os saldos e os acertos ficam sempre sobre tudo — dívida é dívida.
   const period = { from: "", to: "" };
 
-  // cada secção é um cartão colapsável: o resumo abre por defeito, as
-  // seguintes ficam fechadas e abrem ao toque no título
-  const section = (id, title, body, open = false) => `
+  // ---- o que é do próprio utilizador fica sempre visível no topo:
+  // total do grupo + a sua quota (faixa), o seu saldo, os seus acertos e
+  // os seus pagamentos. Os colapsáveis ficam com o resto (alheio).
+  const totalAll = expenses.reduce((a, x) => a + toCents(x.amount), 0);
+  const globalExact = new Map(members.map(m => [m.id, 0]));
+  for (const x of expenses) {
+    for (const [id, v] of exactShareCents(x)) if (globalExact.has(id)) globalExact.set(id, globalExact.get(id) + v);
+  }
+  const globalShare = roundPreservingSum(globalExact);
+
+  const isMineS = (s) => !!myMember && (s.from.id === myMember.id || s.to.id === myMember.id);
+  const isMineP = (p) => !!myMember && (p.from_member === myMember.id || p.to_member === myMember.id);
+  const mySettles = settlements.map((s, i) => [s, i]).filter(([s]) => isMineS(s));
+  const otherSettles = settlements.map((s, i) => [s, i]).filter(([s]) => !isMineS(s));
+  const myPayments = payments.filter(isMineP);
+  const otherPayments = payments.filter(p => !isMineP(p));
+  const othersOnly = myMember ? members.filter(m => m.id !== myMember.id) : members;
+
+  // linha de acerto (usada em «A tua posição» e no colapsável dos outros);
+  // o índice aponta para settlements, para o «Pagar» pré-preencher
+  const settleLine = ([s, i]) => `
+    <div class="settle-line">
+      <span class="settle-avatars">
+        ${avatarHtml(s.from.name)}${avatarHtml(s.to.name)}
+      </span>
+      <div class="item-main">
+        <span class="item-title">${esc(shortName(s.from.name))} <span class="settle-arrow">→</span> ${esc(shortName(s.to.name))}</span>
+      </div>
+      <span class="settle-right">
+        <span class="amount">${fmtMoney(s.cents, cur)}</span>
+        ${paymentsReady ? `<button class="small" data-settle="${i}">Pagar</button>` : ""}
+      </span>
+    </div>`;
+
+  const paymentLi = (p) => `
+    <li>
+      <div class="item-main">
+        <span class="item-title payment-line">
+          ${esc(memberName(p.from_member))} <span class="settle-arrow">→</span> ${esc(memberName(p.to_member))}
+        </span>
+        <span class="item-sub">${fmtDate(p.payment_date)}${p.note ? ` · ${esc(p.note)}` : ""}</span>
+      </div>
+      <span class="amount">${fmtMoney(toCents(p.amount), cur)}</span>
+      <button class="ghost small" data-pdel="${p.id}" title="Apagar pagamento">✕</button>
+    </li>`;
+
+  const topStats = `
+    <div class="stat-strip">
+      <div class="stat">
+        <span class="stat-label">Total do grupo</span>
+        <span class="stat-value">${fmtMoney(totalAll, cur)}</span>
+      </div>
+      ${myMember ? `
+      <div class="stat">
+        <span class="stat-label">A tua quota</span>
+        <span class="stat-value">${fmtMoney(globalShare.get(myMember.id) || 0, cur)}</span>
+      </div>` : ""}
+    </div>`;
+
+  const myBal = myMember ? balance[myMember.id] : null;
+  const myCard = !myMember ? "" : `
+    <div class="card">
+      <div class="card-title-row">
+        <h2>A tua posição</h2>
+        <span class="chip ${myBal > 0 ? "positive" : myBal < 0 ? "negative" : "zero"}">
+          ${myBal === 0 ? "✓ em dia" : (myBal > 0 ? "recebes " : "deves ") + fmtMoney(Math.abs(myBal), cur)}
+        </span>
+      </div>
+      ${mySettles.length === 0
+        ? `<p class="empty">Não tens contas por acertar 🎉</p>`
+        : mySettles.map(settleLine).join("")}
+      ${myPayments.length ? `
+        <p class="section-sub">Os teus pagamentos</p>
+        <ul class="list">${myPayments.map(paymentLi).join("")}</ul>` : ""}
+    </div>`;
+
+  // secções colapsáveis (fechadas): quotas, saldos e pagamentos alheios
+  const section = (id, title, body) => `
     <div class="card">
       <div class="collapse-head" data-collapse="${id}">
         <h2>${title}</h2>
-        <span class="collapse-arrow ${open ? "open" : ""}">▾</span>
+        <span class="collapse-arrow">▾</span>
       </div>
-      <div class="collapse-body ${open ? "" : "hidden"}" data-body="${id}">${body}</div>
+      <div class="collapse-body hidden" data-body="${id}">${body}</div>
     </div>`;
 
   const summaryBody = `
@@ -1864,9 +1940,10 @@ function renderBalancesTab($c, ctx) {
     </div>
     <div id="balance-summary"></div>`;
 
-  const balancesBody = members.length === 0 ? `<p class="empty">Sem membros.</p>` : `
+  const balancesBody = othersOnly.length === 0
+    ? `<p class="empty">${members.length ? "Não há mais membros no grupo." : "Sem membros."}</p>` : `
     <ul class="list balances">
-      ${members.map(m => {
+      ${othersOnly.map(m => {
         const b = balance[m.id];
         const list = b < 0 ? owesTo[m.id] : b > 0 ? getsFrom[m.id] : null;
         const expandable = (list?.length || 0) > 1;
@@ -1891,21 +1968,11 @@ function renderBalancesTab($c, ctx) {
       }).join("")}
     </ul>`;
 
-  const settleBody = settlements.length === 0
-    ? `<p class="empty">Está tudo em dia 🎉</p>`
-    : settlements.map((s, i) => `
-      <div class="settle-line">
-        <span class="settle-avatars">
-          ${avatarHtml(s.from.name)}${avatarHtml(s.to.name)}
-        </span>
-        <div class="item-main">
-          <span class="item-title">${esc(shortName(s.from.name))} <span class="settle-arrow">→</span> ${esc(shortName(s.to.name))}</span>
-        </div>
-        <span class="settle-right">
-          <span class="amount">${fmtMoney(s.cents, cur)}</span>
-          ${paymentsReady ? `<button class="small" data-settle="${i}">Pagar</button>` : ""}
-        </span>
-      </div>`).join("");
+  const settleBody = otherSettles.length
+    ? otherSettles.map(settleLine).join("")
+    : `<p class="empty">${settlements.length
+        ? "Os acertos em falta envolvem-te a ti — estão em cima, em «A tua posição»."
+        : "Está tudo em dia 🎉"}</p>`;
 
   const paymentsBody = !paymentsReady
     ? `<p class="muted">Para ativar o registo de pagamentos, corre a versão mais
@@ -1915,28 +1982,19 @@ function renderBalancesTab($c, ctx) {
       <button type="button" class="secondary small" id="btn-add-payment">+ Registar</button>
     </div>
     <div id="payment-form-slot"></div>
-    ${payments.length === 0
-      ? `<p class="empty">Ainda não há pagamentos registados.</p>`
-      : `<ul class="list">
-          ${payments.map(p => `
-            <li>
-              <div class="item-main">
-                <span class="item-title payment-line">
-                  ${esc(memberName(p.from_member))} <span class="settle-arrow">→</span> ${esc(memberName(p.to_member))}
-                </span>
-                <span class="item-sub">${fmtDate(p.payment_date)}${p.note ? ` · ${esc(p.note)}` : ""}</span>
-              </div>
-              <span class="amount">${fmtMoney(toCents(p.amount), cur)}</span>
-              <button class="ghost small" data-pdel="${p.id}" title="Apagar pagamento">✕</button>
-            </li>`).join("")}
-        </ul>
-        ${totalPaid > 0 ? `<p class="muted" style="text-align:right;margin:.5rem 0 0;">total acertado: ${fmtMoney(totalPaid, cur)}</p>` : ""}`}`;
+    ${otherPayments.length === 0
+      ? `<p class="empty">${payments.length ? "Sem pagamentos de outras pessoas." : "Ainda não há pagamentos registados."}</p>`
+      : `<ul class="list">${otherPayments.map(paymentLi).join("")}</ul>`}
+    ${totalPaid > 0 ? `<p class="muted" style="text-align:right;margin:.5rem 0 0;">total acertado no grupo: ${fmtMoney(totalPaid, cur)}</p>` : ""}`;
 
+  const oth = myMember ? " dos outros" : "";
   $c.innerHTML = `
-    ${section("resumo", "Resumo dos gastos", summaryBody, true)}
-    ${section("saldos", "Saldos", balancesBody)}
-    ${section("acertos", "Como acertar contas", settleBody)}
-    ${section("pagamentos", "Pagamentos", paymentsBody)}`;
+    ${topStats}
+    ${myCard}
+    ${section("resumo", "Resumo dos gastos", summaryBody)}
+    ${section("saldos", `Saldos${oth}`, balancesBody)}
+    ${section("acertos", myMember ? "Acertos entre os outros" : "Como acertar contas", settleBody)}
+    ${section("pagamentos", `Pagamentos${oth}`, paymentsBody)}`;
 
   // abrir/fechar cada secção ao toque no título
   $c.querySelectorAll("[data-collapse]").forEach(h => {
@@ -2008,8 +2066,10 @@ function renderBalancesTab($c, ctx) {
         </div>`).join("")}</div>`;
     }
 
-    const maxShare = Math.max(...members.map(m => share[m.id]), 1);
-    const rows = [...members].sort((a, b) => share[b.id] - share[a.id]).map(m => {
+    // as quotas detalhadas mostram só os outros — a do próprio vive na
+    // faixa do topo, sempre visível
+    const maxShare = Math.max(...othersOnly.map(m => share[m.id]), 1);
+    const rows = [...othersOnly].sort((a, b) => share[b.id] - share[a.id]).map(m => {
       const s = share[m.id], p = paid[m.id];
       const pct = total > 0 ? Math.round(s / total * 100) : 0;
       return `<div class="quota-row">
@@ -2029,20 +2089,9 @@ function renderBalancesTab($c, ctx) {
     }).join("");
 
     $sum.innerHTML = `
-      <div class="stat-strip in-card">
-        <div class="stat">
-          <span class="stat-label">Total do grupo</span>
-          <span class="stat-value">${fmtMoney(total, cur)}</span>
-        </div>
-        ${myMember ? `
-        <div class="stat">
-          <span class="stat-label">A tua quota</span>
-          <span class="stat-value">${fmtMoney(share[myMember.id] || 0, cur)}</span>
-        </div>` : ""}
-      </div>
-      ${active ? `<p class="muted period-note">período: ${period.from ? fmtDate(period.from) : "início"} → ${period.to ? fmtDate(period.to) : "hoje"}</p>` : ""}
+      ${active ? `<p class="muted period-note">período: ${period.from ? fmtDate(period.from) : "início"} → ${period.to ? fmtDate(period.to) : "hoje"} · total ${fmtMoney(total, cur)}</p>` : ""}
       ${chart}
-      ${members.length === 0 ? "" : xs.length === 0
+      ${othersOnly.length === 0 ? "" : xs.length === 0
         ? `<p class="empty">Sem despesas ${active ? "neste período" : "ainda"}.</p>`
         : `<p class="muted quota-hint">Quota por pessoa — a parte das despesas que coube a cada um.</p>${rows}`}`;
   }
@@ -2258,14 +2307,21 @@ function renderMembersSection($c, ctx) {
       const $settle = $slot.querySelector("#m-settle");
       if ($settle) payload.settle_with = $settle.value || null;
       let { error } = await sb.from("group_members").update(payload).eq("id", m.id);
-      // schema antigo sem a coluna settle_with: grava o resto na mesma
+      // schema antigo sem a coluna settle_with: grava o resto na mesma —
+      // e o aviso fica no ecrã (sem ser tapado pelo toast de sucesso)
+      let settleWarn = false;
       if (error && "settle_with" in payload && /settle_with/i.test(error.message)) {
-        toast("Preferência de liquidação não gravada — corre o schema.sql mais recente no Supabase", true);
+        settleWarn = true;
         delete payload.settle_with;
         ({ error } = await sb.from("group_members").update(payload).eq("id", m.id));
       }
       if (error) return toast(error.message, true);
-      toast("Membro atualizado");
+      if (settleWarn) {
+        toast("Membro atualizado, mas a preferência de liquidação NÃO ficou gravada — "
+          + "corre o schema.sql mais recente no SQL Editor do Supabase", true);
+      } else {
+        toast("Membro atualizado");
+      }
       refresh();
     };
 
@@ -2420,12 +2476,12 @@ function renderSettingsTab($c, ctx) {
           <span class="check-note">ligado, cada pessoa tem um peso na lista de membros em baixo;
             desligado, as despesas dividem-se em partes iguais</span>
         </label>
+        ${isOwner ? `<button type="submit" id="btn-save-group" style="margin-top:.6rem;">Guardar definições</button>` : ""}
       </form>
     </div>
     <div id="members-section"></div>
     <div id="recurring-section"></div>
     ${isOwner ? `
-    <button type="submit" form="edit-group" id="btn-save-group" style="width:100%;margin-bottom:.8rem;">Guardar definições</button>
     <div class="card">
       <h2>Zona de perigo</h2>
       <button class="danger" id="btn-del-group">Apagar grupo e todas as despesas</button>
@@ -2447,7 +2503,7 @@ function renderSettingsTab($c, ctx) {
   // membros em baixo, sem esperar pelo «Guardar definições»
   $c.querySelector('input[name="use_weights"]').onchange = (e) => {
     drawMembers(e.target.checked);
-    if (e.target.checked) toast("Define os pesos em baixo e carrega em «Guardar definições»");
+    if (e.target.checked) toast("Carrega em «Guardar definições» e define os pesos na lista de membros");
   };
 
   document.getElementById("edit-group").onsubmit = async (e) => {

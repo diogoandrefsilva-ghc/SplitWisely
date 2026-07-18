@@ -814,6 +814,16 @@ li.balance-detail.hidden { display: none; }
 .collapse-arrow.open { transform: rotate(180deg); }
 .collapse-body { margin-top: .6rem; }
 .collapse-body.hidden { display: none; }
+
+/* subtítulo dentro de um cartão (ex.: «Os teus pagamentos» na posição) */
+.section-sub {
+  margin: .8rem 0 .15rem;
+  font-size: .68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--muted);
+}
 /* ação da secção (📅 Período, + Registar) encostada à direita, subida
    para a linha do título (antes da seta). A faixa em si não apanha
    cliques — só o botão — para o toque no título continuar a colapsar. */
