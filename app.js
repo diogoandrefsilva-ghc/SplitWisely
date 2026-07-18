@@ -2220,20 +2220,26 @@ function abrirRelatorio(html, titulo) {
   const ov = document.createElement("div");
   ov.id = "rptOverlay";
   ov.style.cssText = "position:fixed;inset:0;z-index:99999;background:#3a4a44;display:flex;flex-direction:column";
+  // barra de topo: «voltar» à esquerda, nome do ficheiro no meio (truncado) e
+  // «guardar PDF» à direita — os botões nunca encolhem, o nome cede o espaço.
   ov.innerHTML = `
-    <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:#0b5f47;color:#fff;flex:0 0 auto">
-      <span style="font-weight:700;font-size:14px">${esc(titulo)}</span>
-      <div style="display:flex;gap:8px">
-        <button id="rptPrint" style="background:#0f9d76;border:none;color:#fff;font-size:14px;padding:8px 14px;border-radius:8px;cursor:pointer">🖨 Imprimir / Guardar PDF</button>
-        <button id="rptClose" style="background:rgba(255,255,255,.16);border:none;color:#fff;font-size:18px;padding:8px 14px;border-radius:8px;cursor:pointer">✕</button>
-      </div>
+    <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:#0b5f47;color:#fff;flex:0 0 auto">
+      <button id="rptClose" title="Voltar" style="flex:0 0 auto;background:rgba(255,255,255,.16);border:none;color:#fff;font-size:18px;line-height:1;padding:9px 14px;border-radius:8px;cursor:pointer">←</button>
+      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:700;font-size:13px">${esc(titulo)}</span>
+      <button id="rptPrint" style="flex:0 0 auto;background:#0f9d76;border:none;color:#fff;font-size:14px;padding:9px 14px;border-radius:8px;cursor:pointer;white-space:nowrap">🖨 Guardar PDF</button>
     </div>
     <iframe id="rptFrame" style="flex:1 1 auto;border:0;width:100%;background:#fff"></iframe>`;
   document.body.appendChild(ov);
 
+  // Fechar também com o botão «voltar» do telemóvel / gesto de retroceder:
+  // empurra um estado no histórico e fecha quando esse estado é retirado.
+  const onPop = () => { ov.remove(); window.removeEventListener("popstate", onPop); };
+  window.addEventListener("popstate", onPop);
+  history.pushState({ swRelatorio: 1 }, "");
+
   const frame = ov.querySelector("#rptFrame");
   frame.srcdoc = docHtml;
-  ov.querySelector("#rptClose").onclick = () => ov.remove();
+  ov.querySelector("#rptClose").onclick = () => history.back();
   ov.querySelector("#rptPrint").onclick = () => {
     frame.contentWindow.focus();
     frame.contentWindow.print();
@@ -2377,6 +2383,12 @@ function gerarRelatorioGrupo(ctx) {
     </table>`;
 
   // ---- despesas ----
+  // data compacta (dd/mm/aa) para deixar mais espaço às outras colunas e
+  // reduzir as quebras de linha na tabela
+  const shortDate = d => {
+    const dt = new Date(d + "T00:00:00");
+    return `${String(dt.getDate()).padStart(2, "0")}/${String(dt.getMonth() + 1).padStart(2, "0")}/${String(dt.getFullYear()).slice(2)}`;
+  };
   const despRows = [...expenses]
     .sort((a, b) => (a.expense_date < b.expense_date ? 1 : a.expense_date > b.expense_date ? -1 : 0))
     .map((x, i) => {
@@ -2384,7 +2396,7 @@ function gerarRelatorioGrupo(ctx) {
       const quem = x.expense_payers.map(p => memberName(p.member_id)).join(", ") || "—";
       const nShares = x.expense_shares.length;
       return `<tr style="background:${zebra(i)}">
-        <td style="${td}color:#66788a;white-space:nowrap;">${fmtDate(x.expense_date)}</td>
+        <td style="${td}color:#66788a;white-space:nowrap;">${shortDate(x.expense_date)}</td>
         <td style="${td}font-weight:600;">${c ? c.icon + " " : ""}${esc(x.description || "—")}</td>
         <td style="${td}color:#4a534e;font-size:12px;">${esc(quem)}</td>
         <td style="${td}text-align:center;color:#66788a;">${nShares}</td>
