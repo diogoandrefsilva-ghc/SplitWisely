@@ -231,6 +231,41 @@ function groupBalancesCents(members, expenses, payments) {
   return roundPreservingSum(bal);
 }
 
+// Sugestões de acerto a partir dos saldos (objeto { memberId: cêntimos }).
+// 1.ª passagem: preferências de liquidação (membro «convidado» acerta primeiro
+// com o anfitrião — settle_with no membro; só quando um deve e o outro recebe).
+// 2.ª passagem: o resto distribui-se pelo algoritmo guloso. Devolve uma lista
+// de { from, to, cents } com os membros por objeto.
+function settlementsFor(members, balance) {
+  const debtors = members.filter(m => balance[m.id] < 0).map(m => ({ m, v: -balance[m.id] }));
+  const creditors = members.filter(m => balance[m.id] > 0).map(m => ({ m, v: balance[m.id] }));
+  const settlements = [];
+
+  for (const d of debtors) {
+    const pref = d.m.settle_with;
+    if (!pref || d.v <= 0) continue;
+    const c = creditors.find(x => x.m.id === pref && x.v > 0);
+    if (!c) continue;
+    const pay = Math.min(d.v, c.v);
+    settlements.push({ from: d.m, to: c.m, cents: pay });
+    d.v -= pay;
+    c.v -= pay;
+  }
+
+  const dRest = debtors.filter(d => d.v > 0).sort((a, b) => b.v - a.v);
+  const cRest = creditors.filter(c => c.v > 0).sort((a, b) => b.v - a.v);
+  let di = 0, ci = 0;
+  while (di < dRest.length && ci < cRest.length) {
+    const pay = Math.min(dRest[di].v, cRest[ci].v);
+    if (pay > 0) settlements.push({ from: dRest[di].m, to: cRest[ci].m, cents: pay });
+    dRest[di].v -= pay;
+    cRest[ci].v -= pay;
+    if (dRest[di].v === 0) di++;
+    if (cRest[ci].v === 0) ci++;
+  }
+  return settlements;
+}
+
 // ---------------------------------------------------------------- categorias
 // Lista fixa de categorias de despesa, cada uma com um ícone simples.
 // Na base de dados grava-se só o id (coluna expenses.category, nullable).
@@ -1790,37 +1825,8 @@ function renderBalancesTab($c, ctx) {
   // cêntimos: + recebe, - deve (pagamentos já feitos incluídos)
   const balance = Object.fromEntries(groupBalancesCents(members, expenses, payments));
 
-  // sugestões de acerto
-  const debtors = members.filter(m => balance[m.id] < 0).map(m => ({ m, v: -balance[m.id] }));
-  const creditors = members.filter(m => balance[m.id] > 0).map(m => ({ m, v: balance[m.id] }));
-  const settlements = [];
-
-  // 1.ª passagem: preferências de liquidação (membro «convidado» acerta
-  // primeiro com o anfitrião — settle_with no membro). Só se aplica quando
-  // um deve e o outro tem a receber; o resto segue a distribuição normal.
-  for (const d of debtors) {
-    const pref = d.m.settle_with;
-    if (!pref || d.v <= 0) continue;
-    const c = creditors.find(x => x.m.id === pref && x.v > 0);
-    if (!c) continue;
-    const pay = Math.min(d.v, c.v);
-    settlements.push({ from: d.m, to: c.m, cents: pay });
-    d.v -= pay;
-    c.v -= pay;
-  }
-
-  // 2.ª passagem: o que sobra distribui-se pelo algoritmo guloso
-  const dRest = debtors.filter(d => d.v > 0).sort((a, b) => b.v - a.v);
-  const cRest = creditors.filter(c => c.v > 0).sort((a, b) => b.v - a.v);
-  let di = 0, ci = 0;
-  while (di < dRest.length && ci < cRest.length) {
-    const pay = Math.min(dRest[di].v, cRest[ci].v);
-    if (pay > 0) settlements.push({ from: dRest[di].m, to: cRest[ci].m, cents: pay });
-    dRest[di].v -= pay;
-    cRest[ci].v -= pay;
-    if (dRest[di].v === 0) di++;
-    if (cRest[ci].v === 0) ci++;
-  }
+  // sugestões de acerto (preferências de liquidação + algoritmo guloso)
+  const settlements = settlementsFor(members, balance);
 
   // a quem deve / de quem recebe cada pessoa (para a linha secundária)
   const owesTo = {}, getsFrom = {};
@@ -1931,7 +1937,10 @@ function renderBalancesTab($c, ctx) {
     <div class="card">
       <div class="card-title-row">
         <h2>Resumo dos gastos</h2>
-        <button type="button" class="secondary small date-toggle-txt" id="bp-toggle">📅 Período</button>
+        <div class="title-actions">
+          <button type="button" class="secondary small" id="bp-report">📄 Relatório</button>
+          <button type="button" class="secondary small date-toggle-txt" id="bp-toggle">📅 Período</button>
+        </div>
       </div>
       <div class="date-range hidden" id="bp-range">
         <div class="field"><label>De</label><input type="date" id="bp-from" /></div>
@@ -2102,6 +2111,7 @@ function renderBalancesTab($c, ctx) {
   const $bpTo = $c.querySelector("#bp-to");
   // como nas despesas: o botão fica realçado enquanto o período estiver ativo
   const syncPeriodBtn = () => $bpToggle.classList.toggle("active", !!(period.from || period.to));
+  $c.querySelector("#bp-report").onclick = () => gerarRelatorioGrupo(ctx);
   $bpToggle.onclick = () => $bpRange.classList.toggle("hidden");
   $bpFrom.onchange = () => { period.from = $bpFrom.value; syncPeriodBtn(); drawSummary(); };
   $bpTo.onchange = () => { period.to = $bpTo.value; syncPeriodBtn(); drawSummary(); };
@@ -2187,6 +2197,234 @@ function renderBalancesTab($c, ctx) {
       refresh();
     };
   });
+}
+
+// ------------------------------------------------ relatório do grupo (imprimível / PDF)
+// Abre uma janela sobreposta com o relatório num iframe e um botão para
+// imprimir / guardar como PDF (mesmo padrão do SplitBill).
+function abrirRelatorio(html, titulo) {
+  const docHtml = `<!DOCTYPE html><html lang="pt"><head><meta charset="UTF-8"><title>${esc(titulo)}</title>
+    <style>
+      * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; box-sizing: border-box; }
+      @media print { body { margin: 0; } }
+      body { margin: 0; background: #fff; color: #14212b;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+      tr { page-break-inside: avoid; }
+      table { border-collapse: collapse; width: 100%; }
+      h2.rpt-sec { font-size: 12px; font-weight: 800; color: #0b5f47;
+        text-transform: uppercase; letter-spacing: 1px; margin: 26px 0 8px; }
+    </style>
+  </head><body>${html}</body></html>`;
+
+  document.getElementById("rptOverlay")?.remove();
+  const ov = document.createElement("div");
+  ov.id = "rptOverlay";
+  ov.style.cssText = "position:fixed;inset:0;z-index:99999;background:#3a4a44;display:flex;flex-direction:column";
+  ov.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:#0b5f47;color:#fff;flex:0 0 auto">
+      <span style="font-weight:700;font-size:14px">${esc(titulo)}</span>
+      <div style="display:flex;gap:8px">
+        <button id="rptPrint" style="background:#0f9d76;border:none;color:#fff;font-size:14px;padding:8px 14px;border-radius:8px;cursor:pointer">🖨 Imprimir / Guardar PDF</button>
+        <button id="rptClose" style="background:rgba(255,255,255,.16);border:none;color:#fff;font-size:18px;padding:8px 14px;border-radius:8px;cursor:pointer">✕</button>
+      </div>
+    </div>
+    <iframe id="rptFrame" style="flex:1 1 auto;border:0;width:100%;background:#fff"></iframe>`;
+  document.body.appendChild(ov);
+
+  const frame = ov.querySelector("#rptFrame");
+  frame.srcdoc = docHtml;
+  ov.querySelector("#rptClose").onclick = () => ov.remove();
+  ov.querySelector("#rptPrint").onclick = () => {
+    frame.contentWindow.focus();
+    frame.contentWindow.print();
+  };
+}
+
+// Constrói e mostra o relatório completo de um grupo: resumo, quota por
+// pessoa, saldos, acertos, total por categoria, despesas e pagamentos.
+function gerarRelatorioGrupo(ctx) {
+  const { group, members, expenses, payments } = ctx;
+  const cur = group.currency;
+  const memberName = id => members.find(m => m.id === id)?.name || "?";
+
+  const total = expenses.reduce((a, x) => a + toCents(x.amount), 0);
+  const balance = Object.fromEntries(groupBalancesCents(members, expenses, payments));
+  const settlements = settlementsFor(members, balance);
+
+  // quota (parte que coube a cada um) e pago (o que cada um adiantou)
+  const paid = {};
+  const exact = new Map(members.map(m => [m.id, 0]));
+  for (const m of members) paid[m.id] = 0;
+  for (const x of expenses) {
+    for (const p of x.expense_payers) if (p.member_id in paid) paid[p.member_id] += toCents(p.amount);
+    for (const [id, v] of exactShareCents(x)) if (exact.has(id)) exact.set(id, exact.get(id) + v);
+  }
+  const share = Object.fromEntries(roundPreservingSum(exact));
+
+  // total por categoria (as despesas sem categoria vão para «Sem categoria»)
+  const byCat = new Map();
+  for (const x of expenses) {
+    const key = (x.category && catOf(x.category)) ? x.category : "none";
+    const e = byCat.get(key) || { cents: 0, n: 0 };
+    e.cents += toCents(x.amount);
+    e.n += 1;
+    byCat.set(key, e);
+  }
+  const cats = [...byCat.entries()].sort((a, b) => b[1].cents - a[1].cents);
+
+  const zebra = i => (i % 2 === 0 ? "#fff" : "#f4f7f6");
+  const td = "padding:8px 12px;";
+  const th = (align = "left") => `padding:9px 12px;text-align:${align};`;
+
+  // ---- cabeçalho ----
+  const dataStr = new Date().toLocaleDateString("pt-PT", { day: "2-digit", month: "long", year: "numeric" });
+  const cabecalho = `
+    <div style="background:#0b5f47;color:#fff;padding:22px 26px;border-radius:12px;display:flex;justify-content:space-between;align-items:center;gap:16px;">
+      <div>
+        <div style="font-size:13px;opacity:.7;font-weight:600;">💸 SplitWisely</div>
+        <div style="font-size:22px;font-weight:800;margin-top:2px;">${esc(group.name)}</div>
+        ${group.description ? `<div style="font-size:14px;opacity:.9;margin-top:4px;">${esc(group.description)}</div>` : ""}
+        <div style="font-size:12px;opacity:.6;margin-top:6px;">Relatório de ${dataStr}</div>
+      </div>
+      <div style="text-align:right;flex:0 0 auto;">
+        <div style="font-size:11px;opacity:.6;">Total do grupo</div>
+        <div style="font-size:26px;font-weight:800;color:#37d39e;">${fmtMoney(total, cur)}</div>
+        <div style="font-size:11px;opacity:.6;margin-top:4px;">${expenses.length} despesa${expenses.length === 1 ? "" : "s"} · ${members.length} membro${members.length === 1 ? "" : "s"}</div>
+      </div>
+    </div>`;
+
+  // ---- quota por pessoa ----
+  const quotaRows = [...members].sort((a, b) => share[b.id] - share[a.id]).map((m, i) => {
+    const pct = total > 0 ? Math.round(share[m.id] / total * 100) : 0;
+    return `<tr style="background:${zebra(i)}">
+      <td style="${td}font-weight:600;">${esc(m.name)}</td>
+      <td style="${td}text-align:right;">${fmtMoney(share[m.id] || 0, cur)}</td>
+      <td style="${td}text-align:center;color:#66788a;">${pct}%</td>
+      <td style="${td}text-align:right;color:#0d8f6c;font-weight:700;">${fmtMoney(paid[m.id] || 0, cur)}</td>
+    </tr>`;
+  }).join("");
+  const quotaSec = members.length === 0 ? "" : `
+    <h2 class="rpt-sec">👥 Quota por pessoa</h2>
+    <table style="border-radius:8px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.08);font-size:13px;">
+      <thead><tr style="background:#0f9d76;color:#fff;">
+        <th style="${th()}">Membro</th><th style="${th("right")}">Quota</th>
+        <th style="${th("center")}">% total</th><th style="${th("right")}">Pagou</th>
+      </tr></thead>
+      <tbody>${quotaRows}</tbody>
+      <tfoot><tr style="background:#eef2f0;font-weight:800;">
+        <td style="${td}">Total</td>
+        <td style="${td}text-align:right;">${fmtMoney(total, cur)}</td>
+        <td></td>
+        <td style="${td}text-align:right;color:#0d8f6c;">${fmtMoney(total, cur)}</td>
+      </tr></tfoot>
+    </table>`;
+
+  // ---- saldos ----
+  const balRows = members.map((m, i) => {
+    const b = balance[m.id];
+    const txt = b === 0 ? "✓ em dia" : (b > 0 ? "recebe " : "deve ") + fmtMoney(Math.abs(b), cur);
+    const cor = b > 0 ? "#0d8f6c" : b < 0 ? "#d43333" : "#66788a";
+    return `<tr style="background:${zebra(i)}">
+      <td style="${td}font-weight:600;">${esc(m.name)}</td>
+      <td style="${td}text-align:right;font-weight:700;color:${cor};">${txt}</td>
+    </tr>`;
+  }).join("");
+  const saldosSec = members.length === 0 ? "" : `
+    <h2 class="rpt-sec">⚖️ Saldos</h2>
+    <table style="border-radius:8px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.08);font-size:13px;">
+      <thead><tr style="background:#0f9d76;color:#fff;">
+        <th style="${th()}">Membro</th><th style="${th("right")}">Saldo</th>
+      </tr></thead>
+      <tbody>${balRows}</tbody>
+    </table>`;
+
+  // ---- como acertar contas ----
+  const acertosSec = `
+    <h2 class="rpt-sec">🤝 Como acertar contas</h2>
+    ${settlements.length === 0
+      ? `<p style="color:#0d8f6c;font-weight:600;font-size:13px;">Está tudo em dia 🎉</p>`
+      : `<table style="border-radius:8px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.08);font-size:13px;">
+          <thead><tr style="background:#0f9d76;color:#fff;">
+            <th style="${th()}">Quem paga</th><th style="${th()}">Recebe</th><th style="${th("right")}">Valor</th>
+          </tr></thead>
+          <tbody>${settlements.map((s, i) => `
+            <tr style="background:${zebra(i)}">
+              <td style="${td}font-weight:600;">${esc(s.from.name)}</td>
+              <td style="${td}">${esc(s.to.name)}</td>
+              <td style="${td}text-align:right;font-weight:700;color:#0f9d76;">${fmtMoney(s.cents, cur)}</td>
+            </tr>`).join("")}</tbody>
+        </table>`}`;
+
+  // ---- total por categoria ----
+  const catSec = cats.length === 0 ? "" : `
+    <h2 class="rpt-sec">🏷️ Total por categoria</h2>
+    <table style="border-radius:8px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.08);font-size:13px;">
+      <thead><tr style="background:#0b5f47;color:#fff;">
+        <th style="${th()}">Categoria</th><th style="${th("center")}">Nº</th>
+        <th style="${th("center")}">% total</th><th style="${th("right")}">Total</th>
+      </tr></thead>
+      <tbody>${cats.map(([id, e], i) => {
+        const c = catOf(id);
+        const label = c ? `${c.icon} ${c.label}` : "📦 Sem categoria";
+        const pct = total > 0 ? Math.round(e.cents / total * 100) : 0;
+        return `<tr style="background:${zebra(i)}">
+          <td style="${td}font-weight:600;">${esc(label)}</td>
+          <td style="${td}text-align:center;color:#66788a;">${e.n}</td>
+          <td style="${td}text-align:center;color:#66788a;">${pct}%</td>
+          <td style="${td}text-align:right;font-weight:700;color:#0f9d76;">${fmtMoney(e.cents, cur)}</td>
+        </tr>`;
+      }).join("")}</tbody>
+    </table>`;
+
+  // ---- despesas ----
+  const despRows = [...expenses]
+    .sort((a, b) => (a.expense_date < b.expense_date ? 1 : a.expense_date > b.expense_date ? -1 : 0))
+    .map((x, i) => {
+      const c = x.category ? catOf(x.category) : null;
+      const quem = x.expense_payers.map(p => memberName(p.member_id)).join(", ") || "—";
+      const nShares = x.expense_shares.length;
+      return `<tr style="background:${zebra(i)}">
+        <td style="${td}color:#66788a;white-space:nowrap;">${fmtDate(x.expense_date)}</td>
+        <td style="${td}font-weight:600;">${c ? c.icon + " " : ""}${esc(x.description || "—")}</td>
+        <td style="${td}color:#4a534e;font-size:12px;">${esc(quem)}</td>
+        <td style="${td}text-align:center;color:#66788a;">${nShares}</td>
+        <td style="${td}text-align:right;font-weight:700;color:#0f9d76;">${fmtMoney(toCents(x.amount), cur)}</td>
+      </tr>`;
+    }).join("");
+  const despSec = expenses.length === 0 ? "" : `
+    <h2 class="rpt-sec">🧾 Despesas</h2>
+    <table style="border-radius:8px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.08);font-size:12.5px;">
+      <thead><tr style="background:#0b5f47;color:#fff;">
+        <th style="${th()}">Data</th><th style="${th()}">Descrição</th>
+        <th style="${th()}">Quem pagou</th><th style="${th("center")}">÷</th><th style="${th("right")}">Valor</th>
+      </tr></thead>
+      <tbody>${despRows}</tbody>
+    </table>`;
+
+  // ---- pagamentos registados ----
+  const pagSec = payments.length === 0 ? "" : `
+    <h2 class="rpt-sec">💸 Pagamentos registados</h2>
+    <table style="border-radius:8px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.08);font-size:13px;">
+      <thead><tr style="background:#0f9d76;color:#fff;">
+        <th style="${th()}">De</th><th style="${th()}">Para</th>
+        <th style="${th()}">Data</th><th style="${th("right")}">Valor</th>
+      </tr></thead>
+      <tbody>${[...payments]
+        .sort((a, b) => (a.payment_date < b.payment_date ? 1 : -1))
+        .map((p, i) => `<tr style="background:${zebra(i)}">
+          <td style="${td}font-weight:600;">${esc(memberName(p.from_member))}</td>
+          <td style="${td}">${esc(memberName(p.to_member))}</td>
+          <td style="${td}color:#66788a;">${fmtDate(p.payment_date)}${p.note ? ` · ${esc(p.note)}` : ""}</td>
+          <td style="${td}text-align:right;font-weight:700;color:#0f9d76;">${fmtMoney(toCents(p.amount), cur)}</td>
+        </tr>`).join("")}</tbody>
+    </table>`;
+
+  const html = `<div style="max-width:720px;margin:0 auto;padding:28px 24px 48px;">
+    ${cabecalho}${quotaSec}${saldosSec}${acertosSec}${catSec}${despSec}${pagSec}
+  </div>`;
+
+  const nomeFicheiro = `relatorio_${(group.name || "grupo").toLowerCase().replace(/[^\wà-ÿ]+/gi, "_").replace(/^_+|_+$/g, "")}.pdf`;
+  abrirRelatorio(html, nomeFicheiro);
 }
 
 // ------------------------------------------------ secção: membros (dentro das definições)
