@@ -981,6 +981,10 @@ input.saved {
   width: 100%;
   max-width: 560px;
   padding: 1rem 1.1rem 1.2rem;
+  /* centra verticalmente quando o cartão cabe no ecrã; quando é mais alto
+     do que o ecrã, as margens colapsam e ele encosta ao topo (com scroll),
+     sem nunca cortar o cabeçalho */
+  margin: auto;
 }
 body.modal-open { overflow: hidden; }
 

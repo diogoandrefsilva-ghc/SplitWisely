@@ -2439,6 +2439,58 @@ function gerarRelatorioGrupo(ctx) {
   abrirRelatorio(html, nomeFicheiro);
 }
 
+// Faz um membro recém-criado «herdar» as despesas já existentes do grupo:
+// re-divide cada despesa (e cada molde recorrente) para o incluir. O novo
+// membro entra com uma parte MÉDIA (total ÷ nº de participantes atuais) e as
+// partes dos restantes mantêm a proporção relativa — por isso uma divisão em
+// partes iguais continua igual (todos, incluindo o novo, ficam com a mesma
+// fatia) e uma divisão por proporção/exata mantém-se proporcional. Não mexe
+// em despesas onde o membro já participe, nem em despesas sem valor.
+// Devolve { expenses, recurring, error } com o que foi alterado.
+async function inheritExistingExpenses(newMemberId, ctx) {
+  const { expenses = [], recurring = [] } = ctx;
+  let changedEx = 0, changedRec = 0, firstError = null;
+
+  // pesos = parte atual de cada participante em cêntimos; o novo membro
+  // entra com a média dessas partes. Devolve as novas linhas ou null se não
+  // houver nada a mudar (sem participantes, sem valor, ou já lá está).
+  const rebuild = (shareRows, amount) => {
+    const total = toCents(amount);
+    const ids = shareRows.map(s => s.member_id);
+    if (total <= 0 || ids.length === 0 || ids.includes(newMemberId)) return null;
+    const base = shareRows.map(s => toCents(s.amount));
+    const sum = base.reduce((a, b) => a + b, 0);
+    if (sum <= 0) return null;
+    const parts = splitByWeights(total, [...base, sum / ids.length]);
+    return [...ids, newMemberId].map((id, i) => ({ member_id: id, amount: (parts[i] / 100).toFixed(2) }));
+  };
+
+  for (const x of expenses) {
+    const rows = rebuild(x.expense_shares || [], x.amount);
+    if (!rows) continue;
+    const del = await sb.from("expense_shares").delete().eq("expense_id", x.id);
+    if (del.error) { firstError = firstError || del.error; continue; }
+    const ins = await sb.from("expense_shares")
+      .insert(rows.map(r => ({ ...r, expense_id: x.id })));
+    if (ins.error) { firstError = firstError || ins.error; continue; }
+    changedEx++;
+  }
+
+  // moldes recorrentes: as próximas ocorrências passam a incluir o membro
+  for (const r of recurring) {
+    const rows = rebuild(r.recurring_expense_shares || [], r.amount);
+    if (!rows) continue;
+    const del = await sb.from("recurring_expense_shares").delete().eq("recurring_id", r.id);
+    if (del.error) { firstError = firstError || del.error; continue; }
+    const ins = await sb.from("recurring_expense_shares")
+      .insert(rows.map(r2 => ({ ...r2, recurring_id: r.id })));
+    if (ins.error) { firstError = firstError || ins.error; continue; }
+    changedRec++;
+  }
+
+  return { expenses: changedEx, recurring: changedRec, error: firstError };
+}
+
 // ------------------------------------------------ secção: membros (dentro das definições)
 function renderMembersSection($c, ctx) {
   const { members } = ctx;
@@ -2493,6 +2545,13 @@ function renderMembersSection($c, ctx) {
           ${useWeights ? `<div class="field" style="max-width:90px;"><label>Peso</label>
             <input name="weight" type="number" step="0.1" min="0" value="1" /></div>` : ""}
         </div>
+        ${(ctx.expenses?.length || ctx.recurring?.length) ? `
+        <label class="check-line" style="align-items:flex-start;">
+          <input type="checkbox" name="inherit" style="margin-top:.15rem;" />
+          <span>Herdar as despesas já existentes — todas as despesas do grupo
+            (e os moldes recorrentes) passam a incluir esta pessoa, re-divididas
+            para lhe dar uma parte.</span>
+        </label>` : ""}
         <button type="submit">Adicionar</button>
       </form>
     </div>
@@ -2604,16 +2663,34 @@ function renderMembersSection($c, ctx) {
   $c.querySelector("#new-member").onsubmit = async (e) => {
     e.preventDefault();
     const f = new FormData(e.target);
-    const { error } = await sb.from("group_members").insert({
+    const inherit = !!f.get("inherit");
+    const { data: created, error } = await sb.from("group_members").insert({
       group_id: ctx.group.id,
       name: f.get("name").trim(),
       email: f.get("email").trim() || null,
       // sem campo de peso (grupos de partes iguais) fica 1, para o caso
       // de a divisão por proporções vir a ser ativada mais tarde
       default_weight: f.get("weight") == null ? 1 : (parseFloat(f.get("weight")) || 0),
-    });
+    }).select().single();
     if (error) return toast(error.message, true);
-    toast("Pessoa adicionada");
+
+    // herdar as despesas já existentes, se o utilizador o pediu
+    if (inherit && created) {
+      const res = await inheritExistingExpenses(created.id, ctx);
+      if (res.error) {
+        toast("Pessoa adicionada, mas nem todas as despesas foram herdadas: "
+          + res.error.message, true);
+      } else if (res.expenses || res.recurring) {
+        const bits = [];
+        if (res.expenses) bits.push(`${res.expenses} despesa${res.expenses > 1 ? "s" : ""}`);
+        if (res.recurring) bits.push(`${res.recurring} recorrente${res.recurring > 1 ? "s" : ""}`);
+        toast(`Pessoa adicionada e a herdar ${bits.join(" e ")} ✓`);
+      } else {
+        toast("Pessoa adicionada");
+      }
+    } else {
+      toast("Pessoa adicionada");
+    }
     refresh();
   };
 }
