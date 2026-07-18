@@ -169,19 +169,60 @@ function splitByWeights(totalCents, weights) {
   return base;
 }
 
-// Saldo líquido de um membro no grupo (cêntimos): o que pagou em despesas e
-// acertos, menos a parte que lhe coube e o que recebeu em acertos.
-function memberNetCents(memberId, expenses, payments) {
-  let b = 0;
+// Parte exata (cêntimos fracionários) de cada participante numa despesa.
+// Os cêntimos gravados em expense_shares incluem o acerto do maior resto,
+// que calha sempre aos mesmos membros; se os saldos somassem esses valores,
+// a diferença acumulava despesa após despesa. Nas divisões 'equal'/'weights'
+// recalcula-se a fração exata a partir do total ('weights' usa os valores
+// gravados como pesos); 'exact' — e despesas de schemas antigos sem
+// split_mode — mantém os valores gravados, que são intencionais.
+function exactShareCents(x) {
+  const shares = x.expense_shares || [];
+  const total = toCents(x.amount);
+  const out = new Map();
+  if ((x.split_mode === "equal" || x.split_mode === "weights") && total > 0) {
+    const ws = shares.map(s => x.split_mode === "equal" ? 1 : toCents(s.amount));
+    const sum = ws.reduce((a, b) => a + b, 0);
+    if (sum > 0) {
+      shares.forEach((s, i) => out.set(s.member_id, total * ws[i] / sum));
+      return out;
+    }
+  }
+  for (const s of shares) out.set(s.member_id, toCents(s.amount));
+  return out;
+}
+
+// Arredonda um mapa id -> cêntimos fracionários para inteiros preservando a
+// soma (maior resto), para que saldos e quotas continuem a bater certo.
+function roundPreservingSum(vals) {
+  const ids = [...vals.keys()];
+  if (ids.length === 0) return new Map();
+  const raw = ids.map(id => vals.get(id));
+  const target = Math.round(raw.reduce((a, b) => a + b, 0));
+  const base = raw.map(v => Math.floor(v + 1e-6));
+  let rest = target - base.reduce((a, b) => a + b, 0);
+  const order = raw.map((v, i) => [v - base[i], i]).sort((a, b) => b[0] - a[0]);
+  for (let k = 0; rest > 0; k++, rest--) base[order[k % order.length][1]] += 1;
+  for (let k = order.length - 1; rest < 0; k = (k || order.length) - 1, rest++) base[order[k][1]] -= 1;
+  return new Map(ids.map((id, i) => [id, base[i]]));
+}
+
+// Saldos de todos os membros do grupo (id -> cêntimos: + recebe, - deve).
+// Pagamentos e acertos entram em cêntimos exatos, as quotas como frações
+// exatas, e arredonda-se uma única vez no fim — o desvio fica limitado a
+// ±1 cêntimo por membro, em vez de crescer com o número de despesas.
+function groupBalancesCents(members, expenses, payments) {
+  const bal = new Map(members.map(m => [m.id, 0]));
+  const add = (id, v) => { if (bal.has(id)) bal.set(id, bal.get(id) + v); };
   for (const x of expenses) {
-    for (const p of x.expense_payers) if (p.member_id === memberId) b += toCents(p.amount);
-    for (const s of x.expense_shares) if (s.member_id === memberId) b -= toCents(s.amount);
+    for (const p of x.expense_payers) add(p.member_id, toCents(p.amount));
+    for (const [id, v] of exactShareCents(x)) add(id, -v);
   }
   for (const p of payments) {
-    if (p.from_member === memberId) b += toCents(p.amount);
-    if (p.to_member === memberId) b -= toCents(p.amount);
+    add(p.from_member, toCents(p.amount));
+    add(p.to_member, -toCents(p.amount));
   }
-  return b;
+  return roundPreservingSum(bal);
 }
 
 // ---------------------------------------------------------------- categorias
@@ -555,11 +596,16 @@ async function renderAdmin() {
 // 3 queries no total, a RLS filtra pelos grupos a que tem acesso.
 async function fetchMyGroupBalances() {
   const uid = session.user.id;
-  const [m, e, p] = await Promise.all([
+  const [m, e0, p] = await Promise.all([
     sb.from("group_members").select("id, group_id, user_id"),
-    sb.from("expenses").select("group_id, created_at, expense_payers(member_id, amount), expense_shares(member_id, amount)"),
+    sb.from("expenses").select("group_id, created_at, amount, split_mode, expense_payers(member_id, amount), expense_shares(member_id, amount)"),
     sb.from("payments").select("group_id, created_at, from_member, to_member, amount"),
   ]);
+  // schemas antigos sem a coluna split_mode: repete o pedido sem ela e as
+  // despesas caem no modo 'exact' (valores gravados) no apuramento
+  const e = e0.error
+    ? await sb.from("expenses").select("group_id, created_at, amount, expense_payers(member_id, amount), expense_shares(member_id, amount)")
+    : e0;
   if (m.error || e.error) return { balances: {}, activity: {} };
   const pays = p.error ? [] : p.data;
 
@@ -571,22 +617,27 @@ async function fetchMyGroupBalances() {
   for (const x of e.data) bump(x.group_id, x.created_at);
   for (const pay of pays) bump(pay.group_id, pay.created_at);
 
-  const mine = new Map(); // member_id -> group_id (os "eus" de cada grupo)
-  for (const mem of m.data) if (mem.user_id === uid) mine.set(mem.id, mem.group_id);
+  // o arredondamento final dos saldos precisa do grupo completo, por isso
+  // agrupa-se tudo por grupo e tira-se depois o saldo do próprio
+  const byGroup = (rows) => {
+    const out = new Map();
+    for (const r of rows) {
+      if (!out.has(r.group_id)) out.set(r.group_id, []);
+      out.get(r.group_id).push(r);
+    }
+    return out;
+  };
+  const gMembers = byGroup(m.data);
+  const gExpenses = byGroup(e.data);
+  const gPayments = byGroup(pays);
 
   const balances = {};
-  for (const gid of mine.values()) balances[gid] = 0;
-  const add = (memberId, cents) => {
-    const gid = mine.get(memberId);
-    if (gid !== undefined) balances[gid] += cents;
-  };
-  for (const x of e.data) {
-    for (const pp of x.expense_payers) add(pp.member_id, toCents(pp.amount));
-    for (const ss of x.expense_shares) add(ss.member_id, -toCents(ss.amount));
-  }
-  for (const pay of pays) {
-    add(pay.from_member, toCents(pay.amount));
-    add(pay.to_member, -toCents(pay.amount));
+  for (const mem of m.data) {
+    if (mem.user_id !== uid) continue;
+    const gid = mem.group_id;
+    balances[gid] = groupBalancesCents(
+      gMembers.get(gid) || [], gExpenses.get(gid) || [], gPayments.get(gid) || []
+    ).get(mem.id) ?? 0;
   }
   return { balances, activity };
 }
@@ -838,7 +889,7 @@ async function renderGroup(groupId, tab) {
 
   // o saldo atual do utilizador vive aqui, alinhado com o título do grupo
   const myMember = members.find(m => m.user_id === session.user.id);
-  const myBal = myMember ? memberNetCents(myMember.id, expenses, payments) : null;
+  const myBal = myMember ? (groupBalancesCents(members, expenses, payments).get(myMember.id) ?? 0) : null;
   const headBalance = myBal === null ? "" : `
         <div class="head-balance">
           <span class="head-balance-label">O teu saldo</span>
@@ -1734,16 +1785,8 @@ function renderBalancesTab($c, ctx) {
   const cur = group.currency;
   const memberName = id => members.find(m => m.id === id)?.name || "?";
 
-  const balance = Object.fromEntries(members.map(m => [m.id, 0])); // cêntimos: + recebe, - deve
-  for (const x of expenses) {
-    for (const p of x.expense_payers) if (p.member_id in balance) balance[p.member_id] += toCents(p.amount);
-    for (const s of x.expense_shares) if (s.member_id in balance) balance[s.member_id] -= toCents(s.amount);
-  }
-  // pagamentos já feitos: quem pagou fica menos devedor, quem recebeu menos credor
-  for (const p of payments) {
-    if (p.from_member in balance) balance[p.from_member] += toCents(p.amount);
-    if (p.to_member in balance) balance[p.to_member] -= toCents(p.amount);
-  }
+  // cêntimos: + recebe, - deve (pagamentos já feitos incluídos)
+  const balance = Object.fromEntries(groupBalancesCents(members, expenses, payments));
 
   // sugestões de acerto (algoritmo guloso)
   const debtors = members.filter(m => balance[m.id] < 0).map(m => ({ m, v: -balance[m.id] })).sort((a, b) => b.v - a.v);
@@ -1889,13 +1932,16 @@ function renderBalancesTab($c, ctx) {
     const active = !!(period.from || period.to);
     const total = xs.reduce((a, x) => a + toCents(x.amount), 0);
 
-    // quota (a parte que coube a cada um) e pago (o que cada um adiantou)
-    const share = {}, paid = {};
-    for (const m of members) { share[m.id] = 0; paid[m.id] = 0; }
+    // quota (a parte que coube a cada um) e pago (o que cada um adiantou);
+    // as quotas somam frações exatas e arredondam uma única vez no fim
+    const paid = {};
+    for (const m of members) paid[m.id] = 0;
+    const exact = new Map(members.map(m => [m.id, 0]));
     for (const x of xs) {
       for (const p of x.expense_payers) if (p.member_id in paid) paid[p.member_id] += toCents(p.amount);
-      for (const s of x.expense_shares) if (s.member_id in share) share[s.member_id] += toCents(s.amount);
+      for (const [id, v] of exactShareCents(x)) if (exact.has(id)) exact.set(id, exact.get(id) + v);
     }
+    const share = Object.fromEntries(roundPreservingSum(exact));
 
     // gastos por mês para o mini gráfico, com os meses sem despesas a zero
     const byMonth = new Map();
