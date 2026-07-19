@@ -210,12 +210,16 @@ h2 { font-size: .98rem; font-weight: 700; letter-spacing: -.01em; margin: 0 0 .6
 .page-head .header-row { margin-bottom: 0; }
 .page-head .title-line { display: flex; align-items: center; gap: .5rem; min-width: 0; }
 .page-head .page-desc {
-  margin: .15rem 0 0;
-  font-size: .85rem;
+  margin: .25rem 0 0;
+  font-size: .92rem;
+  line-height: 1.4;
   color: var(--muted);
-  white-space: nowrap;
+  /* até duas linhas antes de cortar (em vez de uma só truncada) */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* botão de retroceder bem visível, em dourado leve (grupo e detalhes) */
@@ -778,6 +782,21 @@ details.hint p { margin: .4rem 0 0; font-size: .8rem; color: var(--muted); line-
 }
 .badge.linked { color: var(--primary); background: var(--chip-pos-bg); }
 
+/* etiqueta de permissões restringidas na lista de membros */
+.role-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: .2rem;
+  font-size: .66rem;
+  font-weight: 650;
+  padding: .08rem .45rem;
+  border-radius: 999px;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.role-badge.role-read { color: var(--gold-text); background: var(--gold-bg); border: 1px solid var(--gold-border); }
+.role-badge.role-write_own { color: var(--muted); background: var(--chip-zero-bg); border: 1px solid var(--border); }
+
 .amount { font-variant-numeric: tabular-nums; font-weight: 700; white-space: nowrap; font-size: .93rem; }
 .amount.positive { color: var(--positive); }
 .amount.negative { color: var(--negative); }
@@ -1202,6 +1221,139 @@ table.split-table input[type="checkbox"] { width: 1.1rem; }
 }
 .cat-pick-item input:disabled { cursor: default; }
 .cat-pick-actions { display: flex; gap: .4rem; margin-top: .5rem; }
+
+/* ---- cartão-interruptor da «Divisão por proporções» (mais charme) ---- */
+.toggle-card {
+  display: flex;
+  align-items: center;
+  gap: .8rem;
+  margin: .7rem 0;
+  padding: .7rem .85rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  background: var(--card-inner);
+  cursor: pointer;
+  transition: border-color .2s ease, background .2s ease, box-shadow .2s ease;
+}
+.toggle-card:hover { border-color: var(--primary); }
+.toggle-card.on {
+  border-color: var(--primary);
+  background: var(--chip-pos-bg);
+  box-shadow: inset 0 0 0 1px rgba(15, 157, 118, .18);
+}
+.toggle-card-ico {
+  flex: none;
+  width: 40px; height: 40px;
+  display: grid; place-items: center;
+  font-size: 1.25rem;
+  border-radius: 12px;
+  background: var(--card);
+  border: 1px solid var(--border-soft);
+  transition: transform .25s ease, background .2s ease;
+}
+.toggle-card.on .toggle-card-ico {
+  background: var(--chip-pos-bg);
+  transform: rotate(-8deg) scale(1.06);
+}
+.toggle-card-body { flex: 1 1 auto; min-width: 0; }
+.toggle-card-title { display: block; font-weight: 650; font-size: .95rem; color: var(--text); }
+.toggle-card-note { display: block; margin-top: .15rem; font-size: .78rem; line-height: 1.4; color: var(--muted); }
+.toggle-card-note strong { color: var(--text); font-weight: 600; }
+
+/* interruptor (switch) desenhado a partir do checkbox nativo */
+.switch { flex: none; position: relative; display: inline-flex; }
+.switch input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+.switch-track {
+  width: 46px; height: 27px;
+  border-radius: 999px;
+  background: var(--seg-bg);
+  display: inline-flex; align-items: center;
+  padding: 3px;
+  transition: background .22s ease;
+}
+.switch-thumb {
+  width: 21px; height: 21px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(16, 24, 40, .35);
+  transition: transform .22s cubic-bezier(.4, .3, .2, 1.4);
+}
+.switch input:checked + .switch-track { background: var(--primary); }
+.switch input:checked + .switch-track .switch-thumb { transform: translateX(19px); }
+.switch input:focus-visible + .switch-track { outline: 2px solid var(--primary); outline-offset: 2px; }
+.switch input:disabled { cursor: default; }
+.switch input:disabled + .switch-track { opacity: .55; }
+
+/* ---- categorias do grupo colapsáveis (mais charme) ---- */
+.cat-collapse {
+  margin: .7rem 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  background: var(--card-inner);
+  overflow: hidden;
+}
+.cat-collapse[open] { border-color: var(--primary); }
+.cat-collapse-summary {
+  display: flex;
+  align-items: center;
+  gap: .7rem;
+  padding: .65rem .8rem;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.cat-collapse-summary::-webkit-details-marker { display: none; }
+.cat-collapse-summary:hover { background: var(--chip-pos-bg); }
+.cat-collapse-ico {
+  flex: none;
+  width: 36px; height: 36px;
+  display: grid; place-items: center;
+  font-size: 1.1rem;
+  border-radius: 10px;
+  background: var(--card);
+  border: 1px solid var(--border-soft);
+}
+.cat-collapse-titles { flex: 1 1 auto; min-width: 0; }
+.cat-collapse-title { display: block; font-weight: 650; font-size: .95rem; }
+.cat-collapse-sub { display: block; margin-top: .1rem; font-size: .76rem; color: var(--muted); line-height: 1.35; }
+.cat-collapse-count {
+  flex: none;
+  font-size: .74rem; font-weight: 650;
+  color: var(--primary);
+  background: var(--chip-pos-bg);
+  border: 1px solid var(--primary);
+  border-radius: 999px;
+  padding: .12rem .55rem;
+}
+.cat-collapse-chev {
+  flex: none;
+  color: var(--muted);
+  transition: transform .25s ease;
+}
+.cat-collapse[open] .cat-collapse-chev { transform: rotate(180deg); }
+.cat-collapse-body {
+  padding: .3rem .8rem .8rem;
+  border-top: 1px solid var(--border-soft);
+}
+.cat-collapse-body .cat-pick { margin-top: .5rem; }
+
+/* banner de «só consulta» no formulário de despesa (acesso de leitura) */
+.ro-banner {
+  display: flex;
+  align-items: center;
+  gap: .55rem;
+  margin: 0 0 .7rem;
+  padding: .55rem .75rem;
+  border: 1px solid var(--gold-border);
+  background: var(--gold-bg);
+  color: var(--gold-text);
+  border-radius: var(--radius-s);
+  font-size: .82rem;
+  line-height: 1.35;
+}
+.ro-banner .ro-ico { flex: none; font-size: 1rem; }
+/* conteúdo inerte (não editável) esmaece ligeiramente para se perceber */
+.form-section[inert] { opacity: .72; }
 
 /* ================================================================ saldos / acertos */
 .settle-line {

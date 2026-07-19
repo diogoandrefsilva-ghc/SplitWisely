@@ -7,6 +7,7 @@ App web estilo Splitwise para gerir despesas partilhadas, feita em HTML/JS puro 
 - **Contas com aprovação** — o email definido em `admin_email` (no SQL) entra como **admin**; os restantes ficam num ecrã "à espera de aprovação" até o admin os aprovar no menu **Admin**. Assim ninguém entra por maldade e enche a base de dados. Exceção: quem foi **convidado** (adicionado como membro de um grupo pelo seu email) entra já aprovado ao fazer login.
 - **Grupos / eventos** — cada utilizador cria os grupos que quiser (pode até criar grupos onde não participa: continua a geri-los como criador).
 - **Membros por grupo** — pessoas com nome simples ou ligadas a contas Google. Se adicionares alguém com o email, fica automaticamente ligado à conta quando entrar pela primeira vez — e podes mandar-lhe o convite com um clique em **«Convidar por Gmail»** (abre o Gmail num separador novo, já com o link da app).
+- **Permissões por membro** — o criador do grupo define, no detalhe de cada membro, o que a conta ligada pode fazer: **só leitura** (consulta mas não altera), **lança e edita só as suas despesas** (as que criou) ou **lança e edita todas** (o default). Vale para as despesas, os moldes recorrentes e o registo de pagamentos, e é imposto no servidor pelas políticas RLS (não é só um esconder de botões).
 - **Despesas flexíveis** — pagas por **uma ou mais** pessoas e divididas por **uma ou várias**, em partes iguais, por proporção ou valores exatos.
 - **Categorias com ícones e sugestão automática** — cada despesa pode ter uma categoria (Talho 🥩, Peixe 🐟, Mercearia 🛒, Restaurante 🍽️, Entradas 🧀, Bebidas 🥤, Sobremesas 🍰, Utensílios 🍴, Limpeza 🧼, Cinema 🎬, Prendas 🎁, …). Ao escrever a descrição, a app **sugere logo a categoria** e vai **aprendendo** com as categorizações anteriores (histórico do grupo + memória local do browser). Na lista, cada despesa mostra o ícone da categoria e há chips com o **total por categoria** que servem de filtro ao toque. Nas **Definições** de cada grupo podes escolher **quais as categorias que se aplicam** a esse grupo (por defeito, todas) — só essas aparecem ao lançar despesas.
 - **Fatura repartida por várias categorias** — uma despesa pode alocar o valor por **várias categorias** (ex.: 50 € de jantar = 35 € Restaurante + 10 € Bebidas + 5 € Sobremesas). No formulário, «Fatura com várias categorias? Reparte o valor» abre a alocação por categoria (com «Distribuir igualmente»); a soma tem de bater no total. Os totais por categoria (chips, filtros e relatório) contam **cada parte na sua categoria**, e a lista assinala a fatura repartida com um contador no ícone.
@@ -104,8 +105,9 @@ A app abre depois como qualquer outra, em ecrã inteiro e com o ícone próprio.
 > **Já tinhas uma versão anterior do schema?** Volta a correr `supabase/schema.sql` no SQL
 > Editor (é idempotente) para apanhar as novidades — a tabela `payments` dos pagamentos, a
 > aprovação automática de quem é convidado por email, as **despesas recorrentes** (tabelas
-> `recurring_expenses` + a RPC `generate_due_recurring`) e a coluna `settle_with` da
-> **liquidação preferencial** nos membros.
+> `recurring_expenses` + a RPC `generate_due_recurring`), a coluna `settle_with` da
+> **liquidação preferencial** nos membros e a coluna `role` das **permissões por membro**
+> (com as políticas RLS que a impõem por despesa/pagamento).
 
 ## Estrutura
 
