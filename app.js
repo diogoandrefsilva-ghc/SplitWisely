@@ -1159,6 +1159,12 @@ function renderExpensesTab($c, ctx) {
       const m = monthLabel(x.expense_date);
       const head = m !== lastMonth ? `<li class="month-head">${esc(m)}</li>` : "";
       lastMonth = m;
+      // fatura repartida: linha miudinha com cada categoria e o seu valor
+      const catSplits = expenseCatSplits(x).filter(s => s.cat !== "none");
+      const catLine = catSplits.length >= 2
+        ? `<span class="item-cats">${catSplits.map(s =>
+            `<span class="item-cat">${catOf(s.cat).icon} ${fmtMoney(s.cents, cur)}</span>`).join("")}</span>`
+        : "";
       return `${head}
         <li class="clickable" data-open="${x.id}">
           ${dateBlock(x.expense_date)}
@@ -1166,6 +1172,7 @@ function renderExpensesTab($c, ctx) {
           <div class="item-main">
             <span class="item-title">${esc(x.description)}${x.recurring_id ? ` <span class="badge linked" title="Despesa recorrente">🔁</span>` : ""}</span>
             <span class="item-sub">pago por ${esc(payers)} · ${nShares} pessoa${nShares === 1 ? "" : "s"}</span>
+            ${catLine}
           </div>
           <div class="item-end">
             <span class="amount">${fmtMoney(toCents(x.amount), cur)}</span>
