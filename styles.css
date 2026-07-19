@@ -556,7 +556,7 @@ a.btn.invite {
 a.btn.invite:hover { background: var(--card-inner); filter: none; }
 
 /* ================================================================ forms */
-input, select {
+input, select, textarea {
   font: inherit;
   /* nunca abaixo de 16px: evita o zoom automático do iOS ao focar um campo */
   font-size: 16px;
@@ -568,6 +568,14 @@ input, select {
   width: 100%;
   min-width: 0; /* pode encolher dentro de flex (senão o de data transborda) */
   transition: border-color .15s, box-shadow .15s;
+}
+/* descrição multi-linha: cresce para baixo à medida que se escreve (o JS
+   ajusta a altura ao conteúdo); começa com a altura de um campo normal */
+textarea {
+  min-height: 42px;
+  line-height: 1.4;
+  resize: vertical;
+  overflow: hidden;
 }
 /* altura idêntica em todos os controlos — texto, número, data e select
    ficam alinhados lado a lado (o iOS dá alturas diferentes a cada um) */
@@ -1296,8 +1304,8 @@ table.split-table input[type="checkbox"] { width: 1.1rem; }
 .cat-collapse-summary {
   display: flex;
   align-items: center;
-  gap: .7rem;
-  padding: .65rem .8rem;
+  gap: .8rem;                 /* igual ao .toggle-card, para alinhar os títulos */
+  padding: .7rem .85rem;
   cursor: pointer;
   list-style: none;
   user-select: none;
@@ -1306,10 +1314,10 @@ table.split-table input[type="checkbox"] { width: 1.1rem; }
 .cat-collapse-summary:hover { background: var(--chip-pos-bg); }
 .cat-collapse-ico {
   flex: none;
-  width: 36px; height: 36px;
+  width: 40px; height: 40px;  /* igual ao .toggle-card-ico */
   display: grid; place-items: center;
-  font-size: 1.1rem;
-  border-radius: 10px;
+  font-size: 1.25rem;
+  border-radius: 12px;
   background: var(--card);
   border: 1px solid var(--border-soft);
 }
@@ -1332,7 +1340,7 @@ table.split-table input[type="checkbox"] { width: 1.1rem; }
 }
 .cat-collapse[open] .cat-collapse-chev { transform: rotate(180deg); }
 .cat-collapse-body {
-  padding: .3rem .8rem .8rem;
+  padding: .3rem .85rem .85rem;
   border-top: 1px solid var(--border-soft);
 }
 .cat-collapse-body .cat-pick { margin-top: .5rem; }
