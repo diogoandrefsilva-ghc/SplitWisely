@@ -290,6 +290,16 @@ function settlementsFor(members, balance) {
   return settlements;
 }
 
+// ------------------------------------------------------------ permissões
+// O que a conta ligada a um membro pode fazer no grupo (coluna
+// group_members.role). O default é 'write_all' (edita tudo), para o
+// comportamento de sempre; a RLS no schema é que impõe isto no servidor.
+const MEMBER_ROLES = {
+  read:      { label: "Só leitura",                  short: "Leitura",  icon: "👁️" },
+  write_own: { label: "Lança e edita só as suas despesas", short: "Próprias", icon: "✏️" },
+  write_all: { label: "Lança e edita todas as despesas",   short: "Todas",    icon: "🛠️" },
+};
+
 // ---------------------------------------------------------------- categorias
 // Lista fixa de categorias de despesa, cada uma com um ícone simples.
 // Na base de dados grava-se só o id (coluna expenses.category, nullable).
@@ -1056,7 +1066,14 @@ async function renderGroup(groupId, tab) {
     b.onclick = () => { location.hash = `#/g/${groupId}/${b.dataset.tab}`; };
   });
 
-  const ctx = { group, members, expenses, payments, paymentsReady, recurring, recurringReady, isOwner };
+  // permissão do utilizador atual neste grupo: o criador tem sempre acesso
+  // total; os restantes herdam o role da sua linha de membro (schema antigo
+  // sem a coluna => 'write_all', o comportamento de sempre). Espelha o que a
+  // RLS impõe no servidor (ver my_role() no schema.sql).
+  const myRole = isOwner ? "write_all" : (myMember?.role || "write_all");
+  const canWrite = myRole !== "read"; // pode lançar/registar (não é só-leitura)
+
+  const ctx = { group, members, expenses, payments, paymentsReady, recurring, recurringReady, isOwner, myMember, myRole, canWrite };
   const $c = document.getElementById("tab-content");
   if (tab === "despesas") renderExpensesTab($c, ctx);
   else if (tab === "saldos") renderBalancesTab($c, ctx);
@@ -1133,8 +1150,8 @@ function renderExpensesTab($c, ctx) {
     <div class="card">
       <div id="expense-list"></div>
     </div>`}
-    <button class="fab" id="btn-add-expense" title="Nova despesa"
-      ${members.length === 0 ? "disabled" : ""}>+</button>`;
+    ${ctx.canWrite ? `<button class="fab" id="btn-add-expense" title="Nova despesa"
+      ${members.length === 0 ? "disabled" : ""}>+</button>` : ""}`;
 
   const $list = $c.querySelector("#expense-list");
   const $result = $c.querySelector("#f-result");
@@ -1224,7 +1241,8 @@ function renderExpensesTab($c, ctx) {
     });
   }
 
-  $c.querySelector("#btn-add-expense").onclick = () => openExpenseModal(ctx, null);
+  const $addBtn = $c.querySelector("#btn-add-expense");
+  if ($addBtn) $addBtn.onclick = () => openExpenseModal(ctx, null);
 
   // pesquisa por descrição e intervalo de datas (o cartão dos filtros só
   // existe quando há despesas)
@@ -1275,6 +1293,14 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
   const today = new Date().toISOString().slice(0, 10);
   const close = onClose || (() => { slot.innerHTML = ""; });
   const useWeights = !!group.use_weights; // opção do grupo: divisão por proporções
+
+  // permissão de escrita nesta despesa (espelha a RLS do servidor):
+  //  'write_all' edita qualquer uma; 'write_own' só as que criou; 'read'
+  //  nenhuma. Sem permissão, o formulário abre em modo consulta (inerte).
+  const myUid = session.user.id;
+  const canEdit = ctx.myRole === "write_all"
+    || (ctx.myRole === "write_own" && (!existing || existing.created_by === myUid));
+  const readOnly = !canEdit;
 
   // pagadores/quotas do registo existente — vêm das tabelas próprias do molde
   // quando é recorrente, das da despesa quando é normal
@@ -1726,19 +1752,26 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
           : (isRecurringRecord || isOccurrence) ? "Despesa recorrente"
           : "Detalhe da despesa"}</h2>
       </div>
+      ${readOnly ? `<div class="ro-banner">
+        <span class="ro-ico" aria-hidden="true">👁️</span>
+        <span>${ctx.myRole === "read"
+          ? "Tens acesso de leitura a este grupo — podes consultar mas não alterar."
+          : "Só podes editar as despesas que criaste. Esta é de outra pessoa — só consulta."}</span>
+      </div>` : ""}
       <div class="tabs form-tabs">
         ${secTab("dados", "Dados", okDados)}
         ${secTab("pagou", "Quem pagou", okPaid)}
         ${secTab("divide", "Divisão", okShare)}
       </div>
-      <div class="form-section">${sections[state.section]}</div>
+      <div class="form-section"${readOnly ? " inert" : ""}>${sections[state.section]}</div>
       ${summary}
+      ${readOnly ? "" : `
       <div class="form-actions">
         <button id="x-save">${converting && state.recurring ? "Tornar recorrente"
           : existing ? "Guardar alterações"
           : (state.recurring ? "Criar recorrente" : "Adicionar despesa")}</button>
         ${existing ? `<button class="danger" id="x-del">Apagar</button>` : ""}
-      </div>
+      </div>`}
     </div>`;
 
     // ---- listeners
@@ -1933,7 +1966,8 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
       refresh();
     });
 
-    slot.querySelector("#x-save").onclick = async () => {
+    const $save = slot.querySelector("#x-save");
+    if ($save) $save.onclick = async () => {
       const desc = state.desc.trim();
       const date = state.date;
       const shares2 = computedShares();
@@ -2241,7 +2275,7 @@ function renderBalancesTab($c, ctx) {
       </div>
       <span class="settle-right">
         <span class="amount">${fmtMoney(s.cents, cur)}</span>
-        ${paymentsReady ? `<button class="small" data-settle="${i}">Pagar</button>` : ""}
+        ${paymentsReady && ctx.canWrite ? `<button class="small" data-settle="${i}">Pagar</button>` : ""}
       </span>
     </div>`;
 
@@ -2254,7 +2288,7 @@ function renderBalancesTab($c, ctx) {
         <span class="item-sub">${fmtDate(p.payment_date)}${p.note ? ` · ${esc(p.note)}` : ""}</span>
       </div>
       <span class="amount">${fmtMoney(toCents(p.amount), cur)}</span>
-      <button class="ghost small" data-pdel="${p.id}" title="Apagar pagamento">✕</button>
+      ${ctx.canWrite ? `<button class="ghost small" data-pdel="${p.id}" title="Apagar pagamento">✕</button>` : ""}
     </li>`;
 
   // linha de saldo de um membro (com detalhe expansível se deve/recebe de vários)
@@ -2335,7 +2369,7 @@ function renderBalancesTab($c, ctx) {
   const acertosOthers = otherSettles.map(settleLine).join("");
 
   // ---- Pagamentos ----
-  const pagAction = paymentsReady
+  const pagAction = paymentsReady && ctx.canWrite
     ? `<button type="button" class="secondary small" id="btn-add-payment">+ Registar</button>` : "";
   const pagMine = !paymentsReady
     ? `<p class="muted">Para ativar o registo de pagamentos, corre a versão mais
@@ -2874,6 +2908,17 @@ function renderMembersSection($c, ctx) {
   const { members } = ctx;
   const useWeights = !!ctx.group.use_weights;
 
+  // permissões de cada membro no grupo (o que a conta ligada pode fazer).
+  // 'write_all' é o default (edita tudo) e não mostra badge — só se destacam
+  // os acessos restringidos. Só o criador do grupo pode alterar isto.
+  const roleMeta = (r) => MEMBER_ROLES[r] || MEMBER_ROLES.write_all;
+  const roleBadge = (m) => {
+    const r = m.role || "write_all";
+    if (r === "write_all") return "";
+    const meta = roleMeta(r);
+    return ` <span class="role-badge role-${r}" title="${esc(meta.label)}">${meta.icon} ${esc(meta.short)}</span>`;
+  };
+
   const inviteHint = `Se indicares um email, toca no membro e usa
        <strong>«Convidar por Gmail»</strong> para lhe mandar o link da app. Ao
        entrar com a conta Google desse email, a pessoa fica logo ligada ao grupo
@@ -2902,18 +2947,19 @@ function renderMembersSection($c, ctx) {
           <li class="clickable" data-member="${m.id}">
             ${avatarHtml(m.name)}
             <div class="item-main">
-              <span class="item-title">${esc(m.name)}</span>
+              <span class="item-title">${esc(m.name)}${roleBadge(m)}</span>
               ${m.user_id ? `<span class="item-sub"><span class="badge linked">conta ligada</span></span>`
                 : m.email ? `<span class="item-sub">convite: ${esc(m.email)}</span>` : ""}
             </div>
             <div class="member-controls">
               ${useWeights ? `<label class="ctl"><span>Peso</span>
-                <input type="number" step="0.1" min="0" data-mw="${m.id}" value="${m.default_weight}" /></label>` : ""}
+                <input type="number" step="0.1" min="0" data-mw="${m.id}" value="${m.default_weight}" ${ctx.canWrite ? "" : "disabled"} /></label>` : ""}
             </div>
             <span class="chevron">›</span>
           </li>`).join("")}
       </ul>`}
     </div>
+    ${ctx.canWrite ? `
     <div class="card">
       <h2>Adicionar pessoa</h2>
       <form id="new-member">
@@ -2932,7 +2978,7 @@ function renderMembersSection($c, ctx) {
         </label>` : ""}
         <button type="submit">Adicionar</button>
       </form>
-    </div>
+    </div>` : ""}
     </div>`;
 
   const $wrap = $c.querySelector("#members-list-wrap");
@@ -2948,36 +2994,53 @@ function renderMembersSection($c, ctx) {
           <button class="back-pill" id="m-back"><span class="arr">←</span> Membros</button>
           <h2 style="margin:0;">Detalhe do membro</h2>
         </div>
+        ${ctx.canWrite ? "" : `<div class="ro-banner"><span class="ro-ico" aria-hidden="true">👁️</span>
+          <span>Tens acesso de leitura — podes consultar o membro mas não o alterar.</span></div>`}
         <div class="field"><label>Nome</label>
-          <input id="m-name" value="${esc(m.name)}" required /></div>
+          <input id="m-name" value="${esc(m.name)}" required ${ctx.canWrite ? "" : "disabled"} /></div>
         <div class="field"><label>Email</label>
           <input id="m-email" type="email" value="${esc(m.email || "")}"
-            placeholder="liga a pessoa à conta Google dela" ${m.user_id ? "disabled" : ""} /></div>
+            placeholder="liga a pessoa à conta Google dela" ${m.user_id || !ctx.canWrite ? "disabled" : ""} /></div>
         ${m.user_id ? `<p class="muted" style="margin:-.3rem 0 .7rem;">Esta pessoa já entrou com a
           conta Google dela <span class="badge linked">conta ligada</span> — o email já não se altera.</p>` : ""}
         ${inviteBlockHtml(m, ctx.group)}
+        ${ctx.isOwner ? `
+        <div class="field"><label>Permissões neste grupo</label>
+          <select id="m-role">
+            ${["write_all", "write_own", "read"].map(r => {
+              const meta = MEMBER_ROLES[r];
+              const cur = (m.role || "write_all") === r;
+              return `<option value="${r}" ${cur ? "selected" : ""}>${meta.icon} ${esc(meta.label)}</option>`;
+            }).join("")}
+          </select></div>
+        <p class="muted" style="margin:-.3rem 0 .7rem;">Aplica-se à conta ligada a este membro:
+          <strong>Só leitura</strong> consulta mas não altera; <strong>só as suas</strong> lança
+          despesas e edita as que criou; <strong>todas</strong> edita qualquer despesa. Só tu
+          (criador do grupo) podes alterar isto.</p>` : ""}
         ${useWeights ? `<div class="field" style="max-width:120px;"><label>Peso</label>
-          <input id="m-weight" type="number" step="0.1" min="0" value="${m.default_weight}" /></div>` : ""}
+          <input id="m-weight" type="number" step="0.1" min="0" value="${m.default_weight}" ${ctx.canWrite ? "" : "disabled"} /></div>` : ""}
         ${others.length ? `
         <div class="field"><label>Liquida preferencialmente com (opcional)</label>
-          <select id="m-settle">
+          <select id="m-settle" ${ctx.canWrite ? "" : "disabled"}>
             <option value="">— sem preferência —</option>
             ${others.map(o => `<option value="${o.id}" ${m.settle_with === o.id ? "selected" : ""}>${esc(o.name)}</option>`).join("")}
           </select></div>
         <p class="muted" style="margin:-.3rem 0 .7rem;">Útil para convidados: se ${esc(shortName(m.name))}
           tiver a pagar e a pessoa escolhida a receber, o acerto de contas sugere primeiro
           que liquide com ela, antes da distribuição normal.</p>` : ""}
+        ${ctx.canWrite ? `
         <div class="form-actions">
           <button id="m-save">Guardar</button>
           <button class="danger" id="m-del">Remover do grupo</button>
-        </div>
+        </div>` : ""}
       </div>`;
     $slot.scrollIntoView({ behavior: "smooth", block: "start" });
 
     const close = () => { $slot.innerHTML = ""; $wrap.style.display = ""; };
     $slot.querySelector("#m-back").onclick = close;
 
-    $slot.querySelector("#m-save").onclick = async () => {
+    const $mSave = $slot.querySelector("#m-save");
+    if ($mSave) $mSave.onclick = async () => {
       const name = $slot.querySelector("#m-name").value.trim();
       if (!name) return toast("O nome não pode ficar vazio", true);
       const payload = { name };
@@ -2985,17 +3048,28 @@ function renderMembersSection($c, ctx) {
       if (useWeights) payload.default_weight = parseFloat($slot.querySelector("#m-weight").value) || 0;
       const $settle = $slot.querySelector("#m-settle");
       if ($settle) payload.settle_with = $settle.value || null;
+      // role só o criador do grupo o pode definir (o seletor só existe para ele)
+      const $role = $slot.querySelector("#m-role");
+      if ($role) payload.role = $role.value;
       let { error } = await sb.from("group_members").update(payload).eq("id", m.id);
-      // schema antigo sem a coluna settle_with: grava o resto na mesma —
+      // schema antigo sem a coluna settle_with/role: grava o resto na mesma —
       // e o aviso fica no ecrã (sem ser tapado pelo toast de sucesso)
-      let settleWarn = false;
+      let settleWarn = false, roleWarn = false;
+      if (error && "role" in payload && /(\brole\b|column .*role)/i.test(error.message)) {
+        roleWarn = true;
+        delete payload.role;
+        ({ error } = await sb.from("group_members").update(payload).eq("id", m.id));
+      }
       if (error && "settle_with" in payload && /settle_with/i.test(error.message)) {
         settleWarn = true;
         delete payload.settle_with;
         ({ error } = await sb.from("group_members").update(payload).eq("id", m.id));
       }
       if (error) return toast(error.message, true);
-      if (settleWarn) {
+      if (roleWarn) {
+        toast("Membro atualizado, mas as PERMISSÕES não ficaram gravadas — "
+          + "corre o schema.sql mais recente no SQL Editor do Supabase", true);
+      } else if (settleWarn) {
         toast("Membro atualizado, mas a preferência de liquidação NÃO ficou gravada — "
           + "corre o schema.sql mais recente no SQL Editor do Supabase", true);
       } else {
@@ -3004,7 +3078,8 @@ function renderMembersSection($c, ctx) {
       refresh();
     };
 
-    $slot.querySelector("#m-del").onclick = async () => {
+    const $mDel = $slot.querySelector("#m-del");
+    if ($mDel) $mDel.onclick = async () => {
       if (!confirm(`Remover ${m.name} do grupo? As despesas em que participa perdem essa linha.`)) return;
       const { error } = await sb.from("group_members").delete().eq("id", m.id);
       if (error) return toast(error.message, true);
@@ -3038,7 +3113,8 @@ function renderMembersSection($c, ctx) {
     };
   });
 
-  $c.querySelector("#new-member").onsubmit = async (e) => {
+  const $newMember = $c.querySelector("#new-member");
+  if ($newMember) $newMember.onsubmit = async (e) => {
     e.preventDefault();
     const f = new FormData(e.target);
     const inherit = !!f.get("inherit");
@@ -3129,7 +3205,7 @@ function renderRecurringSection($c, ctx) {
       <div class="card">
         <div class="header-row">
           <h2 style="margin:0;">Despesas recorrentes ${recurring.length ? `<span class="muted">· ${recurring.length}</span>` : ""}</h2>
-          <button id="btn-add-rec" ${members.length === 0 ? "disabled" : ""}>+ Nova</button>
+          ${ctx.canWrite ? `<button id="btn-add-rec" ${members.length === 0 ? "disabled" : ""}>+ Nova</button>` : ""}
         </div>
         <p class="muted" style="margin-top:-.4rem;">Repetem-se todos os meses num certo dia (renda, ginásio, subscrições…).
           São lançadas automaticamente quando alguém abre a app.</p>
@@ -3168,30 +3244,48 @@ function renderSettingsTab($c, ctx) {
         </div>
         <div class="field"><label>Descrição</label>
           <input name="description" value="${esc(group.description || "")}" ${isOwner ? "" : "disabled"} /></div>
-        <label class="check-line">
-          <input type="checkbox" name="use_weights" ${group.use_weights ? "checked" : ""} ${isOwner ? "" : "disabled"} />
-          Divisão por proporções (pesos por pessoa)
-          <span class="check-note">ligado, cada pessoa tem um peso na lista de membros em baixo;
-            desligado, as despesas dividem-se em partes iguais</span>
+
+        <label class="toggle-card ${group.use_weights ? "on" : ""}" id="weights-card">
+          <span class="toggle-card-ico" aria-hidden="true">⚖️</span>
+          <span class="toggle-card-body">
+            <span class="toggle-card-title">Divisão por proporções</span>
+            <span class="toggle-card-note">Cada pessoa entra com um <strong>peso</strong> próprio na
+              divisão (define-se na lista de membros, em baixo). Desligado, as despesas dividem-se
+              em partes iguais.</span>
+          </span>
+          <span class="switch">
+            <input type="checkbox" name="use_weights" ${group.use_weights ? "checked" : ""} ${isOwner ? "" : "disabled"} />
+            <span class="switch-track"><span class="switch-thumb"></span></span>
+          </span>
         </label>
-        <div class="field" style="margin-top:.4rem;">
-          <label>Categorias do grupo
-            <span class="check-note" style="display:block;margin-top:.15rem;">as que aparecem ao lançar despesas neste grupo — por defeito, todas</span>
-          </label>
-          <div class="cat-pick" id="group-cats">
-            ${CATEGORIES.map(c => {
-              const on = !selectedCats || selectedCats.includes(c.id);
-              return `<label class="cat-pick-item ${on ? "on" : ""}">
-                <input type="checkbox" name="categories" value="${c.id}" ${on ? "checked" : ""} ${isOwner ? "" : "disabled"} />
-                <span>${c.icon} ${esc(c.label)}</span>
-              </label>`;
-            }).join("")}
+
+        <details class="cat-collapse" id="group-cats-collapse">
+          <summary class="cat-collapse-summary">
+            <span class="cat-collapse-ico" aria-hidden="true">🏷️</span>
+            <span class="cat-collapse-titles">
+              <span class="cat-collapse-title">Categorias do grupo</span>
+              <span class="cat-collapse-sub">as que aparecem ao lançar despesas — por defeito, todas</span>
+            </span>
+            <span class="cat-collapse-count" id="cat-count"></span>
+            <span class="cat-collapse-chev" aria-hidden="true">▾</span>
+          </summary>
+          <div class="cat-collapse-body">
+            <div class="cat-pick" id="group-cats">
+              ${CATEGORIES.map(c => {
+                const on = !selectedCats || selectedCats.includes(c.id);
+                return `<label class="cat-pick-item ${on ? "on" : ""}">
+                  <input type="checkbox" name="categories" value="${c.id}" ${on ? "checked" : ""} ${isOwner ? "" : "disabled"} />
+                  <span>${c.icon} ${esc(c.label)}</span>
+                </label>`;
+              }).join("")}
+            </div>
+            ${isOwner ? `<div class="cat-pick-actions">
+              <button type="button" class="secondary small" id="cats-all">Todas</button>
+              <button type="button" class="secondary small" id="cats-none">Nenhuma</button>
+            </div>` : ""}
           </div>
-          ${isOwner ? `<div class="cat-pick-actions">
-            <button type="button" class="secondary small" id="cats-all">Todas</button>
-            <button type="button" class="secondary small" id="cats-none">Nenhuma</button>
-          </div>` : ""}
-        </div>
+        </details>
+
         ${isOwner ? `<button type="submit" id="btn-save-group" style="margin-top:.6rem;">Guardar definições</button>` : ""}
       </form>
     </div>
@@ -3213,21 +3307,30 @@ function renderSettingsTab($c, ctx) {
   // despesas recorrentes — geríveis por qualquer membro, como as despesas
   renderRecurringSection($c.querySelector("#recurring-section"), ctx);
 
+  // contagem de categorias ativas no resumo do colapsável (todos veem)
+  const catBoxes = () => Array.from($c.querySelectorAll('#group-cats input[name="categories"]'));
+  const updateCatCount = () => {
+    const n = catBoxes().filter(b => b.checked).length;
+    const $cnt = $c.querySelector("#cat-count");
+    if ($cnt) $cnt.textContent = n === CATEGORIES.length ? "Todas" : `${n}/${CATEGORIES.length}`;
+  };
+  updateCatCount();
+
   if (!isOwner) return;
 
   // ligar/desligar a checkbox mostra logo (ou esconde) os pesos nos
-  // membros em baixo, sem esperar pelo «Guardar definições»
+  // membros em baixo, sem esperar pelo «Guardar definições»; e acende o cartão
   $c.querySelector('input[name="use_weights"]').onchange = (e) => {
+    $c.querySelector("#weights-card")?.classList.toggle("on", e.target.checked);
     drawMembers(e.target.checked);
     if (e.target.checked) toast("Carrega em «Guardar definições» e define os pesos na lista de membros");
   };
 
   // seletor de categorias do grupo: realce visual + atalhos Todas/Nenhuma
-  const catBoxes = () => Array.from($c.querySelectorAll('#group-cats input[name="categories"]'));
   const syncCatItem = (box) => box.closest(".cat-pick-item")?.classList.toggle("on", box.checked);
-  catBoxes().forEach(box => { box.onchange = () => syncCatItem(box); });
-  $c.querySelector("#cats-all").onclick = () => catBoxes().forEach(b => { b.checked = true; syncCatItem(b); });
-  $c.querySelector("#cats-none").onclick = () => catBoxes().forEach(b => { b.checked = false; syncCatItem(b); });
+  catBoxes().forEach(box => { box.onchange = () => { syncCatItem(box); updateCatCount(); }; });
+  $c.querySelector("#cats-all").onclick = () => { catBoxes().forEach(b => { b.checked = true; syncCatItem(b); }); updateCatCount(); };
+  $c.querySelector("#cats-none").onclick = () => { catBoxes().forEach(b => { b.checked = false; syncCatItem(b); }); updateCatCount(); };
 
   document.getElementById("edit-group").onsubmit = async (e) => {
     e.preventDefault();

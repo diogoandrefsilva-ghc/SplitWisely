@@ -190,6 +190,13 @@ alter table splitwisely.groups
 --                    (ex.: um convidado acerta primeiro com o anfitrião que
 --                    o trouxe, se um deve e o outro tem a receber). Opcional;
 --                    null = distribuição normal das sugestões de acerto.
+-- role            -> o que a conta ligada a este membro pode fazer no grupo:
+--                    'read'      só lê a informação do grupo (não lança nem edita)
+--                    'write_own' lança despesas e edita as SUAS (as que criou)
+--                    'write_all' lança e edita QUALQUER despesa (default)
+--                    O criador do grupo tem sempre 'write_all', mesmo sem ser
+--                    membro. Só o criador pode alterar o role dos membros
+--                    (garantido pelo trigger members_role_guard).
 create table if not exists splitwisely.group_members (
   id uuid primary key default gen_random_uuid(),
   group_id uuid not null references splitwisely.groups (id) on delete cascade,
@@ -199,6 +206,8 @@ create table if not exists splitwisely.group_members (
   default_weight numeric not null default 1 check (default_weight >= 0),
   is_default_payer boolean not null default false,
   settle_with uuid references splitwisely.group_members (id) on delete set null,
+  role text not null default 'write_all'
+    check (role in ('read', 'write_own', 'write_all')),
   created_at timestamptz not null default now(),
   unique (group_id, user_id)
 );
@@ -207,6 +216,37 @@ create table if not exists splitwisely.group_members (
 alter table splitwisely.group_members
   add column if not exists settle_with uuid
     references splitwisely.group_members (id) on delete set null;
+alter table splitwisely.group_members
+  add column if not exists role text not null default 'write_all'
+    check (role in ('read', 'write_own', 'write_all'));
+
+-- Só o criador do grupo pode mexer no role de um membro. Para os restantes
+-- (qualquer membro pode gerir a lista de membros) o role fica congelado: no
+-- INSERT nasce sempre 'write_all' (comportamento de sempre), no UPDATE mantém
+-- o valor antigo. Assim ninguém se promove a si próprio sem ser o dono.
+create or replace function splitwisely.members_role_guard()
+returns trigger
+language plpgsql security definer
+set search_path = splitwisely
+as $$
+declare v_owner uuid;
+begin
+  -- auth.uid() null = escrita administrativa direta (SQL Editor / service_role)
+  if auth.uid() is null then return new; end if;
+  select created_by into v_owner from groups where id = new.group_id;
+  if auth.uid() = v_owner then return new; end if;  -- o dono pode definir roles
+  if tg_op = 'INSERT' then
+    new.role := 'write_all';
+  else
+    new.role := old.role;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_members_role_guard on splitwisely.group_members;
+create trigger trg_members_role_guard before insert or update on splitwisely.group_members
+  for each row execute function splitwisely.members_role_guard();
 
 -- ---------- CONVITE PENDENTE? ----------
 -- Há um convite por email à espera deste endereço, i.e. alguém com acesso
@@ -356,6 +396,46 @@ as $$
   select group_id from expenses where id = eid;
 $$;
 
+-- ---------- PERMISSÃO DO UTILIZADOR NUM GRUPO ----------
+-- Role do utilizador atual neste grupo. O criador do grupo tem sempre
+-- 'write_all' (mesmo sem ser membro); os restantes herdam o role da sua
+-- linha de membro; quem não pertence ao grupo fica 'read' (inócuo, porque
+-- has_group_access() já o barra). Usado pelas policies das despesas.
+create or replace function splitwisely.my_role(gid uuid)
+returns text
+language sql stable security definer
+set search_path = splitwisely
+as $$
+  select case
+    when exists (select 1 from groups g where g.id = gid and g.created_by = auth.uid())
+      then 'write_all'
+    else coalesce(
+      (select role from group_members m
+        where m.group_id = gid and m.user_id = auth.uid()
+        limit 1),
+      'read')
+  end;
+$$;
+
+-- Pode escrever (criar/editar/apagar) nesta despesa? 'write_all' pode em
+-- qualquer uma; 'write_own' só nas que criou; 'read' em nenhuma. Usado nas
+-- policies das tabelas-filhas da despesa (pagadores, quotas, categorias).
+create or replace function splitwisely.can_write_expense(eid uuid)
+returns boolean
+language sql stable security definer
+set search_path = splitwisely
+as $$
+  select exists (
+    select 1 from expenses e
+    where e.id = eid
+      and splitwisely.has_group_access(e.group_id)
+      and (splitwisely.my_role(e.group_id) = 'write_all'
+           or (splitwisely.my_role(e.group_id) = 'write_own'
+               and e.created_by = auth.uid()))
+  );
+$$;
+-- (can_write_recurring vive mais abaixo, depois de recurring_expenses existir)
+
 -- ---------- LIGAR CONVITES POR EMAIL AO FAZER LOGIN ----------
 create or replace function splitwisely.claim_memberships()
 returns integer
@@ -440,50 +520,115 @@ create policy "groups_delete" on splitwisely.groups
   for delete to authenticated
   using (splitwisely.can_use() and created_by = auth.uid());
 
--- Membros: quem tem acesso ao grupo gere tudo
+-- Membros: leitura para quem tem acesso ao grupo (qualquer role); gerir a
+-- lista (adicionar/editar/remover) só para quem não é apenas-leitura. Quem
+-- pode alterar o *role* de um membro é filtrado à parte pelo trigger
+-- members_role_guard (só o criador do grupo).
 drop policy if exists "members_all" on splitwisely.group_members;
-create policy "members_all" on splitwisely.group_members
+drop policy if exists "members_select" on splitwisely.group_members;
+create policy "members_select" on splitwisely.group_members
+  for select to authenticated
+  using (splitwisely.can_use() and splitwisely.has_group_access(group_id));
+drop policy if exists "members_write" on splitwisely.group_members;
+create policy "members_write" on splitwisely.group_members
   for all to authenticated
-  using (splitwisely.can_use() and splitwisely.has_group_access(group_id))
-  with check (splitwisely.can_use() and splitwisely.has_group_access(group_id));
+  using (splitwisely.can_use() and splitwisely.has_group_access(group_id)
+         and splitwisely.my_role(group_id) in ('write_own', 'write_all'))
+  with check (splitwisely.can_use() and splitwisely.has_group_access(group_id)
+         and splitwisely.my_role(group_id) in ('write_own', 'write_all'));
 
--- Despesas
-drop policy if exists "expenses_all" on splitwisely.expenses;
-create policy "expenses_all" on splitwisely.expenses
-  for all to authenticated
-  using (splitwisely.can_use() and splitwisely.has_group_access(group_id))
-  with check (splitwisely.can_use() and splitwisely.has_group_access(group_id));
+-- Despesas — leitura para quem tem acesso ao grupo (qualquer role, incl.
+-- 'read'); escrita gated pelo role: 'write_all' em qualquer despesa,
+-- 'write_own' só nas que criou (created_by), 'read' em nenhuma.
+drop policy if exists "expenses_all" on splitwisely.expenses;  -- policy antiga (uma só)
+drop policy if exists "expenses_select" on splitwisely.expenses;
+create policy "expenses_select" on splitwisely.expenses
+  for select to authenticated
+  using (splitwisely.can_use() and splitwisely.has_group_access(group_id));
 
+drop policy if exists "expenses_insert" on splitwisely.expenses;
+create policy "expenses_insert" on splitwisely.expenses
+  for insert to authenticated
+  with check (splitwisely.can_use() and splitwisely.has_group_access(group_id)
+              and splitwisely.my_role(group_id) in ('write_own', 'write_all'));
+
+drop policy if exists "expenses_update" on splitwisely.expenses;
+create policy "expenses_update" on splitwisely.expenses
+  for update to authenticated
+  using (splitwisely.can_use() and splitwisely.has_group_access(group_id)
+         and (splitwisely.my_role(group_id) = 'write_all'
+              or (splitwisely.my_role(group_id) = 'write_own' and created_by = auth.uid())))
+  with check (splitwisely.can_use() and splitwisely.has_group_access(group_id)
+         and (splitwisely.my_role(group_id) = 'write_all'
+              or (splitwisely.my_role(group_id) = 'write_own' and created_by = auth.uid())));
+
+drop policy if exists "expenses_delete" on splitwisely.expenses;
+create policy "expenses_delete" on splitwisely.expenses
+  for delete to authenticated
+  using (splitwisely.can_use() and splitwisely.has_group_access(group_id)
+         and (splitwisely.my_role(group_id) = 'write_all'
+              or (splitwisely.my_role(group_id) = 'write_own' and created_by = auth.uid())));
+
+-- Tabelas-filhas da despesa: leitura livre (com acesso ao grupo), escrita só
+-- quem pode escrever a despesa-pai (can_write_expense).
 drop policy if exists "payers_all" on splitwisely.expense_payers;
-create policy "payers_all" on splitwisely.expense_payers
+drop policy if exists "payers_select" on splitwisely.expense_payers;
+create policy "payers_select" on splitwisely.expense_payers
+  for select to authenticated
+  using (splitwisely.can_use() and splitwisely.has_group_access(splitwisely.expense_group(expense_id)));
+drop policy if exists "payers_write" on splitwisely.expense_payers;
+create policy "payers_write" on splitwisely.expense_payers
   for all to authenticated
-  using (splitwisely.can_use() and splitwisely.has_group_access(splitwisely.expense_group(expense_id)))
-  with check (splitwisely.can_use() and splitwisely.has_group_access(splitwisely.expense_group(expense_id)));
+  using (splitwisely.can_use() and splitwisely.can_write_expense(expense_id))
+  with check (splitwisely.can_use() and splitwisely.can_write_expense(expense_id));
 
 drop policy if exists "shares_all" on splitwisely.expense_shares;
-create policy "shares_all" on splitwisely.expense_shares
+drop policy if exists "shares_select" on splitwisely.expense_shares;
+create policy "shares_select" on splitwisely.expense_shares
+  for select to authenticated
+  using (splitwisely.can_use() and splitwisely.has_group_access(splitwisely.expense_group(expense_id)));
+drop policy if exists "shares_write" on splitwisely.expense_shares;
+create policy "shares_write" on splitwisely.expense_shares
   for all to authenticated
-  using (splitwisely.can_use() and splitwisely.has_group_access(splitwisely.expense_group(expense_id)))
-  with check (splitwisely.can_use() and splitwisely.has_group_access(splitwisely.expense_group(expense_id)));
+  using (splitwisely.can_use() and splitwisely.can_write_expense(expense_id))
+  with check (splitwisely.can_use() and splitwisely.can_write_expense(expense_id));
 
 drop policy if exists "expense_categories_all" on splitwisely.expense_categories;
-create policy "expense_categories_all" on splitwisely.expense_categories
+drop policy if exists "expense_categories_select" on splitwisely.expense_categories;
+create policy "expense_categories_select" on splitwisely.expense_categories
+  for select to authenticated
+  using (splitwisely.can_use() and splitwisely.has_group_access(splitwisely.expense_group(expense_id)));
+drop policy if exists "expense_categories_write" on splitwisely.expense_categories;
+create policy "expense_categories_write" on splitwisely.expense_categories
   for all to authenticated
-  using (splitwisely.can_use() and splitwisely.has_group_access(splitwisely.expense_group(expense_id)))
-  with check (splitwisely.can_use() and splitwisely.has_group_access(splitwisely.expense_group(expense_id)));
+  using (splitwisely.can_use() and splitwisely.can_write_expense(expense_id))
+  with check (splitwisely.can_use() and splitwisely.can_write_expense(expense_id));
 
 drop policy if exists "expense_category_shares_all" on splitwisely.expense_category_shares;
-create policy "expense_category_shares_all" on splitwisely.expense_category_shares
+drop policy if exists "expense_category_shares_select" on splitwisely.expense_category_shares;
+create policy "expense_category_shares_select" on splitwisely.expense_category_shares
+  for select to authenticated
+  using (splitwisely.can_use() and splitwisely.has_group_access(splitwisely.expense_group(expense_id)));
+drop policy if exists "expense_category_shares_write" on splitwisely.expense_category_shares;
+create policy "expense_category_shares_write" on splitwisely.expense_category_shares
   for all to authenticated
-  using (splitwisely.can_use() and splitwisely.has_group_access(splitwisely.expense_group(expense_id)))
-  with check (splitwisely.can_use() and splitwisely.has_group_access(splitwisely.expense_group(expense_id)));
+  using (splitwisely.can_use() and splitwisely.can_write_expense(expense_id))
+  with check (splitwisely.can_use() and splitwisely.can_write_expense(expense_id));
 
--- Pagamentos: quem tem acesso ao grupo gere tudo
+-- Pagamentos: leitura com acesso ao grupo; registar/apagar só quem pode
+-- escrever (role 'write_own' ou 'write_all' — 'read' não mexe nos acertos).
 drop policy if exists "payments_all" on splitwisely.payments;
-create policy "payments_all" on splitwisely.payments
+drop policy if exists "payments_select" on splitwisely.payments;
+create policy "payments_select" on splitwisely.payments
+  for select to authenticated
+  using (splitwisely.can_use() and splitwisely.has_group_access(group_id));
+drop policy if exists "payments_write" on splitwisely.payments;
+create policy "payments_write" on splitwisely.payments
   for all to authenticated
-  using (splitwisely.can_use() and splitwisely.has_group_access(group_id))
-  with check (splitwisely.can_use() and splitwisely.has_group_access(group_id));
+  using (splitwisely.can_use() and splitwisely.has_group_access(group_id)
+         and splitwisely.my_role(group_id) in ('write_own', 'write_all'))
+  with check (splitwisely.can_use() and splitwisely.has_group_access(group_id)
+         and splitwisely.my_role(group_id) in ('write_own', 'write_all'));
 
 -- ---------- ÍNDICES ----------
 create index if not exists idx_members_group  on splitwisely.group_members (group_id);
@@ -565,6 +710,23 @@ as $$
   select group_id from recurring_expenses where id = rid;
 $$;
 
+-- Pode escrever neste molde recorrente? Mesmo modelo do can_write_expense.
+-- (definido aqui, já com recurring_expenses a existir)
+create or replace function splitwisely.can_write_recurring(rid uuid)
+returns boolean
+language sql stable security definer
+set search_path = splitwisely
+as $$
+  select exists (
+    select 1 from recurring_expenses r
+    where r.id = rid
+      and splitwisely.has_group_access(r.group_id)
+      and (splitwisely.my_role(r.group_id) = 'write_all'
+           or (splitwisely.my_role(r.group_id) = 'write_own'
+               and r.created_by = auth.uid()))
+  );
+$$;
+
 -- Materializa as despesas recorrentes em atraso dos grupos a que o utilizador
 -- tem acesso. Para cada molde ativo gera uma despesa por mês, do mês de
 -- start_date até ao mês atual, no dia indicado (ajustado ao último dia do mês
@@ -629,23 +791,58 @@ alter table splitwisely.recurring_expenses       enable row level security;
 alter table splitwisely.recurring_expense_payers enable row level security;
 alter table splitwisely.recurring_expense_shares enable row level security;
 
+-- Moldes recorrentes: mesmo modelo das despesas — leitura com acesso ao
+-- grupo, escrita gated pelo role ('write_own' só nos que criou).
 drop policy if exists "recurring_all" on splitwisely.recurring_expenses;
-create policy "recurring_all" on splitwisely.recurring_expenses
-  for all to authenticated
-  using (splitwisely.can_use() and splitwisely.has_group_access(group_id))
-  with check (splitwisely.can_use() and splitwisely.has_group_access(group_id));
+drop policy if exists "recurring_select" on splitwisely.recurring_expenses;
+create policy "recurring_select" on splitwisely.recurring_expenses
+  for select to authenticated
+  using (splitwisely.can_use() and splitwisely.has_group_access(group_id));
+
+drop policy if exists "recurring_insert" on splitwisely.recurring_expenses;
+create policy "recurring_insert" on splitwisely.recurring_expenses
+  for insert to authenticated
+  with check (splitwisely.can_use() and splitwisely.has_group_access(group_id)
+              and splitwisely.my_role(group_id) in ('write_own', 'write_all'));
+
+drop policy if exists "recurring_update" on splitwisely.recurring_expenses;
+create policy "recurring_update" on splitwisely.recurring_expenses
+  for update to authenticated
+  using (splitwisely.can_use() and splitwisely.has_group_access(group_id)
+         and (splitwisely.my_role(group_id) = 'write_all'
+              or (splitwisely.my_role(group_id) = 'write_own' and created_by = auth.uid())))
+  with check (splitwisely.can_use() and splitwisely.has_group_access(group_id)
+         and (splitwisely.my_role(group_id) = 'write_all'
+              or (splitwisely.my_role(group_id) = 'write_own' and created_by = auth.uid())));
+
+drop policy if exists "recurring_delete" on splitwisely.recurring_expenses;
+create policy "recurring_delete" on splitwisely.recurring_expenses
+  for delete to authenticated
+  using (splitwisely.can_use() and splitwisely.has_group_access(group_id)
+         and (splitwisely.my_role(group_id) = 'write_all'
+              or (splitwisely.my_role(group_id) = 'write_own' and created_by = auth.uid())));
 
 drop policy if exists "recurring_payers_all" on splitwisely.recurring_expense_payers;
-create policy "recurring_payers_all" on splitwisely.recurring_expense_payers
+drop policy if exists "recurring_payers_select" on splitwisely.recurring_expense_payers;
+create policy "recurring_payers_select" on splitwisely.recurring_expense_payers
+  for select to authenticated
+  using (splitwisely.can_use() and splitwisely.has_group_access(splitwisely.recurring_group(recurring_id)));
+drop policy if exists "recurring_payers_write" on splitwisely.recurring_expense_payers;
+create policy "recurring_payers_write" on splitwisely.recurring_expense_payers
   for all to authenticated
-  using (splitwisely.can_use() and splitwisely.has_group_access(splitwisely.recurring_group(recurring_id)))
-  with check (splitwisely.can_use() and splitwisely.has_group_access(splitwisely.recurring_group(recurring_id)));
+  using (splitwisely.can_use() and splitwisely.can_write_recurring(recurring_id))
+  with check (splitwisely.can_use() and splitwisely.can_write_recurring(recurring_id));
 
 drop policy if exists "recurring_shares_all" on splitwisely.recurring_expense_shares;
-create policy "recurring_shares_all" on splitwisely.recurring_expense_shares
+drop policy if exists "recurring_shares_select" on splitwisely.recurring_expense_shares;
+create policy "recurring_shares_select" on splitwisely.recurring_expense_shares
+  for select to authenticated
+  using (splitwisely.can_use() and splitwisely.has_group_access(splitwisely.recurring_group(recurring_id)));
+drop policy if exists "recurring_shares_write" on splitwisely.recurring_expense_shares;
+create policy "recurring_shares_write" on splitwisely.recurring_expense_shares
   for all to authenticated
-  using (splitwisely.can_use() and splitwisely.has_group_access(splitwisely.recurring_group(recurring_id)))
-  with check (splitwisely.can_use() and splitwisely.has_group_access(splitwisely.recurring_group(recurring_id)));
+  using (splitwisely.can_use() and splitwisely.can_write_recurring(recurring_id))
+  with check (splitwisely.can_use() and splitwisely.can_write_recurring(recurring_id));
 
 create index if not exists idx_recurring_group   on splitwisely.recurring_expenses (group_id);
 create index if not exists idx_rec_payers         on splitwisely.recurring_expense_payers (recurring_id);
