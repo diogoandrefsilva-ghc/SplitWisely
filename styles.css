@@ -1101,6 +1101,50 @@ table.split-table input[type="checkbox"] { width: 1.1rem; }
 /* «sugerida automaticamente» ao lado do label Categoria */
 .cat-hint { font-weight: 500; text-transform: none; color: var(--primary); }
 
+/* contador no ícone quando a fatura está repartida por várias categorias */
+.cat-ico.multi { position: relative; }
+.cat-multi-badge {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  background: var(--primary);
+  color: #fff;
+  border-radius: 999px;
+  font-size: .58rem;
+  line-height: 1;
+  padding: 2px 4px;
+  font-weight: 700;
+}
+
+/* fatura repartida por várias categorias (formulário da despesa) */
+.link-btn {
+  background: none;
+  border: none;
+  box-shadow: none;
+  color: var(--primary);
+  font-size: .82rem;
+  font-weight: 600;
+  padding: .15rem 0;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.link-btn:hover { filter: none; background: none; }
+.cat-split {
+  display: flex;
+  flex-direction: column;
+  gap: .35rem;
+  margin-top: .4rem;
+  padding: .55rem .65rem;
+  background: var(--card-inner);
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+}
+.cat-split-line { display: flex; align-items: center; gap: .6rem; }
+.cat-split-name { flex: 1; font-size: .9rem; }
+.cat-split-line input { width: 130px; flex: none; }
+.cat-split-actions { display: flex; gap: .4rem; margin-top: .15rem; }
+.cat-split .form-status { margin: .15rem 0 0; }
+
 /* seletor de categorias do grupo (Definições) — grelha de etiquetas */
 .cat-pick {
   display: flex;
