@@ -2209,10 +2209,19 @@ function abrirRelatorio(html, titulo) {
       @media print { body { margin: 0; } }
       body { margin: 0; background: #fff; color: #14212b;
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
-      tr { page-break-inside: avoid; }
       table { border-collapse: collapse; width: 100%; }
+      /* não partir uma linha entre páginas e repetir o cabeçalho da tabela
+         no topo de cada página quando ela se estende por várias */
+      tr { page-break-inside: avoid; break-inside: avoid; }
+      thead { display: table-header-group; }
+      /* manter o título colado à tabela e, nos quadros curtos, não deixar o
+         título/cabeçalho numa página e o conteúdo noutra. Num quadro maior
+         que uma página (ex.: Despesas) o browser ignora o "avoid" e parte-o
+         na mesma, mas o cabeçalho da tabela repete-se por causa do acima. */
       h2.rpt-sec { font-size: 12px; font-weight: 800; color: #0b5f47;
-        text-transform: uppercase; letter-spacing: 1px; margin: 26px 0 8px; }
+        text-transform: uppercase; letter-spacing: 1px; margin: 26px 0 8px;
+        page-break-after: avoid; break-after: avoid; }
+      .rpt-block { page-break-inside: avoid; break-inside: avoid; }
     </style>
   </head><body>${html}</body></html>`;
 
@@ -2431,8 +2440,11 @@ function gerarRelatorioGrupo(ctx) {
         </tr>`).join("")}</tbody>
     </table>`;
 
+  // cada quadro num bloco que o browser tenta manter na mesma página (título
+  // + tabela juntos); ver o CSS de impressão em abrirRelatorio()
+  const bloco = s => s ? `<section class="rpt-block">${s}</section>` : "";
   const html = `<div style="max-width:720px;margin:0 auto;padding:28px 24px 48px;">
-    ${cabecalho}${despSec}${catSec}${quotaSec}${saldosSec}${acertosSec}${pagSec}
+    ${cabecalho}${bloco(despSec)}${bloco(catSec)}${bloco(quotaSec)}${bloco(saldosSec)}${bloco(acertosSec)}${bloco(pagSec)}
   </div>`;
 
   const nomeFicheiro = `relatorio_${(group.name || "grupo").toLowerCase().replace(/[^\wà-ÿ]+/gi, "_").replace(/^_+|_+$/g, "")}.pdf`;
