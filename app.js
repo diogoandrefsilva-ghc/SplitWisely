@@ -3243,7 +3243,7 @@ function renderSettingsTab($c, ctx) {
             </select></div>
         </div>
         <div class="field"><label>Descrição</label>
-          <input name="description" value="${esc(group.description || "")}" ${isOwner ? "" : "disabled"} /></div>
+          <textarea name="description" id="group-desc" rows="1" ${isOwner ? "" : "disabled"}>${esc(group.description || "")}</textarea></div>
 
         <label class="toggle-card ${group.use_weights ? "on" : ""}" id="weights-card">
           <span class="toggle-card-ico" aria-hidden="true">⚖️</span>
@@ -3306,6 +3306,16 @@ function renderSettingsTab($c, ctx) {
 
   // despesas recorrentes — geríveis por qualquer membro, como as despesas
   renderRecurringSection($c.querySelector("#recurring-section"), ctx);
+
+  // descrição: caixa que cresce para baixo quando o texto não cabe numa linha
+  const $desc = $c.querySelector("#group-desc");
+  if ($desc) {
+    const growDesc = () => { $desc.style.height = "auto"; $desc.style.height = $desc.scrollHeight + "px"; };
+    $desc.addEventListener("input", growDesc);
+    // ajusta à altura do conteúdo já no arranque (e após o layout assentar)
+    growDesc();
+    requestAnimationFrame(growDesc);
+  }
 
   // contagem de categorias ativas no resumo do colapsável (todos veem)
   const catBoxes = () => Array.from($c.querySelectorAll('#group-cats input[name="categories"]'));
