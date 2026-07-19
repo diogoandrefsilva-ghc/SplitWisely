@@ -2299,8 +2299,9 @@ function gerarRelatorioGrupo(ctx) {
       </div>
     </div>`;
 
-  // ---- quota por pessoa ----
-  const quotaRows = [...members].sort((a, b) => share[b.id] - share[a.id]).map((m, i) => {
+  // ---- quota por pessoa ---- (membros por ordem alfabética)
+  const byName = (a, b) => a.name.localeCompare(b.name, "pt", { sensitivity: "base" });
+  const quotaRows = [...members].sort(byName).map((m, i) => {
     const pct = total > 0 ? Math.round(share[m.id] / total * 100) : 0;
     return `<tr style="background:${zebra(i)}">
       <td style="${td}font-weight:600;">${esc(m.name)}</td>
@@ -2314,7 +2315,7 @@ function gerarRelatorioGrupo(ctx) {
     <table style="border-radius:8px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.08);font-size:13px;">
       <thead><tr style="background:#0f9d76;color:#fff;">
         <th style="${th()}">Membro</th><th style="${th("right")}">Quota</th>
-        <th style="${th("center")}">% total</th><th style="${th("right")}">Pagou</th>
+        <th style="${th("center")}">% total</th><th style="${th("right")}">Adiantou</th>
       </tr></thead>
       <tbody>${quotaRows}</tbody>
       <tfoot><tr style="background:#eef2f0;font-weight:800;">
@@ -2325,8 +2326,8 @@ function gerarRelatorioGrupo(ctx) {
       </tr></tfoot>
     </table>`;
 
-  // ---- saldos ----
-  const balRows = members.map((m, i) => {
+  // ---- saldos ---- (membros por ordem alfabética)
+  const balRows = [...members].sort(byName).map((m, i) => {
     const b = balance[m.id];
     const txt = b === 0 ? "✓ em dia" : (b > 0 ? "recebe " : "deve ") + fmtMoney(Math.abs(b), cur);
     const cor = b > 0 ? "#0d8f6c" : b < 0 ? "#d43333" : "#66788a";
@@ -2353,7 +2354,7 @@ function gerarRelatorioGrupo(ctx) {
           <thead><tr style="background:#0f9d76;color:#fff;">
             <th style="${th()}">Quem paga</th><th style="${th()}">Recebe</th><th style="${th("right")}">Valor</th>
           </tr></thead>
-          <tbody>${settlements.map((s, i) => `
+          <tbody>${[...settlements].sort((a, b) => byName(a.from, b.from) || byName(a.to, b.to)).map((s, i) => `
             <tr style="background:${zebra(i)}">
               <td style="${td}font-weight:600;">${esc(s.from.name)}</td>
               <td style="${td}">${esc(s.to.name)}</td>
@@ -2431,7 +2432,7 @@ function gerarRelatorioGrupo(ctx) {
     </table>`;
 
   const html = `<div style="max-width:720px;margin:0 auto;padding:28px 24px 48px;">
-    ${cabecalho}${quotaSec}${saldosSec}${acertosSec}${catSec}${despSec}${pagSec}
+    ${cabecalho}${despSec}${catSec}${quotaSec}${saldosSec}${acertosSec}${pagSec}
   </div>`;
 
   const nomeFicheiro = `relatorio_${(group.name || "grupo").toLowerCase().replace(/[^\wà-ÿ]+/gi, "_").replace(/^_+|_+$/g, "")}.pdf`;

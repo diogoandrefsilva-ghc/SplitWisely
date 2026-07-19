@@ -4,7 +4,7 @@
    Pedidos a outras origens (API do Supabase) passam direto, sem cache. */
 "use strict";
 
-const CACHE = "splitwisely-v14";
+const CACHE = "splitwisely-v15";
 const SHELL = [
   "./",
   "./index.html",
