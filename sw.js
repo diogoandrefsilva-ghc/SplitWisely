@@ -4,7 +4,7 @@
    Pedidos a outras origens (API do Supabase) passam direto, sem cache. */
 "use strict";
 
-const CACHE = "splitwisely-v17";
+const CACHE = "splitwisely-v18";
 const SHELL = [
   "./",
   "./index.html",
@@ -14,6 +14,7 @@ const SHELL = [
   "./vendor/supabase.js",
   "./icons/icon-192.png",
   "./icons/icon-512.png",
+  "./icons/icon-mark.png",
 ];
 
 self.addEventListener("install", (e) => {
