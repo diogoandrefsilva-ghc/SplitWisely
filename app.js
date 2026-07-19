@@ -993,12 +993,22 @@ async function renderGroups() {
 
       if (f.get("join")) {
         const u = session.user;
-        const { error: e2 } = await sb.from("group_members").insert({
+        // o criador entra com acesso total (os restantes membros entram como
+        // só-leitura por defeito) — funcionalmente o criador é sempre write_all,
+        // mas gravar o role certo evita um badge de «leitura» enganador nele
+        const memberPayload = {
           group_id: group.id,
           name: u.user_metadata?.full_name || u.email,
           email: u.email,
           user_id: u.id,
-        });
+          role: "write_all",
+        };
+        let { error: e2 } = await sb.from("group_members").insert(memberPayload);
+        // schema antigo sem a coluna role: cria na mesma (sem o role)
+        if (e2 && /(\brole\b|column .*role)/i.test(e2.message)) {
+          delete memberPayload.role;
+          ({ error: e2 } = await sb.from("group_members").insert(memberPayload));
+        }
         if (e2) toast(e2.message, true);
       }
       location.hash = `#/g/${group.id}/definicoes`;
@@ -2977,6 +2987,9 @@ function renderMembersSection($c, ctx) {
             para lhe dar uma parte.</span>
         </label>` : ""}
         <button type="submit">Adicionar</button>
+        ${ctx.isOwner ? `<p class="check-note" style="margin:.5rem 0 0;">Entra como
+          <strong>só-leitura</strong> por defeito — depois, no detalhe do membro, dá-lhe
+          acesso para lançar/editar despesas se quiseres.</p>` : ""}
       </form>
     </div>` : ""}
     </div>`;

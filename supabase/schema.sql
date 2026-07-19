@@ -191,10 +191,12 @@ alter table splitwisely.groups
 --                    o trouxe, se um deve e o outro tem a receber). Opcional;
 --                    null = distribuição normal das sugestões de acerto.
 -- role            -> o que a conta ligada a este membro pode fazer no grupo:
---                    'read'      só lê a informação do grupo (não lança nem edita)
+--                    'read'      só lê a informação do grupo (não lança nem edita) — DEFAULT
 --                    'write_own' lança despesas e edita as SUAS (as que criou)
---                    'write_all' lança e edita QUALQUER despesa (default)
---                    O criador do grupo tem sempre 'write_all', mesmo sem ser
+--                    'write_all' lança e edita QUALQUER despesa
+--                    Por defeito, quem é adicionado a um grupo entra como
+--                    só-leitura; o criador eleva quem precisar. O criador do
+--                    grupo tem sempre acesso total (write_all), mesmo sem ser
 --                    membro. Só o criador pode alterar o role dos membros
 --                    (garantido pelo trigger members_role_guard).
 create table if not exists splitwisely.group_members (
@@ -206,7 +208,7 @@ create table if not exists splitwisely.group_members (
   default_weight numeric not null default 1 check (default_weight >= 0),
   is_default_payer boolean not null default false,
   settle_with uuid references splitwisely.group_members (id) on delete set null,
-  role text not null default 'write_all'
+  role text not null default 'read'
     check (role in ('read', 'write_own', 'write_all')),
   created_at timestamptz not null default now(),
   unique (group_id, user_id)
@@ -216,14 +218,21 @@ create table if not exists splitwisely.group_members (
 alter table splitwisely.group_members
   add column if not exists settle_with uuid
     references splitwisely.group_members (id) on delete set null;
+-- A coluna nasce com default 'write_all' PROPOSITADAMENTE: em instalações que
+-- ainda não tinham a coluna, isto faz o backfill dos membros JÁ existentes
+-- para 'write_all' (mantém o comportamento de sempre — ninguém fica de repente
+-- sem poder editar). Só a seguir se muda o default para 'read', que passa a
+-- valer apenas para os membros NOVOS. Os membros existentes ficam intactos.
 alter table splitwisely.group_members
   add column if not exists role text not null default 'write_all'
     check (role in ('read', 'write_own', 'write_all'));
+alter table splitwisely.group_members
+  alter column role set default 'read';
 
 -- Só o criador do grupo pode mexer no role de um membro. Para os restantes
 -- (qualquer membro pode gerir a lista de membros) o role fica congelado: no
--- INSERT nasce sempre 'write_all' (comportamento de sempre), no UPDATE mantém
--- o valor antigo. Assim ninguém se promove a si próprio sem ser o dono.
+-- INSERT nasce sempre 'read' (não podem conceder escrita a ninguém), no UPDATE
+-- mantém o valor antigo. Assim ninguém se promove a si próprio sem ser o dono.
 create or replace function splitwisely.members_role_guard()
 returns trigger
 language plpgsql security definer
@@ -236,7 +245,7 @@ begin
   select created_by into v_owner from groups where id = new.group_id;
   if auth.uid() = v_owner then return new; end if;  -- o dono pode definir roles
   if tg_op = 'INSERT' then
-    new.role := 'write_all';
+    new.role := 'read';
   else
     new.role := old.role;
   end if;
