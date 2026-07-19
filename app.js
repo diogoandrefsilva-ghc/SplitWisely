@@ -2581,7 +2581,7 @@ function gerarRelatorioGrupo(ctx) {
     <h2 class="rpt-sec">🏷️ Total por categoria</h2>
     <table style="border-radius:8px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.08);font-size:13px;">
       <thead><tr style="background:#0b5f47;color:#fff;">
-        <th style="${th()}">Categoria</th><th style="${th("center")}">Nº</th>
+        <th style="${th()}">Categoria</th>
         <th style="${th("center")}">% total</th><th style="${th("right")}">Total</th>
       </tr></thead>
       <tbody>${cats.map(([id, e], i) => {
@@ -2590,7 +2590,6 @@ function gerarRelatorioGrupo(ctx) {
         const pct = total > 0 ? Math.round(e.cents / total * 100) : 0;
         return `<tr style="background:${zebra(i)}">
           <td style="${td}font-weight:600;">${esc(label)}</td>
-          <td style="${td}text-align:center;color:#66788a;">${e.n}</td>
           <td style="${td}text-align:center;color:#66788a;">${pct}%</td>
           <td style="${td}text-align:right;font-weight:700;color:#0f9d76;">${fmtMoney(e.cents, cur)}</td>
         </tr>`;
@@ -2608,12 +2607,14 @@ function gerarRelatorioGrupo(ctx) {
   const despRows = [...expenses]
     .sort((a, b) => (a.expense_date < b.expense_date ? 1 : a.expense_date > b.expense_date ? -1 : 0))
     .map((x, i) => {
-      // fatura repartida mostra os ícones de todas as partes
-      const icons = expenseCatSplits(x).filter(s => s.cat !== "none").map(s => catOf(s.cat).icon).join("");
+      // categoria(s) numa coluna à parte: ícone(s) da(s) parte(s) da despesa
+      // (uma fatura repartida por categorias mostra vários)
+      const cats = expenseCatSplits(x).filter(s => s.cat !== "none").map(s => catOf(s.cat).icon).join(" ");
       const quem = x.expense_payers.map(p => memberName(p.member_id)).join(", ") || "—";
       return `<tr style="background:${zebra(i)}">
         <td style="${td}color:#66788a;white-space:nowrap;">${shortDate(x.expense_date)}</td>
-        <td style="${td}font-weight:600;">${icons ? icons + " " : ""}${esc(x.description || "—")}</td>
+        <td style="${td}font-weight:600;">${esc(x.description || "—")}</td>
+        <td style="${td}text-align:center;white-space:nowrap;">${cats || `<span style="color:#c2c9cf;">—</span>`}</td>
         <td style="${td}color:#4a534e;font-size:12px;">${esc(quem)}</td>
         <td style="${td}text-align:right;font-weight:700;color:#0f9d76;">${fmtMoney(toCents(x.amount), cur)}</td>
       </tr>`;
@@ -2623,7 +2624,7 @@ function gerarRelatorioGrupo(ctx) {
     <table style="border-radius:8px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.08);font-size:12.5px;">
       <thead><tr style="background:#0b5f47;color:#fff;">
         <th style="${th()}">Data</th><th style="${th()}">Descrição</th>
-        <th style="${th()}">Quem pagou</th><th style="${th("right")}">Valor</th>
+        <th style="${th("center")}">Cat.</th><th style="${th()}">Quem pagou</th><th style="${th("right")}">Valor</th>
       </tr></thead>
       <tbody>${despRows}</tbody>
     </table>`;
