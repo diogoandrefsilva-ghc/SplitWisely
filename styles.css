@@ -690,6 +690,19 @@ details.hint p { margin: .4rem 0 0; font-size: .8rem; color: var(--muted); line-
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* fatura repartida: categorias + valor por baixo do subtítulo, miudinho */
+.item-cats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .1rem .5rem;
+  margin-top: .1rem;
+}
+.item-cat {
+  font-size: .72rem;
+  color: var(--muted);
+  line-height: 1.25;
+  white-space: nowrap;
+}
 .item-end {
   display: flex;
   flex-direction: column;
