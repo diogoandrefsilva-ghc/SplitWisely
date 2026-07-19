@@ -1101,6 +1101,37 @@ table.split-table input[type="checkbox"] { width: 1.1rem; }
 /* «sugerida automaticamente» ao lado do label Categoria */
 .cat-hint { font-weight: 500; text-transform: none; color: var(--primary); }
 
+/* seletor de categorias do grupo (Definições) — grelha de etiquetas */
+.cat-pick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .4rem;
+  margin-top: .35rem;
+}
+.cat-pick-item {
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+  background: var(--card);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: .3rem .7rem;
+  font-size: .84rem;
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+}
+.cat-pick-item input { margin: 0; }
+.cat-pick-item.on {
+  background: var(--chip-pos-bg);
+  border-color: var(--primary);
+  color: var(--primary);
+  font-weight: 650;
+}
+.cat-pick-item input:disabled { cursor: default; }
+.cat-pick-actions { display: flex; gap: .4rem; margin-top: .5rem; }
+
 /* ================================================================ saldos / acertos */
 .settle-line {
   display: flex;

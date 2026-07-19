@@ -276,6 +276,8 @@ const CATEGORIES = [
   { id: "padaria",     label: "Padaria",     icon: "🥖" },
   { id: "cafe",        label: "Café",        icon: "☕" },
   { id: "restaurante", label: "Restaurante", icon: "🍽️" },
+  { id: "bebidas",     label: "Bebidas",     icon: "🥤" },
+  { id: "sobremesas",  label: "Sobremesas",  icon: "🍰" },
   { id: "teatro",      label: "Teatro",      icon: "🎭" },
   { id: "cinema",      label: "Cinema",      icon: "🎬" },
   { id: "prendas",     label: "Prendas",     icon: "🎁" },
@@ -292,6 +294,22 @@ const CATEGORIES = [
 ];
 
 function catOf(id) { return CATEGORIES.find(c => c.id === id) || null; }
+
+// ---- categorias que se aplicam a um grupo.
+// groups.categories (jsonb, nullable) guarda os ids das categorias
+// escolhidas nas definições do grupo. null/ausente = todas (default).
+// Uma lista vazia também vale como «todas» — evita ficar sem categoria
+// nenhuma para escolher se, por engano, se desmarcarem todas.
+function groupCatIds(group) {
+  const sel = group && Array.isArray(group.categories) ? group.categories : null;
+  return sel && sel.length ? sel : null; // null = todas
+}
+function groupCategories(group) {
+  const sel = groupCatIds(group);
+  if (!sel) return CATEGORIES;
+  const set = new Set(sel);
+  return CATEGORIES.filter(c => set.has(c.id)); // preserva a ordem base
+}
 
 // Ícone redondo da categoria (ou etiqueta apagada se não tiver categoria)
 function catIconHtml(id, extra = "") {
@@ -313,6 +331,8 @@ const CAT_KEYWORDS = {
   padaria:     ["padaria", "pao", "broa", "bolos", "bolo", "croissants", "pastelaria", "pasteis"],
   cafe:        ["cafe", "cafes", "cafetaria", "galao", "bica", "esplanada", "lanche"],
   restaurante: ["restaurante", "jantar", "almoco", "tasca", "tasquinha", "pizzaria", "pizza", "sushi", "hamburgueres", "hamburguer", "churrasqueira", "churrasco", "marisqueira", "brunch", "petiscos", "francesinha", "takeaway"],
+  bebidas:     ["bebida", "bebidas", "cerveja", "cervejas", "vinho", "vinhos", "sumo", "sumos", "refrigerante", "refrigerantes", "coca", "cola", "garrafeira", "aperitivo", "imperial", "sangria", "gin", "whisky", "vodka", "licor", "champanhe", "espumante"],
+  sobremesas:  ["sobremesa", "sobremesas", "gelado", "gelados", "gelataria", "doce", "doces", "tarte", "tartes", "mousse", "pudim", "chocolate", "gomas", "bolachas"],
   teatro:      ["teatro", "peca", "espetaculo", "musical", "concerto", "opera"],
   cinema:      ["cinema", "filme", "filmes", "pipocas"],
   prendas:     ["prenda", "prendas", "presente", "presentes", "oferta", "aniversario", "natal"],
@@ -358,11 +378,15 @@ function learnCategory(desc, catId) {
   try { localStorage.setItem(catMemKey(), JSON.stringify(mem)); } catch (_) { /* storage cheio */ }
 }
 
-function guessCategory(desc, expenses) {
+function guessCategory(desc, expenses, allowed) {
   const tokens = catTokens(desc);
   if (tokens.length === 0) return null;
   const score = {};
-  const add = (cat, pts) => { if (catOf(cat)) score[cat] = (score[cat] || 0) + pts; };
+  // allowed (Set de ids) restringe a sugestão às categorias do grupo;
+  // sem ele, todas contam
+  const add = (cat, pts) => {
+    if (catOf(cat) && (!allowed || allowed.has(cat))) score[cat] = (score[cat] || 0) + pts;
+  };
 
   // 1. histórico do grupo (uma descrição repetida decide de imediato)
   const norm = catNorm(desc).trim();
@@ -1386,6 +1410,15 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
         </div>
       </div>`;
 
+    // categorias a mostrar: as que se aplicam ao grupo (definições). Se a
+    // despesa já tem uma categoria fora dessa lista (grupo restringido depois
+    // de gravada), mantém-se visível para não a perder ao editar.
+    const catList = groupCategories(group).slice();
+    if (state.category && !catList.some(c => c.id === state.category)) {
+      const cur = catOf(state.category);
+      if (cur) catList.push(cur);
+    }
+
     const sections = {
       dados: `
         ${typeHeader}
@@ -1397,7 +1430,7 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
         <div class="field" style="margin-bottom:.3rem;">
           <label>Categoria <span class="cat-hint" id="x-cat-hint">${state.catAuto && state.category ? "· sugerida automaticamente" : ""}</span></label>
           <div class="cat-row" id="x-cat-row">
-            ${CATEGORIES.map(c => `
+            ${catList.map(c => `
               <button type="button" class="cat-chip ${state.category === c.id ? "active" : ""}" data-cat="${c.id}">
                 ${c.icon}<span>${esc(c.label)}</span>
               </button>`).join("")}
@@ -1525,7 +1558,8 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
       // sugestão automática de categoria enquanto se escreve — atualiza os
       // chips diretamente (sem draw()) para o input não perder o foco
       if (!state.catManual) {
-        const g = guessCategory(state.desc, ctx.expenses);
+        const allowedIds = groupCatIds(group);
+        const g = guessCategory(state.desc, ctx.expenses, allowedIds ? new Set(allowedIds) : null);
         if (g !== state.category) {
           state.category = g;
           state.catAuto = !!g;
@@ -2784,6 +2818,7 @@ function renderRecurringSection($c, ctx) {
 
 function renderSettingsTab($c, ctx) {
   const { group, isOwner } = ctx;
+  const selectedCats = groupCatIds(group); // null = todas
 
   $c.innerHTML = `
     <div class="card">
@@ -2807,6 +2842,24 @@ function renderSettingsTab($c, ctx) {
           <span class="check-note">ligado, cada pessoa tem um peso na lista de membros em baixo;
             desligado, as despesas dividem-se em partes iguais</span>
         </label>
+        <div class="field" style="margin-top:.4rem;">
+          <label>Categorias do grupo
+            <span class="check-note" style="display:block;margin-top:.15rem;">as que aparecem ao lançar despesas neste grupo — por defeito, todas</span>
+          </label>
+          <div class="cat-pick" id="group-cats">
+            ${CATEGORIES.map(c => {
+              const on = !selectedCats || selectedCats.includes(c.id);
+              return `<label class="cat-pick-item ${on ? "on" : ""}">
+                <input type="checkbox" name="categories" value="${c.id}" ${on ? "checked" : ""} ${isOwner ? "" : "disabled"} />
+                <span>${c.icon} ${esc(c.label)}</span>
+              </label>`;
+            }).join("")}
+          </div>
+          ${isOwner ? `<div class="cat-pick-actions">
+            <button type="button" class="secondary small" id="cats-all">Todas</button>
+            <button type="button" class="secondary small" id="cats-none">Nenhuma</button>
+          </div>` : ""}
+        </div>
         ${isOwner ? `<button type="submit" id="btn-save-group" style="margin-top:.6rem;">Guardar definições</button>` : ""}
       </form>
     </div>
@@ -2837,16 +2890,34 @@ function renderSettingsTab($c, ctx) {
     if (e.target.checked) toast("Carrega em «Guardar definições» e define os pesos na lista de membros");
   };
 
+  // seletor de categorias do grupo: realce visual + atalhos Todas/Nenhuma
+  const catBoxes = () => Array.from($c.querySelectorAll('#group-cats input[name="categories"]'));
+  const syncCatItem = (box) => box.closest(".cat-pick-item")?.classList.toggle("on", box.checked);
+  catBoxes().forEach(box => { box.onchange = () => syncCatItem(box); });
+  $c.querySelector("#cats-all").onclick = () => catBoxes().forEach(b => { b.checked = true; syncCatItem(b); });
+  $c.querySelector("#cats-none").onclick = () => catBoxes().forEach(b => { b.checked = false; syncCatItem(b); });
+
   document.getElementById("edit-group").onsubmit = async (e) => {
     e.preventDefault();
     const f = new FormData(e.target);
+    // categorias escolhidas: todas marcadas (ou nenhuma) => null = «todas»,
+    // para não guardar uma lista à toa e manter o default limpo
+    const chosen = f.getAll("categories");
+    const cats = (chosen.length === 0 || chosen.length === CATEGORIES.length) ? null : chosen;
     const payload = {
       name: f.get("name").trim(),
       description: f.get("description").trim() || null,
       currency: f.get("currency"),
       use_weights: !!f.get("use_weights"),
+      categories: cats,
     };
     let { error } = await sb.from("groups").update(payload).eq("id", group.id);
+    // schema antigo sem a coluna categories: guarda o resto na mesma
+    if (error && /categories/i.test(error.message)) {
+      if (cats) toast("Categorias por grupo indisponíveis — corre o schema.sql mais recente no Supabase", true);
+      delete payload.categories;
+      ({ error } = await sb.from("groups").update(payload).eq("id", group.id));
+    }
     // schema antigo sem a coluna use_weights: guarda o resto na mesma
     if (error && /use_weights/i.test(error.message)) {
       if (payload.use_weights) toast("Quotas indisponíveis — corre o schema.sql mais recente no Supabase", true);
