@@ -556,16 +556,21 @@ async function fetchGroups() {
 }
 
 async function fetchGroupBundle(groupId) {
-  const expenseSelect = (withCats) => sb.from("expenses")
-    .select("*, expense_payers(member_id, amount), expense_shares(member_id, amount)"
-      + (withCats ? ", expense_categories(category, amount)" : ""))
-    .eq("group_id", groupId)
-    .order("expense_date", { ascending: false })
-    .order("created_at", { ascending: false });
+  // nível 2: + divisão por categoria (quem participa em cada);
+  // nível 1: + repartição do valor por categoria; nível 0: base
+  const expenseSelect = (level) => {
+    let sel = "*, expense_payers(member_id, amount), expense_shares(member_id, amount)";
+    if (level >= 1) sel += ", expense_categories(category, amount)";
+    if (level >= 2) sel += ", expense_category_shares(category, member_id, amount)";
+    return sb.from("expenses").select(sel)
+      .eq("group_id", groupId)
+      .order("expense_date", { ascending: false })
+      .order("created_at", { ascending: false });
+  };
   let [g, m, e, p, r] = await Promise.all([
     sb.from("groups").select("*").eq("id", groupId).single(),
     sb.from("group_members").select("*").eq("group_id", groupId).order("created_at"),
-    expenseSelect(true),
+    expenseSelect(2),
     sb.from("payments").select("*").eq("group_id", groupId)
       .order("payment_date", { ascending: false })
       .order("created_at", { ascending: false }),
@@ -574,9 +579,10 @@ async function fetchGroupBundle(groupId) {
       .eq("group_id", groupId)
       .order("created_at"),
   ]);
-  // schema antigo sem expense_categories (fatura repartida): repete a
-  // consulta sem essa tabela — a app funciona só sem a repartição
-  if (e.error && /expense_categories/i.test(e.error.message)) e = await expenseSelect(false);
+  // degrada por escalões conforme o schema: sem a tabela da divisão por
+  // categoria cai para a repartição só; sem esta, cai para o base
+  if (e.error && /expense_category_shares/i.test(e.error.message)) e = await expenseSelect(1);
+  if (e.error && /expense_categories/i.test(e.error.message)) e = await expenseSelect(0);
   for (const rr of [g, m, e]) if (rr.error) throw rr.error;
   // payments e recurring podem ainda não existir (schema antigo por atualizar):
   // degrada sem partir a app, só sem essas funcionalidades.
@@ -1274,6 +1280,28 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
   // (só nas despesas normais; os moldes recorrentes têm uma categoria só)
   const exCats = (existing && !isRecurringRecord && Array.isArray(existing.expense_categories))
     ? existing.expense_categories.filter(r => catOf(r.category)) : [];
+  const catSplitInit = exCats.length >= 2
+    ? Object.fromEntries(exCats.map(r => [r.category, toCents(r.amount)])) : null;
+
+  const initParticipants = existing
+    ? exShares.map(s => s.member_id)
+    : useWeights
+      ? members.filter(m => Number(m.default_weight) > 0).map(m => m.id)
+      : members.map(m => m.id);
+
+  // divisão do custo por categoria: quem participa em cada uma (partes
+  // iguais dentro da categoria). Vem de expense_category_shares quando
+  // existe; a sua presença é que liga o modo "dividir por categoria".
+  const exCatShares = (existing && !isRecurringRecord && Array.isArray(existing.expense_category_shares))
+    ? existing.expense_category_shares.filter(r => catOf(r.category)) : [];
+  const initCatParts = {};
+  if (catSplitInit) {
+    const byCat = {};
+    for (const r of exCatShares) (byCat[r.category] ??= []).push(r.member_id);
+    for (const cat of Object.keys(catSplitInit)) {
+      initCatParts[cat] = new Set(byCat[cat]?.length ? byCat[cat] : initParticipants);
+    }
+  }
 
   const state = {
     section: "dados", // dados | pagou | divide
@@ -1281,8 +1309,11 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     date: existing?.expense_date || new Date().toISOString().slice(0, 10),
     category: existing?.category && catOf(existing.category) ? existing.category : null,
     // repartição do valor por categoria ({catId: cêntimos}); null = uma só
-    catSplit: exCats.length >= 2
-      ? Object.fromEntries(exCats.map(r => [r.category, toCents(r.amount)])) : null,
+    catSplit: catSplitInit,
+    // dividir o custo de cada categoria por pessoas diferentes (partes
+    // iguais dentro de cada). Só faz sentido com catSplit ativo.
+    catDivide: exCatShares.length > 0,
+    catParts: initCatParts, // { catId: Set(memberIds) }
     // escolhida à mão? enquanto for false, a sugestão automática (a partir
     // da descrição) pode ir atualizando a categoria à medida que se escreve
     catManual: !!(existing && (existing.category || exCats.length)),
@@ -1291,11 +1322,7 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     totalCents: existing ? toCents(existing.amount) : 0,
     payers: new Set(initPayers),
     payerAmounts: { ...initPayerAmounts },
-    participants: new Set(existing
-      ? exShares.map(s => s.member_id)
-      : useWeights
-        ? members.filter(m => Number(m.default_weight) > 0).map(m => m.id)
-        : members.map(m => m.id)),
+    participants: new Set(initParticipants),
     weights: Object.fromEntries(members.map(m => [m.id, Number(m.default_weight) || 0])),
     exact: { ...initShares },
     // tipo escolhido no formulário (ocasional vs recorrente)
@@ -1320,7 +1347,32 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     return e.length ? e[0][0] : null;
   };
 
+  // dividir por categoria está ativo? (fatura repartida + opção ligada)
+  const catDividing = () => !!(state.catSplit && state.catDivide);
+
+  // divisão do custo de cada categoria por quem participa (partes iguais):
+  // devolve { catId: { memberId: cêntimos } }. A soma de cada categoria é
+  // exatamente o valor dessa categoria.
+  function perCategoryShares() {
+    const out = {};
+    for (const [cat, cents] of catEntries()) {
+      const ids = [...(state.catParts[cat] || [])].filter(id => members.some(m => m.id === id));
+      if (ids.length === 0 || cents <= 0) { out[cat] = {}; continue; }
+      const parts = splitByWeights(cents, ids.map(() => 1));
+      out[cat] = Object.fromEntries(ids.map((id, i) => [id, parts[i]]));
+    }
+    return out;
+  }
+
   function computedShares() {
+    // dividir por categoria: soma, por pessoa, a sua parte em cada categoria
+    if (catDividing()) {
+      const agg = {};
+      const per = perCategoryShares();
+      for (const byMem of Object.values(per))
+        for (const [id, c] of Object.entries(byMem)) agg[id] = (agg[id] || 0) + c;
+      return agg;
+    }
     const ids = members.filter(m => state.participants.has(m.id)).map(m => m.id);
     if (ids.length === 0) return {};
     if (state.mode === "exact") {
@@ -1554,29 +1606,59 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
         ${okShare ? "" : state.totalCents === 0
           ? `<p class="form-status neutral">Indica primeiro o valor na secção «Dados»</p>`
           : `<p class="form-status">${fmtMoney(shareSum, cur)} de ${fmtMoney(state.totalCents, cur)} divididos</p>`}
-        <div class="tabs" style="margin-bottom:.6rem;">
-          <button data-mode="equal" class="${state.mode === "equal" ? "active" : ""}">Partes iguais</button>
-          ${useWeights ? `<button data-mode="weights" class="${state.mode === "weights" ? "active" : ""}">Proporção</button>` : ""}
-          <button data-mode="exact" class="${state.mode === "exact" ? "active" : ""}">Exatos</button>
-        </div>
-        <table class="split-table">
-          <tr><th></th><th>Pessoa</th><th>${state.mode === "weights" ? "Peso" : state.mode === "exact" ? "Valor" : ""}</th><th style="text-align:right;">Fica com</th></tr>
-          ${members.map(m => {
-            const inShare = state.participants.has(m.id);
-            let ctrl = "";
-            if (state.mode === "weights") {
-              ctrl = `<input type="number" step="0.1" min="0" data-weight="${m.id}" value="${state.weights[m.id] ?? 0}" ${inShare ? "" : "disabled"} />`;
-            } else if (state.mode === "exact") {
-              ctrl = `<input type="number" step="0.01" min="0" data-exact="${m.id}" value="${inShare ? ((state.exact[m.id] || 0) / 100).toFixed(2) : ""}" ${inShare ? "" : "disabled"} />`;
-            }
-            return `<tr>
-              <td style="width:30px;"><input type="checkbox" data-part="${m.id}" ${inShare ? "checked" : ""} /></td>
-              <td>${esc(m.name)}</td>
-              <td style="width:130px;">${ctrl}</td>
-              <td style="text-align:right;" class="amount">${inShare ? fmtMoney(shares[m.id] || 0, cur) : "—"}</td>
-            </tr>`;
-          }).join("")}
-        </table>`,
+        ${state.catSplit ? `
+          <label class="check-line" style="margin-bottom:.7rem;">
+            <input type="checkbox" id="x-cat-divide" ${state.catDivide ? "checked" : ""} />
+            Dividir cada categoria por pessoas diferentes
+            <span class="check-note">cada categoria divide-se em partes iguais por quem participa nela</span>
+          </label>` : ""}
+        ${catDividing() ? `
+          <div class="cat-div-list">
+            ${catList.filter(c => c.id in state.catSplit).map(c => {
+              const cents = state.catSplit[c.id] || 0;
+              const set = state.catParts[c.id] || new Set();
+              const n = members.filter(m => set.has(m.id)).length;
+              const each = n > 0 ? (cents % n === 0 ? fmtMoney(cents / n, cur) : "≈ " + fmtMoney(Math.round(cents / n), cur)) : "";
+              return `<div class="cat-div">
+                <div class="cat-div-head">${c.icon} ${esc(c.label)} <span class="cat-div-val">· ${fmtMoney(cents, cur)}</span></div>
+                <div class="cat-pick">
+                  ${members.map(m => {
+                    const on = set.has(m.id);
+                    return `<label class="cat-pick-item ${on ? "on" : ""}">
+                      <input type="checkbox" data-catpart-cat="${c.id}" data-catpart-mem="${m.id}" ${on ? "checked" : ""} />
+                      <span>${esc(m.name)}</span>
+                    </label>`;
+                  }).join("")}
+                </div>
+                <div class="cat-div-foot ${n === 0 ? "warn" : ""}">${n === 0
+                  ? "Escolhe quem participa nesta categoria"
+                  : `${n} pessoa${n === 1 ? "" : "s"} · ${each} cada`}</div>
+              </div>`;
+            }).join("")}
+          </div>` : `
+          <div class="tabs" style="margin-bottom:.6rem;">
+            <button data-mode="equal" class="${state.mode === "equal" ? "active" : ""}">Partes iguais</button>
+            ${useWeights ? `<button data-mode="weights" class="${state.mode === "weights" ? "active" : ""}">Proporção</button>` : ""}
+            <button data-mode="exact" class="${state.mode === "exact" ? "active" : ""}">Exatos</button>
+          </div>
+          <table class="split-table">
+            <tr><th></th><th>Pessoa</th><th>${state.mode === "weights" ? "Peso" : state.mode === "exact" ? "Valor" : ""}</th><th style="text-align:right;">Fica com</th></tr>
+            ${members.map(m => {
+              const inShare = state.participants.has(m.id);
+              let ctrl = "";
+              if (state.mode === "weights") {
+                ctrl = `<input type="number" step="0.1" min="0" data-weight="${m.id}" value="${state.weights[m.id] ?? 0}" ${inShare ? "" : "disabled"} />`;
+              } else if (state.mode === "exact") {
+                ctrl = `<input type="number" step="0.01" min="0" data-exact="${m.id}" value="${inShare ? ((state.exact[m.id] || 0) / 100).toFixed(2) : ""}" ${inShare ? "" : "disabled"} />`;
+              }
+              return `<tr>
+                <td style="width:30px;"><input type="checkbox" data-part="${m.id}" ${inShare ? "checked" : ""} /></td>
+                <td>${esc(m.name)}</td>
+                <td style="width:130px;">${ctrl}</td>
+                <td style="text-align:right;" class="amount">${inShare ? fmtMoney(shares[m.id] || 0, cur) : "—"}</td>
+              </tr>`;
+            }).join("")}
+          </table>`}`,
     };
 
     // frase-resumo do que vai ser gravado: quem pagou e como se divide
@@ -1590,7 +1672,9 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
         `<strong>${esc(nameOf(id))}</strong> pagou ${fmtMoney(state.payerAmounts[id] || 0, cur)}`));
       const shareIds = Object.keys(shares);
       let divTxt = "";
-      if (shareIds.length > 0) {
+      if (catDividing()) {
+        divTxt = ", dividido por categoria";
+      } else if (shareIds.length > 0) {
         let modeTxt = state.mode === "equal" ? "em partes iguais"
           : state.mode === "weights" ? "por proporção" : "em valores exatos";
         // despesas antigas sem split_mode reabrem em "exatos"; se as partes
@@ -1703,10 +1787,12 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
         if (state.catSplit) {
           // modo repartido: o chip junta/tira a categoria da fatura; ao
           // juntar, leva logo o valor que falta atribuir
-          if (id in state.catSplit) delete state.catSplit[id];
+          if (id in state.catSplit) { delete state.catSplit[id]; delete state.catParts[id]; }
           else {
             const used = Object.values(state.catSplit).reduce((a, c) => a + c, 0);
             state.catSplit[id] = Math.max(state.totalCents - used, 0);
+            // participantes default da categoria nova: quem já entra na despesa
+            state.catParts[id] = new Set(state.participants);
           }
         } else {
           // tocar no chip ativo tira a categoria; noutro, troca
@@ -1740,6 +1826,23 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     slot.querySelectorAll("[data-catamount]").forEach(inp => {
       inp.onchange = () => {
         state.catSplit[inp.dataset.catamount] = toCents(inp.value);
+        draw();
+      };
+    });
+    // dividir por categoria: ligar/desligar e escolher quem participa em cada
+    slot.querySelector("#x-cat-divide")?.addEventListener("click", (e) => {
+      state.catDivide = e.target.checked;
+      // ao ligar, garante que cada categoria tem um conjunto de participantes
+      // (default: quem entra na despesa)
+      if (state.catDivide) for (const id of Object.keys(state.catSplit))
+        if (!state.catParts[id]) state.catParts[id] = new Set(state.participants);
+      draw();
+    });
+    slot.querySelectorAll("[data-catpart-cat]").forEach(cb => {
+      cb.onchange = () => {
+        const cat = cb.dataset.catpartCat, mem = cb.dataset.catpartMem;
+        const set = (state.catParts[cat] ??= new Set());
+        cb.checked ? set.add(mem) : set.delete(mem);
         draw();
       };
     });
@@ -1819,6 +1922,13 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
       if (state.payers.size === 0) return fail("pagou", "Escolhe quem pagou");
       if (paidSum2 !== state.totalCents) return fail("pagou", "Os valores pagos não somam o total");
       if (Object.keys(shares2).length === 0) return fail("divide", "Escolhe por quem se divide");
+      // dividir por categoria: cada categoria com valor precisa de alguém
+      if (catDividing()) {
+        const semGente = catEntries()
+          .filter(([cat]) => ![...(state.catParts[cat] || [])].some(id => members.some(m => m.id === id)))
+          .map(([cat]) => catOf(cat).label);
+        if (semGente.length) return fail("divide", `Escolhe quem participa em: ${semGente.join(", ")}`);
+      }
       if (shareSum2 !== state.totalCents) return fail("divide", "A divisão não soma o total");
 
       // fatura repartida por categorias: a alocação tem de somar o total
@@ -1830,6 +1940,14 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
       }
       // o que vai para expenses.category: a única, ou a principal da repartição
       const catId = primaryCategory();
+      // linhas da divisão por categoria (só quando está ativa)
+      const catShareRows = [];
+      if (catDividing()) {
+        const per = perCategoryShares();
+        for (const [cat, byMem] of Object.entries(per))
+          for (const [mem, c] of Object.entries(byMem))
+            if (c > 0) catShareRows.push({ category: cat, member_id: mem, amount: (c / 100).toFixed(2) });
+      }
 
       // ----- converter uma despesa ocasional em recorrente daí para a frente -----
       // cria um molde a partir desta despesa e liga-a como 1.ª ocorrência (o
@@ -1879,8 +1997,9 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
         await sb.from("expense_payers").delete().eq("expense_id", existing.id);
         await sb.from("expense_shares").delete().eq("expense_id", existing.id);
         // a 1.ª ocorrência fica com a categoria única do molde — limpa uma
-        // eventual repartição antiga (erros ignorados: schema sem a tabela)
+        // eventual repartição/divisão antiga (erros ignorados: schema sem a tabela)
         await sb.from("expense_categories").delete().eq("expense_id", existing.id);
+        await sb.from("expense_category_shares").delete().eq("expense_id", existing.id);
         const pRows = [...state.payers].filter(id => (state.payerAmounts[id] || 0) > 0)
           .map(id => ({ expense_id: existing.id, member_id: id, amount: (state.payerAmounts[id] / 100).toFixed(2) }));
         const sRows = Object.entries(shares2).filter(([, c]) => c > 0)
@@ -1944,7 +2063,9 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
         description: desc,
         amount: (state.totalCents / 100).toFixed(2),
         expense_date: date || new Date().toISOString().slice(0, 10),
-        split_mode: state.mode,
+        // dividir por categoria produz valores por pessoa arbitrários: grava
+        // como "exact" para reabrir fiel mesmo sem a tabela da divisão
+        split_mode: catDividing() ? "exact" : state.mode,
         category: catId,
       };
 
@@ -2000,6 +2121,20 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
       }
       if (catInsRows.length && catsMissing) {
         toast("Repartição por categorias não gravada — corre o schema.sql mais recente no Supabase", true);
+      }
+
+      // divisão do custo por categoria (quem participa em cada): substitui as
+      // linhas. Sem esta divisão não há linhas — expense_shares (a soma) chega.
+      const catShareInsRows = catShareRows.map(r => ({ expense_id: expenseId, ...r }));
+      const ds = await sb.from("expense_category_shares").delete().eq("expense_id", expenseId);
+      const catShMissing = !!ds.error && /expense_category_shares/i.test(ds.error.message);
+      if (ds.error && !catShMissing) return toast(ds.error.message, true);
+      if (catShareInsRows.length && !catShMissing) {
+        const is = await sb.from("expense_category_shares").insert(catShareInsRows);
+        if (is.error) return toast(is.error.message, true);
+      }
+      if (catShareInsRows.length && catShMissing) {
+        toast("Divisão por categoria não gravada — corre o schema.sql mais recente no Supabase", true);
       }
 
       const payerRows = [...state.payers]

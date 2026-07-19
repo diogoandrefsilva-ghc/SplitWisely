@@ -1158,6 +1158,20 @@ table.split-table input[type="checkbox"] { width: 1.1rem; }
 .cat-split-actions { display: flex; gap: .4rem; margin-top: .15rem; }
 .cat-split .form-status { margin: .15rem 0 0; }
 
+/* divisão do custo por categoria (secção Divisão) — um bloco por categoria */
+.cat-div-list { display: flex; flex-direction: column; gap: .55rem; }
+.cat-div {
+  padding: .6rem .7rem;
+  background: var(--card-inner);
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+}
+.cat-div-head { font-weight: 650; font-size: .9rem; }
+.cat-div-val { color: var(--muted); font-weight: 500; }
+.cat-div .cat-pick { margin: .45rem 0 .3rem; }
+.cat-div-foot { font-size: .76rem; color: var(--muted); }
+.cat-div-foot.warn { color: var(--danger); font-weight: 600; }
+
 /* seletor de categorias do grupo (Definições) — grelha de etiquetas */
 .cat-pick {
   display: flex;

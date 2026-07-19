@@ -296,6 +296,22 @@ create table if not exists splitwisely.expense_categories (
   primary key (expense_id, category)
 );
 
+-- Divisão do custo de cada categoria por pessoas (opcional). Quando a
+-- fatura está repartida por categorias, o custo de cada categoria pode
+-- dividir-se por um conjunto de pessoas diferente, em partes iguais. Cada
+-- linha é a parte (em valor) de uma pessoa numa categoria. A SOMA destas
+-- linhas por pessoa é sempre igual ao que fica em expense_shares (a fonte
+-- de verdade dos saldos) — esta tabela é só o detalhe por categoria, para
+-- a despesa reabrir fiel. Sem estas linhas, a despesa divide-se de forma
+-- global (o comportamento normal). (Idempotente: re-corre o ficheiro.)
+create table if not exists splitwisely.expense_category_shares (
+  expense_id uuid not null references splitwisely.expenses (id) on delete cascade,
+  category text not null,
+  member_id uuid not null references splitwisely.group_members (id) on delete cascade,
+  amount numeric(12,2) not null check (amount >= 0),
+  primary key (expense_id, category, member_id)
+);
+
 -- ---------- PAGAMENTOS (acertos de contas) ----------
 -- Registo de "X pagou Y€ a Z" para acertar contas. Entra nos saldos:
 -- quem paga fica com saldo mais positivo, quem recebe mais negativo.
@@ -381,6 +397,7 @@ alter table splitwisely.expenses       enable row level security;
 alter table splitwisely.expense_payers enable row level security;
 alter table splitwisely.expense_shares enable row level security;
 alter table splitwisely.expense_categories enable row level security;
+alter table splitwisely.expense_category_shares enable row level security;
 alter table splitwisely.payments       enable row level security;
 
 -- settings: sem policies — invisível via API (admin_email fica privado)
@@ -455,6 +472,12 @@ create policy "expense_categories_all" on splitwisely.expense_categories
   using (splitwisely.can_use() and splitwisely.has_group_access(splitwisely.expense_group(expense_id)))
   with check (splitwisely.can_use() and splitwisely.has_group_access(splitwisely.expense_group(expense_id)));
 
+drop policy if exists "expense_category_shares_all" on splitwisely.expense_category_shares;
+create policy "expense_category_shares_all" on splitwisely.expense_category_shares
+  for all to authenticated
+  using (splitwisely.can_use() and splitwisely.has_group_access(splitwisely.expense_group(expense_id)))
+  with check (splitwisely.can_use() and splitwisely.has_group_access(splitwisely.expense_group(expense_id)));
+
 -- Pagamentos: quem tem acesso ao grupo gere tudo
 drop policy if exists "payments_all" on splitwisely.payments;
 create policy "payments_all" on splitwisely.payments
@@ -469,6 +492,7 @@ create index if not exists idx_expenses_group on splitwisely.expenses (group_id,
 create index if not exists idx_payers_expense on splitwisely.expense_payers (expense_id);
 create index if not exists idx_shares_expense on splitwisely.expense_shares (expense_id);
 create index if not exists idx_cats_expense   on splitwisely.expense_categories (expense_id);
+create index if not exists idx_catshares_expense on splitwisely.expense_category_shares (expense_id);
 create index if not exists idx_payments_group on splitwisely.payments (group_id, payment_date desc);
 
 -- ---------- GRANTS ----------
@@ -478,7 +502,8 @@ grant select, update on splitwisely.profiles to authenticated;
 grant select, insert, update, delete
   on splitwisely.groups, splitwisely.group_members, splitwisely.expenses,
      splitwisely.expense_payers, splitwisely.expense_shares,
-     splitwisely.expense_categories, splitwisely.payments
+     splitwisely.expense_categories, splitwisely.expense_category_shares,
+     splitwisely.payments
   to authenticated;
 grant execute on all functions in schema splitwisely to authenticated;
 
