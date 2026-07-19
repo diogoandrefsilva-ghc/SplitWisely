@@ -186,6 +186,30 @@ function exactShareCents(x) {
   const shares = x.expense_shares || [];
   const total = toCents(x.amount);
   const out = new Map();
+
+  // divisão por categoria: a parte exata de cada pessoa é a SOMA, por cada
+  // categoria em que participa, de (valor da categoria ÷ nº de participantes).
+  // Recalcula-se a fração (não se usam os cêntimos gravados, já arredondados
+  // por categoria) para o resto do arredondamento não recair sempre nos
+  // mesmos e os saldos não desviarem — como em 'equal'/'weights'.
+  const catShares = x.expense_category_shares || [];
+  const cats = x.expense_categories || [];
+  if (catShares.length && cats.length) {
+    const catTotal = new Map(cats.map(c => [c.category, toCents(c.amount)]));
+    const partsByCat = new Map();
+    for (const r of catShares) {
+      if (!partsByCat.has(r.category)) partsByCat.set(r.category, []);
+      partsByCat.get(r.category).push(r.member_id);
+    }
+    for (const [cat, ids] of partsByCat) {
+      const amt = catTotal.get(cat);
+      if (amt == null || ids.length === 0) continue;
+      const each = amt / ids.length;
+      for (const id of ids) out.set(id, (out.get(id) || 0) + each);
+    }
+    if (out.size) return out;
+  }
+
   if ((x.split_mode === "equal" || x.split_mode === "weights") && total > 0) {
     const ws = shares.map(s => x.split_mode === "equal" ? 1 : toCents(s.amount));
     const sum = ws.reduce((a, b) => a + b, 0);
