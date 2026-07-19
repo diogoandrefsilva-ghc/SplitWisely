@@ -276,6 +276,8 @@ const CATEGORIES = [
   { id: "padaria",     label: "Padaria",     icon: "🥖" },
   { id: "cafe",        label: "Café",        icon: "☕" },
   { id: "restaurante", label: "Restaurante", icon: "🍽️" },
+  { id: "bebidas",     label: "Bebidas",     icon: "🥤" },
+  { id: "sobremesas",  label: "Sobremesas",  icon: "🍰" },
   { id: "teatro",      label: "Teatro",      icon: "🎭" },
   { id: "cinema",      label: "Cinema",      icon: "🎬" },
   { id: "prendas",     label: "Prendas",     icon: "🎁" },
@@ -284,6 +286,8 @@ const CATEGORIES = [
   { id: "bricolage",   label: "Bricolage",   icon: "🔨" },
   { id: "mobiliario",  label: "Mobiliário",  icon: "🛋️" },
   { id: "casa",        label: "Casa",        icon: "🏠" },
+  { id: "utensilios",  label: "Utensílios",  icon: "🍴" },
+  { id: "limpeza",     label: "Limpeza",     icon: "🧼" },
   { id: "saude",       label: "Saúde",       icon: "💊" },
   { id: "transportes", label: "Transportes", icon: "🚗" },
   { id: "viagens",     label: "Viagens",     icon: "✈️" },
@@ -293,11 +297,51 @@ const CATEGORIES = [
 
 function catOf(id) { return CATEGORIES.find(c => c.id === id) || null; }
 
+// ---- categorias que se aplicam a um grupo.
+// groups.categories (jsonb, nullable) guarda os ids das categorias
+// escolhidas nas definições do grupo. null/ausente = todas (default).
+// Uma lista vazia também vale como «todas» — evita ficar sem categoria
+// nenhuma para escolher se, por engano, se desmarcarem todas.
+function groupCatIds(group) {
+  const sel = group && Array.isArray(group.categories) ? group.categories : null;
+  return sel && sel.length ? sel : null; // null = todas
+}
+function groupCategories(group) {
+  const sel = groupCatIds(group);
+  if (!sel) return CATEGORIES;
+  const set = new Set(sel);
+  return CATEGORIES.filter(c => set.has(c.id)); // preserva a ordem base
+}
+
 // Ícone redondo da categoria (ou etiqueta apagada se não tiver categoria)
 function catIconHtml(id, extra = "") {
   const c = catOf(id);
   if (!c) return `<span class="cat-ico none ${extra}" title="Sem categoria">🏷️</span>`;
   return `<span class="cat-ico ${extra}" title="${esc(c.label)}">${c.icon}</span>`;
+}
+
+// ---- fatura repartida por várias categorias.
+// Uma despesa pode alocar partes do valor a categorias diferentes; essas
+// linhas vivem em expense_categories (expense_id, category, amount) e a
+// coluna expenses.category guarda a principal (a de maior valor), para as
+// listas e para schemas antigos. Estas funções devolvem as "partes" de
+// uma despesa: as linhas repartidas quando existem (2+), senão uma única
+// parte com a categoria da despesa (ou "none") e o valor total.
+function expenseCatSplits(x) {
+  const rows = Array.isArray(x.expense_categories)
+    ? x.expense_categories.filter(r => catOf(r.category)) : [];
+  if (rows.length >= 2) return rows.map(r => ({ cat: r.category, cents: toCents(r.amount) }));
+  return [{ cat: (x.category && catOf(x.category)) ? x.category : "none", cents: toCents(x.amount) }];
+}
+
+// Ícone da despesa nas listas: o da categoria principal, com um contador
+// por cima quando a fatura está repartida por várias
+function expenseCatIconHtml(x, extra = "") {
+  const splits = expenseCatSplits(x).filter(s => s.cat !== "none");
+  if (splits.length < 2) return catIconHtml(x.category, extra);
+  const prim = catOf(x.category) || catOf(splits[0].cat);
+  const labels = splits.map(s => catOf(s.cat).label).join(" + ");
+  return `<span class="cat-ico multi ${extra}" title="${esc(labels)}">${prim.icon}<span class="cat-multi-badge">${splits.length}</span></span>`;
 }
 
 // ---- sugestão automática de categoria a partir da descrição.
@@ -313,6 +357,8 @@ const CAT_KEYWORDS = {
   padaria:     ["padaria", "pao", "broa", "bolos", "bolo", "croissants", "pastelaria", "pasteis"],
   cafe:        ["cafe", "cafes", "cafetaria", "galao", "bica", "esplanada", "lanche"],
   restaurante: ["restaurante", "jantar", "almoco", "tasca", "tasquinha", "pizzaria", "pizza", "sushi", "hamburgueres", "hamburguer", "churrasqueira", "churrasco", "marisqueira", "brunch", "petiscos", "francesinha", "takeaway"],
+  bebidas:     ["bebida", "bebidas", "cerveja", "cervejas", "vinho", "vinhos", "sumo", "sumos", "refrigerante", "refrigerantes", "coca", "cola", "garrafeira", "aperitivo", "imperial", "sangria", "gin", "whisky", "vodka", "licor", "champanhe", "espumante"],
+  sobremesas:  ["sobremesa", "sobremesas", "gelado", "gelados", "gelataria", "doce", "doces", "tarte", "tartes", "mousse", "pudim", "chocolate", "gomas", "bolachas"],
   teatro:      ["teatro", "peca", "espetaculo", "musical", "concerto", "opera"],
   cinema:      ["cinema", "filme", "filmes", "pipocas"],
   prendas:     ["prenda", "prendas", "presente", "presentes", "oferta", "aniversario", "natal"],
@@ -320,7 +366,9 @@ const CAT_KEYWORDS = {
   roupa:       ["roupa", "roupas", "sapatos", "tenis", "calcas", "camisa", "camisola", "vestido", "casaco", "zara", "primark", "decathlon"],
   bricolage:   ["bricolage", "ferramentas", "ferramenta", "tinta", "tintas", "parafusos", "leroy", "merlin", "aki", "bricomarche", "obras", "reparacao"],
   mobiliario:  ["mobiliario", "movel", "moveis", "sofa", "mesa", "cadeira", "cadeiras", "cama", "colchao", "ikea", "conforama", "estante", "armario"],
-  casa:        ["casa", "renda", "condominio", "agua", "luz", "eletricidade", "gas", "internet", "limpeza", "detergente", "seguro"],
+  casa:        ["casa", "renda", "condominio", "agua", "luz", "eletricidade", "gas", "internet", "seguro"],
+  utensilios:  ["utensilio", "utensilios", "panela", "panelas", "tacho", "tachos", "frigideira", "talher", "talheres", "copo", "copos", "prato", "pratos", "loica", "tupperware", "faca", "facas", "jarra"],
+  limpeza:     ["limpeza", "detergente", "detergentes", "lixivia", "amaciador", "esfregona", "vassoura", "balde", "esponja", "esponjas", "panos", "desinfetante", "papel", "higienico"],
   saude:       ["farmacia", "medico", "medica", "consulta", "dentista", "hospital", "analises", "medicamentos", "oculos", "fisioterapia"],
   transportes: ["gasolina", "gasoleo", "combustivel", "portagem", "portagens", "estacionamento", "metro", "comboio", "autocarro", "uber", "bolt", "taxi", "oficina", "pneus", "inspecao", "viagem", "viagens"],
   viagens:     ["ferias", "hotel", "alojamento", "airbnb", "voo", "voos", "aviao", "booking", "praia"],
@@ -358,11 +406,15 @@ function learnCategory(desc, catId) {
   try { localStorage.setItem(catMemKey(), JSON.stringify(mem)); } catch (_) { /* storage cheio */ }
 }
 
-function guessCategory(desc, expenses) {
+function guessCategory(desc, expenses, allowed) {
   const tokens = catTokens(desc);
   if (tokens.length === 0) return null;
   const score = {};
-  const add = (cat, pts) => { if (catOf(cat)) score[cat] = (score[cat] || 0) + pts; };
+  // allowed (Set de ids) restringe a sugestão às categorias do grupo;
+  // sem ele, todas contam
+  const add = (cat, pts) => {
+    if (catOf(cat) && (!allowed || allowed.has(cat))) score[cat] = (score[cat] || 0) + pts;
+  };
 
   // 1. histórico do grupo (uma descrição repetida decide de imediato)
   const norm = catNorm(desc).trim();
@@ -502,14 +554,16 @@ async function fetchGroups() {
 }
 
 async function fetchGroupBundle(groupId) {
-  const [g, m, e, p, r] = await Promise.all([
+  const expenseSelect = (withCats) => sb.from("expenses")
+    .select("*, expense_payers(member_id, amount), expense_shares(member_id, amount)"
+      + (withCats ? ", expense_categories(category, amount)" : ""))
+    .eq("group_id", groupId)
+    .order("expense_date", { ascending: false })
+    .order("created_at", { ascending: false });
+  let [g, m, e, p, r] = await Promise.all([
     sb.from("groups").select("*").eq("id", groupId).single(),
     sb.from("group_members").select("*").eq("group_id", groupId).order("created_at"),
-    sb.from("expenses")
-      .select("*, expense_payers(member_id, amount), expense_shares(member_id, amount)")
-      .eq("group_id", groupId)
-      .order("expense_date", { ascending: false })
-      .order("created_at", { ascending: false }),
+    expenseSelect(true),
     sb.from("payments").select("*").eq("group_id", groupId)
       .order("payment_date", { ascending: false })
       .order("created_at", { ascending: false }),
@@ -518,6 +572,9 @@ async function fetchGroupBundle(groupId) {
       .eq("group_id", groupId)
       .order("created_at"),
   ]);
+  // schema antigo sem expense_categories (fatura repartida): repete a
+  // consulta sem essa tabela — a app funciona só sem a repartição
+  if (e.error && /expense_categories/i.test(e.error.message)) e = await expenseSelect(false);
   for (const rr of [g, m, e]) if (rr.error) throw rr.error;
   // payments e recurring podem ainda não existir (schema antigo por atualizar):
   // degrada sem partir a app, só sem essas funcionalidades.
@@ -1056,9 +1113,11 @@ function renderExpensesTab($c, ctx) {
     const base = expenses.filter(matches);
 
     // chips de categoria (com o total de cada uma dentro do recorte atual)
+    // — uma fatura repartida conta cada parte na sua categoria
     if ($catStrip) {
       const catTotals = new Map();
-      for (const x of base) catTotals.set(catKey(x), (catTotals.get(catKey(x)) || 0) + toCents(x.amount));
+      for (const x of base) for (const s of expenseCatSplits(x))
+        catTotals.set(s.cat, (catTotals.get(s.cat) || 0) + s.cents);
       // a categoria filtrada nunca desaparece da fila, mesmo a zeros —
       // senão não havia forma de a desligar
       if (filter.cat && !catTotals.has(filter.cat)) catTotals.set(filter.cat, 0);
@@ -1078,9 +1137,14 @@ function renderExpensesTab($c, ctx) {
       });
     }
 
-    const shown = filter.cat ? base.filter(x => catKey(x) === filter.cat) : base;
+    // com filtro de categoria, uma fatura repartida aparece se tiver essa
+    // parte — e no total só conta o valor alocado a essa categoria
+    const shown = filter.cat
+      ? base.filter(x => expenseCatSplits(x).some(s => s.cat === filter.cat)) : base;
     const filtered = !!filter.cat || searching();
-    const totalShown = shown.reduce((a, x) => a + toCents(x.amount), 0);
+    const totalShown = shown.reduce((a, x) => a + (filter.cat
+      ? expenseCatSplits(x).filter(s => s.cat === filter.cat).reduce((s2, s) => s2 + s.cents, 0)
+      : toCents(x.amount)), 0);
     // com filtros ativos, o cartão dos filtros mostra o que está à vista
     if ($result) {
       $result.classList.toggle("hidden", !filtered);
@@ -1098,7 +1162,7 @@ function renderExpensesTab($c, ctx) {
       return `${head}
         <li class="clickable" data-open="${x.id}">
           ${dateBlock(x.expense_date)}
-          ${catIconHtml(x.category)}
+          ${expenseCatIconHtml(x)}
           <div class="item-main">
             <span class="item-title">${esc(x.description)}${x.recurring_id ? ` <span class="badge linked" title="Despesa recorrente">🔁</span>` : ""}</span>
             <span class="item-sub">pago por ${esc(payers)} · ${nShares} pessoa${nShares === 1 ? "" : "s"}</span>
@@ -1197,14 +1261,22 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     ? (existing.split_mode === "weights" && !useWeights ? "exact" : (existing.split_mode || "exact"))
     : (useWeights ? "weights" : "equal");
 
+  // fatura repartida por categorias: linhas gravadas em expense_categories
+  // (só nas despesas normais; os moldes recorrentes têm uma categoria só)
+  const exCats = (existing && !isRecurringRecord && Array.isArray(existing.expense_categories))
+    ? existing.expense_categories.filter(r => catOf(r.category)) : [];
+
   const state = {
     section: "dados", // dados | pagou | divide
     desc: existing?.description || "",
     date: existing?.expense_date || new Date().toISOString().slice(0, 10),
     category: existing?.category && catOf(existing.category) ? existing.category : null,
+    // repartição do valor por categoria ({catId: cêntimos}); null = uma só
+    catSplit: exCats.length >= 2
+      ? Object.fromEntries(exCats.map(r => [r.category, toCents(r.amount)])) : null,
     // escolhida à mão? enquanto for false, a sugestão automática (a partir
     // da descrição) pode ir atualizando a categoria à medida que se escreve
-    catManual: !!(existing && existing.category),
+    catManual: !!(existing && (existing.category || exCats.length)),
     catAuto: false,
     mode: initMode, // equal | weights | exact
     totalCents: existing ? toCents(existing.amount) : 0,
@@ -1226,6 +1298,17 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     startDate: existing && isRecurringRecord ? existing.start_date : today,
     endDate: existing && isRecurringRecord ? (existing.end_date || "") : "",
     active: existing && isRecurringRecord ? !!existing.active : true,
+  };
+
+  // partes da fatura por categoria com valor > 0 (modo repartido)
+  const catEntries = () => state.catSplit
+    ? Object.entries(state.catSplit).filter(([, c]) => c > 0) : [];
+  // categoria "principal" — a única (modo normal) ou a de maior valor no
+  // modo repartido; vai para expenses.category (listas e schemas antigos)
+  const primaryCategory = () => {
+    if (!state.catSplit) return state.category;
+    const e = catEntries().sort((a, b) => b[1] - a[1]);
+    return e.length ? e[0][0] : null;
   };
 
   function computedShares() {
@@ -1386,6 +1469,43 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
         </div>
       </div>`;
 
+    // categorias a mostrar: as que se aplicam ao grupo (definições). Se a
+    // despesa já usa categorias fora dessa lista (grupo restringido depois
+    // de gravada), mantêm-se visíveis para não se perderem ao editar.
+    const catList = groupCategories(group).slice();
+    for (const id of (state.catSplit ? Object.keys(state.catSplit) : (state.category ? [state.category] : []))) {
+      if (!catList.some(c => c.id === id)) {
+        const extraCat = catOf(id);
+        if (extraCat) catList.push(extraCat);
+      }
+    }
+    // chip aceso: a categoria única, ou cada uma das partes da repartição
+    const catOn = (id) => state.catSplit ? (id in state.catSplit) : state.category === id;
+
+    // bloco da fatura repartida (por baixo dos chips): um input de valor por
+    // categoria escolhida + estado da alocação. Os moldes recorrentes ficam
+    // fora disto — têm sempre uma categoria única.
+    const catUsed = Object.values(state.catSplit || {}).reduce((a, c) => a + c, 0);
+    const catSplitBlock = !state.catSplit
+      ? (state.recurring ? "" : `<button type="button" class="link-btn" id="x-cat-multi">Fatura com várias categorias? Reparte o valor</button>`)
+      : `
+        <div class="cat-split">
+          ${catList.filter(c => c.id in state.catSplit).map(c => `
+            <div class="cat-split-line">
+              <span class="cat-split-name">${c.icon} ${esc(c.label)}</span>
+              <input type="number" step="0.01" min="0" data-catamount="${c.id}"
+                value="${((state.catSplit[c.id] || 0) / 100).toFixed(2)}" />
+            </div>`).join("")}
+          ${Object.keys(state.catSplit).length === 0
+            ? `<p class="form-status neutral">Toca nas categorias em cima para as juntar à fatura</p>`
+            : catUsed === state.totalCents ? ""
+            : `<p class="form-status">${fmtMoney(catUsed, cur)} de ${fmtMoney(state.totalCents, cur)} atribuídos</p>`}
+          <div class="cat-split-actions">
+            <button type="button" class="secondary small" id="x-cat-dist">Distribuir igualmente</button>
+            <button type="button" class="secondary small" id="x-cat-single">Voltar a uma só categoria</button>
+          </div>
+        </div>`;
+
     const sections = {
       dados: `
         ${typeHeader}
@@ -1395,13 +1515,14 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
         </div>
         ${scheduleFields}
         <div class="field" style="margin-bottom:.3rem;">
-          <label>Categoria <span class="cat-hint" id="x-cat-hint">${state.catAuto && state.category ? "· sugerida automaticamente" : ""}</span></label>
+          <label>Categoria${state.catSplit ? "s" : ""} <span class="cat-hint" id="x-cat-hint">${state.catAuto && state.category ? "· sugerida automaticamente" : ""}</span></label>
           <div class="cat-row" id="x-cat-row">
-            ${CATEGORIES.map(c => `
-              <button type="button" class="cat-chip ${state.category === c.id ? "active" : ""}" data-cat="${c.id}">
+            ${catList.map(c => `
+              <button type="button" class="cat-chip ${catOn(c.id) ? "active" : ""}" data-cat="${c.id}">
                 ${c.icon}<span>${esc(c.label)}</span>
               </button>`).join("")}
           </div>
+          ${catSplitBlock}
         </div>`,
       pagou: `
         ${okPaid ? "" : state.totalCents === 0
@@ -1517,15 +1638,22 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
       };
     });
     // conversão de despesa ocasional existente em recorrente (liga/cancela)
-    slot.querySelector("#x-convert")?.addEventListener("click", () => { state.recurring = true; draw(); });
+    slot.querySelector("#x-convert")?.addEventListener("click", () => {
+      state.recurring = true;
+      // os moldes recorrentes têm uma categoria única — uma fatura
+      // repartida colapsa na categoria principal ao converter
+      if (state.catSplit) { state.category = primaryCategory(); state.catSplit = null; }
+      draw();
+    });
     slot.querySelector("#x-cancel-convert")?.addEventListener("click", () => { state.recurring = false; draw(); });
     const $desc = slot.querySelector("#x-desc");
     if ($desc) $desc.oninput = () => {
       state.desc = $desc.value;
       // sugestão automática de categoria enquanto se escreve — atualiza os
       // chips diretamente (sem draw()) para o input não perder o foco
-      if (!state.catManual) {
-        const g = guessCategory(state.desc, ctx.expenses);
+      if (!state.catManual && !state.catSplit) {
+        const allowedIds = groupCatIds(group);
+        const g = guessCategory(state.desc, ctx.expenses, allowedIds ? new Set(allowedIds) : null);
         if (g !== state.category) {
           state.category = g;
           state.catAuto = !!g;
@@ -1562,10 +1690,47 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     }
     slot.querySelectorAll("[data-cat]").forEach(b => {
       b.onclick = () => {
-        // tocar no chip ativo tira a categoria; noutro, troca
-        state.category = state.category === b.dataset.cat ? null : b.dataset.cat;
+        const id = b.dataset.cat;
+        if (state.catSplit) {
+          // modo repartido: o chip junta/tira a categoria da fatura; ao
+          // juntar, leva logo o valor que falta atribuir
+          if (id in state.catSplit) delete state.catSplit[id];
+          else {
+            const used = Object.values(state.catSplit).reduce((a, c) => a + c, 0);
+            state.catSplit[id] = Math.max(state.totalCents - used, 0);
+          }
+        } else {
+          // tocar no chip ativo tira a categoria; noutro, troca
+          state.category = state.category === id ? null : id;
+        }
         state.catManual = true;
         state.catAuto = false;
+        draw();
+      };
+    });
+    // fatura repartida: ativar/desativar o modo e editar as alocações
+    slot.querySelector("#x-cat-multi")?.addEventListener("click", () => {
+      state.catSplit = state.category ? { [state.category]: state.totalCents } : {};
+      state.catManual = true;
+      state.catAuto = false;
+      draw();
+    });
+    slot.querySelector("#x-cat-single")?.addEventListener("click", () => {
+      state.category = primaryCategory(); // fica a de maior valor
+      state.catSplit = null;
+      draw();
+    });
+    slot.querySelector("#x-cat-dist")?.addEventListener("click", () => {
+      const ids = Object.keys(state.catSplit);
+      if (ids.length) {
+        const parts = splitByWeights(state.totalCents, ids.map(() => 1));
+        ids.forEach((id, i) => { state.catSplit[id] = parts[i]; });
+      }
+      draw();
+    });
+    slot.querySelectorAll("[data-catamount]").forEach(inp => {
+      inp.onchange = () => {
+        state.catSplit[inp.dataset.catamount] = toCents(inp.value);
         draw();
       };
     });
@@ -1647,6 +1812,16 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
       if (Object.keys(shares2).length === 0) return fail("divide", "Escolhe por quem se divide");
       if (shareSum2 !== state.totalCents) return fail("divide", "A divisão não soma o total");
 
+      // fatura repartida por categorias: a alocação tem de somar o total
+      // (sem nenhuma categoria escolhida, a despesa fica sem categoria)
+      const catRows = catEntries();
+      if (state.catSplit && catRows.length > 0) {
+        const catSum = catRows.reduce((a, [, c]) => a + c, 0);
+        if (catSum !== state.totalCents) return fail("dados", "Os valores das categorias não somam o total da fatura");
+      }
+      // o que vai para expenses.category: a única, ou a principal da repartição
+      const catId = primaryCategory();
+
       // ----- converter uma despesa ocasional em recorrente daí para a frente -----
       // cria um molde a partir desta despesa e liga-a como 1.ª ocorrência (o
       // índice único impede que a geração a duplique). Guarda: não pode existir
@@ -1672,7 +1847,7 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
         // 1) cria o molde a partir dos valores atuais do formulário
         const rpayload = {
           group_id: group.id, description: desc, amount: (state.totalCents / 100).toFixed(2),
-          category: state.category, split_mode: state.mode, day_of_month: state.dayOfMonth,
+          category: catId, split_mode: state.mode, day_of_month: state.dayOfMonth,
           start_date: period, end_date: state.endDate || null, active: state.active,
         };
         const { data: rec, error: rErr } = await sb.from("recurring_expenses").insert(rpayload).select().single();
@@ -1688,12 +1863,15 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
         // 2) atualiza a despesa (aplica edições) e liga-a ao molde como 1.ª ocorrência
         const { error: uErr } = await sb.from("expenses").update({
           description: desc, amount: (state.totalCents / 100).toFixed(2),
-          split_mode: state.mode, category: state.category,
+          split_mode: state.mode, category: catId,
           recurring_id: rec.id, recurring_period: period,
         }).eq("id", existing.id);
         if (uErr) return toast(uErr.message, true);
         await sb.from("expense_payers").delete().eq("expense_id", existing.id);
         await sb.from("expense_shares").delete().eq("expense_id", existing.id);
+        // a 1.ª ocorrência fica com a categoria única do molde — limpa uma
+        // eventual repartição antiga (erros ignorados: schema sem a tabela)
+        await sb.from("expense_categories").delete().eq("expense_id", existing.id);
         const pRows = [...state.payers].filter(id => (state.payerAmounts[id] || 0) > 0)
           .map(id => ({ expense_id: existing.id, member_id: id, amount: (state.payerAmounts[id] / 100).toFixed(2) }));
         const sRows = Object.entries(shares2).filter(([, c]) => c > 0)
@@ -1702,7 +1880,7 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
         const pi2 = await sb.from("expense_shares").insert(sRows);
         if (pi1.error || pi2.error) return toast((pi1.error || pi2.error).message, true);
 
-        if (state.category) learnCategory(desc, state.category);
+        if (catId) learnCategory(desc, catId);
         try { await sb.rpc("generate_due_recurring"); } catch (_) { /* schema sem RPC */ }
         toast("Despesa convertida em recorrente");
         return refresh();
@@ -1717,7 +1895,7 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
           group_id: group.id,
           description: desc,
           amount: (state.totalCents / 100).toFixed(2),
-          category: state.category,
+          category: catId,
           split_mode: state.mode,
           day_of_month: state.dayOfMonth,
           start_date: state.startDate,
@@ -1745,7 +1923,7 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
         const e2 = await sb.from("recurring_expense_shares").insert(rShareRows);
         if (e1.error || e2.error) return toast((e1.error || e2.error).message, true);
 
-        if (state.category) learnCategory(desc, state.category);
+        if (catId) learnCategory(desc, catId);
         // materializa já as ocorrências em atraso deste molde (idempotente)
         try { await sb.rpc("generate_due_recurring"); } catch (_) { /* schema sem RPC */ }
         toast(existing ? "Despesa recorrente atualizada" : "Despesa recorrente criada");
@@ -1758,7 +1936,7 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
         amount: (state.totalCents / 100).toFixed(2),
         expense_date: date || new Date().toISOString().slice(0, 10),
         split_mode: state.mode,
-        category: state.category,
+        category: catId,
       };
 
       // schema antigo sem as colunas split_mode/category: grava na mesma
@@ -1794,8 +1972,26 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
       }
 
       // aprender: reforça a ligação descrição -> categoria para as próximas
-      // sugestões automáticas ficarem cada vez mais certeiras
-      if (state.category) learnCategory(desc, state.category);
+      // sugestões automáticas ficarem cada vez mais certeiras (na fatura
+      // repartida aprende-se a principal)
+      if (catId) learnCategory(desc, catId);
+
+      // fatura repartida: substitui as linhas em expense_categories (com 0
+      // ou 1 categoria não há linhas — a coluna category chega). Schema
+      // antigo sem a tabela: degrada com aviso, a despesa fica na principal.
+      const catInsRows = catRows.length >= 2
+        ? catRows.map(([id, c]) => ({ expense_id: expenseId, category: id, amount: (c / 100).toFixed(2) }))
+        : [];
+      const dc = await sb.from("expense_categories").delete().eq("expense_id", expenseId);
+      const catsMissing = !!dc.error && /expense_categories/i.test(dc.error.message);
+      if (dc.error && !catsMissing) return toast(dc.error.message, true);
+      if (catInsRows.length && !catsMissing) {
+        const ic = await sb.from("expense_categories").insert(catInsRows);
+        if (ic.error) return toast(ic.error.message, true);
+      }
+      if (catInsRows.length && catsMissing) {
+        toast("Repartição por categorias não gravada — corre o schema.sql mais recente no Supabase", true);
+      }
 
       const payerRows = [...state.payers]
         .filter(id => (state.payerAmounts[id] || 0) > 0)
@@ -2276,14 +2472,14 @@ function gerarRelatorioGrupo(ctx) {
   }
   const share = Object.fromEntries(roundPreservingSum(exact));
 
-  // total por categoria (as despesas sem categoria vão para «Sem categoria»)
+  // total por categoria (as despesas sem categoria vão para «Sem categoria»;
+  // uma fatura repartida soma cada parte na respetiva categoria)
   const byCat = new Map();
-  for (const x of expenses) {
-    const key = (x.category && catOf(x.category)) ? x.category : "none";
-    const e = byCat.get(key) || { cents: 0, n: 0 };
-    e.cents += toCents(x.amount);
+  for (const x of expenses) for (const s of expenseCatSplits(x)) {
+    const e = byCat.get(s.cat) || { cents: 0, n: 0 };
+    e.cents += s.cents;
     e.n += 1;
-    byCat.set(key, e);
+    byCat.set(s.cat, e);
   }
   const cats = [...byCat.entries()].sort((a, b) => b[1].cents - a[1].cents);
 
@@ -2403,11 +2599,12 @@ function gerarRelatorioGrupo(ctx) {
   const despRows = [...expenses]
     .sort((a, b) => (a.expense_date < b.expense_date ? 1 : a.expense_date > b.expense_date ? -1 : 0))
     .map((x, i) => {
-      const c = x.category ? catOf(x.category) : null;
+      // fatura repartida mostra os ícones de todas as partes
+      const icons = expenseCatSplits(x).filter(s => s.cat !== "none").map(s => catOf(s.cat).icon).join("");
       const quem = x.expense_payers.map(p => memberName(p.member_id)).join(", ") || "—";
       return `<tr style="background:${zebra(i)}">
         <td style="${td}color:#66788a;white-space:nowrap;">${shortDate(x.expense_date)}</td>
-        <td style="${td}font-weight:600;">${c ? c.icon + " " : ""}${esc(x.description || "—")}</td>
+        <td style="${td}font-weight:600;">${icons ? icons + " " : ""}${esc(x.description || "—")}</td>
         <td style="${td}color:#4a534e;font-size:12px;">${esc(quem)}</td>
         <td style="${td}text-align:right;font-weight:700;color:#0f9d76;">${fmtMoney(toCents(x.amount), cur)}</td>
       </tr>`;
@@ -2784,6 +2981,7 @@ function renderRecurringSection($c, ctx) {
 
 function renderSettingsTab($c, ctx) {
   const { group, isOwner } = ctx;
+  const selectedCats = groupCatIds(group); // null = todas
 
   $c.innerHTML = `
     <div class="card">
@@ -2807,6 +3005,24 @@ function renderSettingsTab($c, ctx) {
           <span class="check-note">ligado, cada pessoa tem um peso na lista de membros em baixo;
             desligado, as despesas dividem-se em partes iguais</span>
         </label>
+        <div class="field" style="margin-top:.4rem;">
+          <label>Categorias do grupo
+            <span class="check-note" style="display:block;margin-top:.15rem;">as que aparecem ao lançar despesas neste grupo — por defeito, todas</span>
+          </label>
+          <div class="cat-pick" id="group-cats">
+            ${CATEGORIES.map(c => {
+              const on = !selectedCats || selectedCats.includes(c.id);
+              return `<label class="cat-pick-item ${on ? "on" : ""}">
+                <input type="checkbox" name="categories" value="${c.id}" ${on ? "checked" : ""} ${isOwner ? "" : "disabled"} />
+                <span>${c.icon} ${esc(c.label)}</span>
+              </label>`;
+            }).join("")}
+          </div>
+          ${isOwner ? `<div class="cat-pick-actions">
+            <button type="button" class="secondary small" id="cats-all">Todas</button>
+            <button type="button" class="secondary small" id="cats-none">Nenhuma</button>
+          </div>` : ""}
+        </div>
         ${isOwner ? `<button type="submit" id="btn-save-group" style="margin-top:.6rem;">Guardar definições</button>` : ""}
       </form>
     </div>
@@ -2837,16 +3053,34 @@ function renderSettingsTab($c, ctx) {
     if (e.target.checked) toast("Carrega em «Guardar definições» e define os pesos na lista de membros");
   };
 
+  // seletor de categorias do grupo: realce visual + atalhos Todas/Nenhuma
+  const catBoxes = () => Array.from($c.querySelectorAll('#group-cats input[name="categories"]'));
+  const syncCatItem = (box) => box.closest(".cat-pick-item")?.classList.toggle("on", box.checked);
+  catBoxes().forEach(box => { box.onchange = () => syncCatItem(box); });
+  $c.querySelector("#cats-all").onclick = () => catBoxes().forEach(b => { b.checked = true; syncCatItem(b); });
+  $c.querySelector("#cats-none").onclick = () => catBoxes().forEach(b => { b.checked = false; syncCatItem(b); });
+
   document.getElementById("edit-group").onsubmit = async (e) => {
     e.preventDefault();
     const f = new FormData(e.target);
+    // categorias escolhidas: todas marcadas (ou nenhuma) => null = «todas»,
+    // para não guardar uma lista à toa e manter o default limpo
+    const chosen = f.getAll("categories");
+    const cats = (chosen.length === 0 || chosen.length === CATEGORIES.length) ? null : chosen;
     const payload = {
       name: f.get("name").trim(),
       description: f.get("description").trim() || null,
       currency: f.get("currency"),
       use_weights: !!f.get("use_weights"),
+      categories: cats,
     };
     let { error } = await sb.from("groups").update(payload).eq("id", group.id);
+    // schema antigo sem a coluna categories: guarda o resto na mesma
+    if (error && /categories/i.test(error.message)) {
+      if (cats) toast("Categorias por grupo indisponíveis — corre o schema.sql mais recente no Supabase", true);
+      delete payload.categories;
+      ({ error } = await sb.from("groups").update(payload).eq("id", group.id));
+    }
     // schema antigo sem a coluna use_weights: guarda o resto na mesma
     if (error && /use_weights/i.test(error.message)) {
       if (payload.use_weights) toast("Quotas indisponíveis — corre o schema.sql mais recente no Supabase", true);
