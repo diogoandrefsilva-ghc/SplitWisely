@@ -163,6 +163,11 @@ create trigger trg_profiles_guard before update on splitwisely.profiles
 -- grupo. Por defeito os grupos dividem em partes iguais.
 -- categories  -> ids das categorias que se aplicam a este grupo (as que
 -- aparecem ao lançar despesas). null = todas as categorias (default).
+-- archived    -> grupo passado a "histórico" (evento terminado, contas
+-- saldadas). Continua visível, mas em lista compacta no ecrã principal e
+-- com os dados congelados: não se lançam/editam despesas, pagamentos,
+-- membros nem moldes recorrentes (imposto pelas policies RLS). O criador
+-- pode reativá-lo a qualquer momento (voltar a archived=false).
 create table if not exists splitwisely.groups (
   id uuid primary key default gen_random_uuid(),
   name text not null,
@@ -170,6 +175,7 @@ create table if not exists splitwisely.groups (
   currency text not null default 'EUR',
   use_weights boolean not null default false,
   categories jsonb,
+  archived boolean not null default false,
   created_by uuid not null references auth.users (id) default auth.uid(),
   created_at timestamptz not null default now()
 );
@@ -179,6 +185,8 @@ alter table splitwisely.groups
   add column if not exists use_weights boolean not null default false;
 alter table splitwisely.groups
   add column if not exists categories jsonb;
+alter table splitwisely.groups
+  add column if not exists archived boolean not null default false;
 
 -- ---------- MEMBROS DE CADA GRUPO ----------
 -- Uma "pessoa" do grupo. Pode estar ligada a um utilizador registado
@@ -405,6 +413,19 @@ as $$
   select group_id from expenses where id = eid;
 $$;
 
+-- ---------- GRUPO EM HISTÓRICO? ----------
+-- O grupo está arquivado (passado a histórico). Enquanto arquivado, todas as
+-- escritas de dados (despesas, pagamentos, membros, moldes recorrentes) ficam
+-- bloqueadas pelas policies; só o UPDATE da própria linha do grupo (feito pelo
+-- criador) o pode reativar. Usada nas policies de escrita e no can_write_*.
+create or replace function splitwisely.group_archived(gid uuid)
+returns boolean
+language sql stable security definer
+set search_path = splitwisely
+as $$
+  select coalesce((select archived from groups where id = gid), false);
+$$;
+
 -- ---------- PERMISSÃO DO UTILIZADOR NUM GRUPO ----------
 -- Role do utilizador atual neste grupo. O criador do grupo tem sempre
 -- 'write_all' (mesmo sem ser membro); os restantes herdam o role da sua
@@ -438,6 +459,7 @@ as $$
     select 1 from expenses e
     where e.id = eid
       and splitwisely.has_group_access(e.group_id)
+      and not splitwisely.group_archived(e.group_id)
       and (splitwisely.my_role(e.group_id) = 'write_all'
            or (splitwisely.my_role(e.group_id) = 'write_own'
                and e.created_by = auth.uid()))
@@ -542,8 +564,10 @@ drop policy if exists "members_write" on splitwisely.group_members;
 create policy "members_write" on splitwisely.group_members
   for all to authenticated
   using (splitwisely.can_use() and splitwisely.has_group_access(group_id)
+         and not splitwisely.group_archived(group_id)
          and splitwisely.my_role(group_id) in ('write_own', 'write_all'))
   with check (splitwisely.can_use() and splitwisely.has_group_access(group_id)
+         and not splitwisely.group_archived(group_id)
          and splitwisely.my_role(group_id) in ('write_own', 'write_all'));
 
 -- Despesas — leitura para quem tem acesso ao grupo (qualquer role, incl.
@@ -559,15 +583,18 @@ drop policy if exists "expenses_insert" on splitwisely.expenses;
 create policy "expenses_insert" on splitwisely.expenses
   for insert to authenticated
   with check (splitwisely.can_use() and splitwisely.has_group_access(group_id)
+              and not splitwisely.group_archived(group_id)
               and splitwisely.my_role(group_id) in ('write_own', 'write_all'));
 
 drop policy if exists "expenses_update" on splitwisely.expenses;
 create policy "expenses_update" on splitwisely.expenses
   for update to authenticated
   using (splitwisely.can_use() and splitwisely.has_group_access(group_id)
+         and not splitwisely.group_archived(group_id)
          and (splitwisely.my_role(group_id) = 'write_all'
               or (splitwisely.my_role(group_id) = 'write_own' and created_by = auth.uid())))
   with check (splitwisely.can_use() and splitwisely.has_group_access(group_id)
+         and not splitwisely.group_archived(group_id)
          and (splitwisely.my_role(group_id) = 'write_all'
               or (splitwisely.my_role(group_id) = 'write_own' and created_by = auth.uid())));
 
@@ -575,6 +602,7 @@ drop policy if exists "expenses_delete" on splitwisely.expenses;
 create policy "expenses_delete" on splitwisely.expenses
   for delete to authenticated
   using (splitwisely.can_use() and splitwisely.has_group_access(group_id)
+         and not splitwisely.group_archived(group_id)
          and (splitwisely.my_role(group_id) = 'write_all'
               or (splitwisely.my_role(group_id) = 'write_own' and created_by = auth.uid())));
 
@@ -635,8 +663,10 @@ drop policy if exists "payments_write" on splitwisely.payments;
 create policy "payments_write" on splitwisely.payments
   for all to authenticated
   using (splitwisely.can_use() and splitwisely.has_group_access(group_id)
+         and not splitwisely.group_archived(group_id)
          and splitwisely.my_role(group_id) in ('write_own', 'write_all'))
   with check (splitwisely.can_use() and splitwisely.has_group_access(group_id)
+         and not splitwisely.group_archived(group_id)
          and splitwisely.my_role(group_id) in ('write_own', 'write_all'));
 
 -- ---------- ÍNDICES ----------
@@ -730,6 +760,7 @@ as $$
     select 1 from recurring_expenses r
     where r.id = rid
       and splitwisely.has_group_access(r.group_id)
+      and not splitwisely.group_archived(r.group_id)
       and (splitwisely.my_role(r.group_id) = 'write_all'
            or (splitwisely.my_role(r.group_id) = 'write_own'
                and r.created_by = auth.uid()))
@@ -761,6 +792,7 @@ begin
   for r in
     select * from recurring_expenses
      where active and splitwisely.has_group_access(group_id)
+       and not splitwisely.group_archived(group_id)
   loop
     m := date_trunc('month', r.start_date)::date;
     while m <= last_m loop
@@ -812,15 +844,18 @@ drop policy if exists "recurring_insert" on splitwisely.recurring_expenses;
 create policy "recurring_insert" on splitwisely.recurring_expenses
   for insert to authenticated
   with check (splitwisely.can_use() and splitwisely.has_group_access(group_id)
+              and not splitwisely.group_archived(group_id)
               and splitwisely.my_role(group_id) in ('write_own', 'write_all'));
 
 drop policy if exists "recurring_update" on splitwisely.recurring_expenses;
 create policy "recurring_update" on splitwisely.recurring_expenses
   for update to authenticated
   using (splitwisely.can_use() and splitwisely.has_group_access(group_id)
+         and not splitwisely.group_archived(group_id)
          and (splitwisely.my_role(group_id) = 'write_all'
               or (splitwisely.my_role(group_id) = 'write_own' and created_by = auth.uid())))
   with check (splitwisely.can_use() and splitwisely.has_group_access(group_id)
+         and not splitwisely.group_archived(group_id)
          and (splitwisely.my_role(group_id) = 'write_all'
               or (splitwisely.my_role(group_id) = 'write_own' and created_by = auth.uid())));
 
@@ -828,6 +863,7 @@ drop policy if exists "recurring_delete" on splitwisely.recurring_expenses;
 create policy "recurring_delete" on splitwisely.recurring_expenses
   for delete to authenticated
   using (splitwisely.can_use() and splitwisely.has_group_access(group_id)
+         and not splitwisely.group_archived(group_id)
          and (splitwisely.my_role(group_id) = 'write_all'
               or (splitwisely.my_role(group_id) = 'write_own' and created_by = auth.uid())));
 

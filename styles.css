@@ -1374,6 +1374,25 @@ table.split-table input[type="checkbox"] { width: 1.1rem; }
 /* conteúdo inerte (não editável) esmaece ligeiramente para se perceber */
 .form-section[inert] { opacity: .72; }
 
+/* ================================================================ histórico (grupos arquivados) */
+/* selo no cabeçalho do grupo e nos cards/linhas */
+.badge.archived-badge { color: var(--gold-text); background: var(--gold-bg); border: 1px solid var(--gold-border); }
+/* aviso por baixo do título quando o grupo está em histórico */
+.archived-note {
+  margin: .5rem 0 0;
+  padding: .55rem .75rem;
+  border: 1px solid var(--gold-border);
+  background: var(--gold-bg);
+  color: var(--gold-text);
+  border-radius: var(--radius-s);
+  font-size: .82rem;
+  line-height: 1.4;
+}
+/* linhas da lista «Histórico» no ecrã principal: um pouco mais discretas */
+.archived-row .item-title { color: var(--muted); }
+/* nota de ajuda por baixo de um botão (ex.: contas por saldar) */
+p.hint { margin: .5rem 0 0; font-size: .78rem; color: var(--muted); line-height: 1.4; }
+
 /* ================================================================ saldos / acertos */
 .settle-line {
   display: flex;

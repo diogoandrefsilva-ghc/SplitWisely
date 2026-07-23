@@ -15,6 +15,7 @@ App web estilo Splitwise para gerir despesas partilhadas, feita em HTML/JS puro 
 - **Defaults por grupo** — cada membro tem um *peso* default (a proporção com que entra nas divisões) e pode ser marcado como *pagador default*; as novas despesas vêm pré-preenchidas com isso.
 - **Despesas recorrentes** — ao criar uma despesa escolhes **Ocasional** ou **Recorrente**; na recorrente indicas o **dia do mês** e, se quiseres, uma data para **terminar** (renda, ginásio, subscrições…), com a mesma flexibilidade de divisão das despesas normais. Não há servidor: são **lançadas automaticamente** (no dia marcado, ajustado ao último dia nos meses mais curtos) quando alguém abre a app — sem nunca duplicar, mesmo com várias pessoas a abrir ao mesmo tempo. Os moldes ativos gerem-se também no separador **Definições** do grupo.
 - **Saldos e acerto de contas** — quem deve a quem (com o detalhe de *a quem* por baixo do saldo), sugestões de pagamentos mínimos e **registo de pagamentos**: um clique em «Pagar» numa sugestão pré-preenche o pagamento; os pagamentos registados abatem nos saldos e podem ser apagados.
+- **Grupos em histórico** — quando um evento termina e as **contas ficam saldadas** (saldos a zero), o criador pode **passar o grupo a histórico** nas **Definições**. Os grupos em histórico saem dos cards em destaque e passam a aparecer numa **lista compacta** («Histórico») no ecrã principal, com os **dados congelados**: não se lançam nem editam despesas, pagamentos, membros ou moldes recorrentes (imposto no servidor pelas políticas RLS, não é só esconder botões). É ideal para grupos de um evento único; grupos que continuam a movimentar-se ficam ativos mesmo com saldo zero. Dá para **reativar** o grupo a qualquer momento.
 - **Liquidação preferencial** — no detalhe de um membro podes indicar com quem ele **liquida preferencialmente** (opcional). Útil para convidados: se o Y é convidado do X, o Y tem a pagar e o X a receber, os acertos sugerem primeiro Y → X, antes da distribuição normal.
 - **PWA para telemóvel** — instalável no ecrã inicial (Android e iOS), abre em ecrã inteiro sem barra do browser, funciona offline para consulta e tem o zoom bloqueado.
 
@@ -106,8 +107,9 @@ A app abre depois como qualquer outra, em ecrã inteiro e com o ícone próprio.
 > Editor (é idempotente) para apanhar as novidades — a tabela `payments` dos pagamentos, a
 > aprovação automática de quem é convidado por email, as **despesas recorrentes** (tabelas
 > `recurring_expenses` + a RPC `generate_due_recurring`), a coluna `settle_with` da
-> **liquidação preferencial** nos membros e a coluna `role` das **permissões por membro**
-> (com as políticas RLS que a impõem por despesa/pagamento).
+> **liquidação preferencial** nos membros, a coluna `role` das **permissões por membro**
+> (com as políticas RLS que a impõem por despesa/pagamento) e a coluna `archived` dos
+> **grupos em histórico** (com as políticas RLS que congelam as escritas nos grupos arquivados).
 
 ## Estrutura
 

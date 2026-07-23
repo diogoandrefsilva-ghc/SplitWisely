@@ -797,6 +797,7 @@ async function renderGroups() {
   $app.innerHTML = `<div class="loading">A carregar grupos…</div>`;
   const [groups, { balances, activity }] = await Promise.all([fetchGroups(), fetchMyGroupBalances()]);
   let othersOpen = false;
+  let archivedOpen = false;
 
   const lastAct = (g) => activity[g.id] || Date.parse(g.created_at) || 0;
 
@@ -817,9 +818,14 @@ async function renderGroups() {
     return `<span class="chip ${b > 0 ? "positive" : "negative"}">${b > 0 ? "recebes" : "deves"} ${fmtMoney(Math.abs(b), g.currency)}</span>`;
   };
 
-  // resumo global (soma apenas grupos na mesma moeda, a do 1.º com saldo)
-  const mainCur = groups.find(g => balances[g.id])?.currency || "EUR";
-  const sameCur = groups.filter(g => g.currency === mainCur && balances[g.id] !== undefined);
+  // grupos ativos vs em histórico (arquivados). Os ativos aparecem em cards
+  // (destaque) + «Outros grupos»; os arquivados numa lista compacta à parte.
+  const activeGroups = groups.filter(g => !g.archived);
+  const archivedGroups = groups.filter(g => g.archived);
+
+  // resumo global (soma apenas grupos ativos na mesma moeda, a do 1.º com saldo)
+  const mainCur = activeGroups.find(g => balances[g.id])?.currency || "EUR";
+  const sameCur = activeGroups.filter(g => g.currency === mainCur && balances[g.id] !== undefined);
   const totPos = sameCur.reduce((a, g) => a + Math.max(balances[g.id], 0), 0);
   const totNeg = sameCur.reduce((a, g) => a - Math.min(balances[g.id], 0), 0);
   const statStrip = groups.length === 0 ? "" : `
@@ -834,21 +840,24 @@ async function renderGroups() {
       </div>
       <div class="stat">
         <span class="stat-label">Grupos</span>
-        <span class="stat-value">${groups.length}</span>
+        <span class="stat-value">${activeGroups.length}</span>
       </div>
     </div>`;
 
   function draw() {
     // até 4 cards em destaque: primeiro os favoritos, depois os grupos
-    // com movimentos mais recentes; o resto fica atrás de «Outros grupos»
-    const favs = getFavs().filter(id => groups.some(g => g.id === id));
-    const byActivity = [...groups].sort((a, b) => lastAct(b) - lastAct(a));
-    const featured = favs.map(id => groups.find(g => g.id === id));
+    // com movimentos mais recentes; o resto fica atrás de «Outros grupos».
+    // Os grupos em histórico não entram nos destaques — vão para a lista
+    // «Histórico» no fim.
+    const favs = getFavs().filter(id => activeGroups.some(g => g.id === id));
+    const byActivity = [...activeGroups].sort((a, b) => lastAct(b) - lastAct(a));
+    const featured = favs.map(id => activeGroups.find(g => g.id === id));
     for (const g of byActivity) {
       if (featured.length >= 4) break;
       if (!featured.includes(g)) featured.push(g);
     }
     const others = byActivity.filter(g => !featured.includes(g));
+    const archivedSorted = [...archivedGroups].sort((a, b) => lastAct(b) - lastAct(a));
 
     const starBtn = (g, extra = "") => {
       const isFav = favs.includes(g.id);
@@ -876,6 +885,40 @@ async function renderGroups() {
         ${starBtn(g, "in-list")}
       </li>`;
 
+    // linha de um grupo em histórico: sem estrela (favoritos são só ativos),
+    // com um selo 📕 a assinalar que está arquivado
+    const archivedRow = (g) => `
+      <li class="group-row archived-row">
+        <a class="item-link" href="#/g/${g.id}">
+          <span class="item-main">
+            <span class="item-title">📕 ${esc(g.name)}</span>
+            ${g.description ? `<span class="item-sub">${esc(g.description)}</span>` : ""}
+          </span>
+          <span class="item-end">${balanceHtml(g)}</span>
+        </a>
+      </li>`;
+
+    const activeSection = activeGroups.length === 0
+      ? (archivedGroups.length
+          ? `<div class="card"><p class="empty">Não tens grupos ativos. Os teus grupos estão em histórico, abaixo.</p></div>`
+          : "")
+      : `<div class="group-grid">${featured.map(card).join("")}</div>
+          ${others.length ? `
+            <button class="secondary others-toggle" id="btn-others">
+              Outros grupos (${others.length}) <span class="others-arrow">${othersOpen ? "▴" : "▾"}</span>
+            </button>
+            <div class="card ${othersOpen ? "" : "hidden"}" id="others-card">
+              <ul class="list">${others.map(row).join("")}</ul>
+            </div>` : ""}`;
+
+    const archivedSection = archivedGroups.length ? `
+      <button class="secondary others-toggle" id="btn-archived">
+        Histórico (${archivedGroups.length}) <span class="others-arrow">${archivedOpen ? "▴" : "▾"}</span>
+      </button>
+      <div class="card ${archivedOpen ? "" : "hidden"}" id="archived-card">
+        <ul class="list">${archivedSorted.map(archivedRow).join("")}</ul>
+      </div>` : "";
+
     $app.innerHTML = `
       <div class="header-row">
         <h1>Os meus grupos</h1>
@@ -885,14 +928,7 @@ async function renderGroups() {
       ${statStrip}
       ${groups.length === 0
         ? `<div class="card"><p class="empty">Ainda não tens grupos. Cria o primeiro no botão «+ Novo grupo» 👆</p></div>`
-        : `<div class="group-grid">${featured.map(card).join("")}</div>
-          ${others.length ? `
-            <button class="secondary others-toggle" id="btn-others">
-              Outros grupos (${others.length}) <span class="others-arrow">${othersOpen ? "▴" : "▾"}</span>
-            </button>
-            <div class="card ${othersOpen ? "" : "hidden"}" id="others-card">
-              <ul class="list">${others.map(row).join("")}</ul>
-            </div>` : ""}`}`;
+        : activeSection + archivedSection}`;
 
     // navegação dos cards (a estrela dentro do card não navega)
     $app.querySelectorAll("[data-goto]").forEach(c => {
@@ -916,10 +952,16 @@ async function renderGroups() {
       };
     });
 
-    $app.querySelector("#btn-others")?.addEventListener("click", () => {
+    $app.querySelector("#btn-others")?.addEventListener("click", (ev) => {
       othersOpen = !othersOpen;
       $app.querySelector("#others-card").classList.toggle("hidden", !othersOpen);
-      $app.querySelector(".others-arrow").textContent = othersOpen ? "▴" : "▾";
+      ev.currentTarget.querySelector(".others-arrow").textContent = othersOpen ? "▴" : "▾";
+    });
+
+    $app.querySelector("#btn-archived")?.addEventListener("click", (ev) => {
+      archivedOpen = !archivedOpen;
+      $app.querySelector("#archived-card").classList.toggle("hidden", !archivedOpen);
+      ev.currentTarget.querySelector(".others-arrow").textContent = archivedOpen ? "▴" : "▾";
     });
 
     bindNewGroup();
@@ -1036,6 +1078,7 @@ async function renderGroup(groupId, tab) {
   }
   const { group, members, expenses, payments, paymentsReady, recurring, recurringReady } = bundle;
   const isOwner = group.created_by === session.user.id;
+  const isArchived = !!group.archived;
 
   // o saldo atual do utilizador vive aqui, alinhado com o título do grupo
   const myMember = members.find(m => m.user_id === session.user.id);
@@ -1061,10 +1104,12 @@ async function renderGroup(groupId, tab) {
         <div class="title-line">
           <h1>${esc(group.name)}</h1>
           <span class="badge">${esc(group.currency)}</span>
+          ${isArchived ? `<span class="badge archived-badge" title="Grupo em histórico">📕 Histórico</span>` : ""}
         </div>
         ${headBalance}
       </div>
       ${group.description ? `<p class="page-desc">${esc(group.description)}</p>` : ""}
+      ${isArchived ? `<p class="archived-note">Este grupo está em <strong>histórico</strong> — os dados estão bloqueados. ${isOwner ? "Reativa-o nas <strong>Definições</strong> para voltar a lançar despesas." : "Só o criador o pode reativar."}</p>` : ""}
     </div>
     <div class="tabs page-tabs">
       ${tabs.map(([id, label]) =>
@@ -1081,9 +1126,13 @@ async function renderGroup(groupId, tab) {
   // sem a coluna => 'write_all', o comportamento de sempre). Espelha o que a
   // RLS impõe no servidor (ver my_role() no schema.sql).
   const myRole = isOwner ? "write_all" : (myMember?.role || "write_all");
-  const canWrite = myRole !== "read"; // pode lançar/registar (não é só-leitura)
+  // grupo em histórico (arquivado): os dados ficam congelados — ninguém
+  // lança/edita despesas, pagamentos, membros ou moldes. Espelha a RLS
+  // (ver group_archived() no schema.sql). Só o criador pode reativá-lo.
+  const archived = !!group.archived;
+  const canWrite = myRole !== "read" && !archived; // pode lançar/registar
 
-  const ctx = { group, members, expenses, payments, paymentsReady, recurring, recurringReady, isOwner, myMember, myRole, canWrite };
+  const ctx = { group, members, expenses, payments, paymentsReady, recurring, recurringReady, isOwner, myMember, myRole, canWrite, archived };
   const $c = document.getElementById("tab-content");
   if (tab === "despesas") renderExpensesTab($c, ctx);
   else if (tab === "saldos") renderBalancesTab($c, ctx);
@@ -1308,8 +1357,9 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
   //  'write_all' edita qualquer uma; 'write_own' só as que criou; 'read'
   //  nenhuma. Sem permissão, o formulário abre em modo consulta (inerte).
   const myUid = session.user.id;
-  const canEdit = ctx.myRole === "write_all"
-    || (ctx.myRole === "write_own" && (!existing || existing.created_by === myUid));
+  const canEdit = !ctx.group.archived
+    && (ctx.myRole === "write_all"
+        || (ctx.myRole === "write_own" && (!existing || existing.created_by === myUid)));
   const readOnly = !canEdit;
 
   // pagadores/quotas do registo existente — vêm das tabelas próprias do molde
@@ -3238,24 +3288,33 @@ function renderRecurringSection($c, ctx) {
 
 function renderSettingsTab($c, ctx) {
   const { group, isOwner } = ctx;
+  const archived = !!group.archived;
+  // só o criador altera as definições — e um grupo em histórico fica congelado
+  const editable = isOwner && !archived;
   const selectedCats = groupCatIds(group); // null = todas
+
+  // contas saldadas? (todos os saldos a zero) — condição para passar a histórico
+  const settled = [...groupBalancesCents(ctx.members, ctx.expenses, ctx.payments).values()]
+    .every(c => c === 0);
 
   $c.innerHTML = `
     <div class="card">
       <h2>Definições do grupo</h2>
-      ${isOwner ? "" : `<p class="muted">Só quem criou o grupo pode alterar estas definições.</p>`}
+      ${archived
+        ? `<p class="muted">Grupo em histórico: as definições estão bloqueadas. Reativa-o em «Histórico», mais abaixo, para as poderes alterar.</p>`
+        : (isOwner ? "" : `<p class="muted">Só quem criou o grupo pode alterar estas definições.</p>`)}
       <form id="edit-group">
         <div class="row">
           <div class="field" style="flex:3;"><label>Nome</label>
-            <input name="name" value="${esc(group.name)}" ${isOwner ? "" : "disabled"} required /></div>
+            <input name="name" value="${esc(group.name)}" ${editable ? "" : "disabled"} required /></div>
           <div class="field"><label>Moeda</label>
-            <select name="currency" ${isOwner ? "" : "disabled"}>
+            <select name="currency" ${editable ? "" : "disabled"}>
               ${["EUR", "USD", "GBP", "BRL", "CHF"].map(c =>
                 `<option value="${c}" ${group.currency === c ? "selected" : ""}>${c}</option>`).join("")}
             </select></div>
         </div>
         <div class="field"><label>Descrição</label>
-          <textarea name="description" id="group-desc" rows="1" ${isOwner ? "" : "disabled"}>${esc(group.description || "")}</textarea></div>
+          <textarea name="description" id="group-desc" rows="1" ${editable ? "" : "disabled"}>${esc(group.description || "")}</textarea></div>
 
         <label class="toggle-card ${group.use_weights ? "on" : ""}" id="weights-card">
           <span class="toggle-card-ico" aria-hidden="true">⚖️</span>
@@ -3266,7 +3325,7 @@ function renderSettingsTab($c, ctx) {
               em partes iguais.</span>
           </span>
           <span class="switch">
-            <input type="checkbox" name="use_weights" ${group.use_weights ? "checked" : ""} ${isOwner ? "" : "disabled"} />
+            <input type="checkbox" name="use_weights" ${group.use_weights ? "checked" : ""} ${editable ? "" : "disabled"} />
             <span class="switch-track"><span class="switch-thumb"></span></span>
           </span>
         </label>
@@ -3286,24 +3345,36 @@ function renderSettingsTab($c, ctx) {
               ${CATEGORIES.map(c => {
                 const on = !selectedCats || selectedCats.includes(c.id);
                 return `<label class="cat-pick-item ${on ? "on" : ""}">
-                  <input type="checkbox" name="categories" value="${c.id}" ${on ? "checked" : ""} ${isOwner ? "" : "disabled"} />
+                  <input type="checkbox" name="categories" value="${c.id}" ${on ? "checked" : ""} ${editable ? "" : "disabled"} />
                   <span>${c.icon} ${esc(c.label)}</span>
                 </label>`;
               }).join("")}
             </div>
-            ${isOwner ? `<div class="cat-pick-actions">
+            ${editable ? `<div class="cat-pick-actions">
               <button type="button" class="secondary small" id="cats-all">Todas</button>
               <button type="button" class="secondary small" id="cats-none">Nenhuma</button>
             </div>` : ""}
           </div>
         </details>
 
-        ${isOwner ? `<button type="submit" id="btn-save-group" style="margin-top:.6rem;">Guardar definições</button>` : ""}
+        ${editable ? `<button type="submit" id="btn-save-group" style="margin-top:.6rem;">Guardar definições</button>` : ""}
       </form>
     </div>
     <div id="members-section"></div>
     <div id="recurring-section"></div>
     ${isOwner ? `
+    <div class="card">
+      <h2>Histórico</h2>
+      ${archived
+        ? `<p class="muted">Este grupo está em histórico: os dados estão congelados.
+             Reativa-o para voltar a lançar despesas, pagamentos e alterar membros.</p>
+           <button class="secondary" id="btn-unarchive">↩︎ Reativar grupo</button>`
+        : `<p class="muted">Quando o evento terminar e as contas estiverem saldadas, passa o
+             grupo a histórico. Fica visível numa lista compacta no ecrã principal, com os dados
+             bloqueados. Podes reativá-lo a qualquer momento.</p>
+           <button class="secondary" id="btn-archive" ${settled ? "" : "disabled"}>📕 Passar a histórico</button>
+           ${settled ? "" : `<p class="hint">Só podes passar a histórico com todas as contas saldadas (saldos a zero).</p>`}`}
+    </div>
     <div class="card">
       <h2>Zona de perigo</h2>
       <button class="danger" id="btn-del-group">Apagar grupo e todas as despesas</button>
@@ -3340,6 +3411,25 @@ function renderSettingsTab($c, ctx) {
 
   if (!isOwner) return;
 
+  // passar a histórico / reativar — só o criador. Disponível mesmo com o
+  // grupo já arquivado (é onde vive o botão de reativar).
+  $c.querySelector("#btn-archive")?.addEventListener("click", async () => {
+    if (!confirm(`Passar «${group.name}» a histórico? Os dados ficam bloqueados até reativares.`)) return;
+    const { error } = await sb.from("groups").update({ archived: true }).eq("id", group.id);
+    if (error) return toast(/archived/i.test(error.message)
+      ? "Histórico indisponível — corre o schema.sql mais recente no Supabase" : error.message, true);
+    toast("Grupo passado a histórico 📕");
+    refresh();
+  });
+  $c.querySelector("#btn-unarchive")?.addEventListener("click", async () => {
+    const { error } = await sb.from("groups").update({ archived: false }).eq("id", group.id);
+    if (error) return toast(error.message, true);
+    toast("Grupo reativado");
+    refresh();
+  });
+
+  // as definições em si só se editam com o grupo ativo (não em histórico)
+  if (editable) {
   // ligar/desligar a checkbox mostra logo (ou esconde) os pesos nos
   // membros em baixo, sem esperar pelo «Guardar definições»; e acende o cartão
   $c.querySelector('input[name="use_weights"]').onchange = (e) => {
@@ -3385,6 +3475,7 @@ function renderSettingsTab($c, ctx) {
     toast("Grupo atualizado");
     refresh();
   };
+  } // fim do bloco editable
 
   document.getElementById("btn-del-group").onclick = async () => {
     if (!confirm(`Apagar o grupo «${group.name}» e TODAS as despesas? Não há volta atrás.`)) return;
