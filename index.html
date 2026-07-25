@@ -16,7 +16,7 @@
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="#/"><img class="brand-ico" src="icons/icon-mark.png" alt="" width="26" height="26" /> SplitWisely</a>
+    <a class="brand" href="#/"><img class="brand-ico" src="icons/icon-mark.webp" alt="" width="26" height="26" /> SplitWisely</a>
     <div class="topbar-right" id="topbar-user"></div>
   </header>
 
@@ -24,7 +24,7 @@
 
   <!-- Ecrã de arranque: fica por cima de tudo enquanto os dados carregam -->
   <div id="splash" class="splash">
-    <div class="splash-brand"><img src="icons/icon-512.png" alt="SplitWisely" /></div>
+    <div class="splash-brand"><img src="icons/icon-splash.webp" alt="SplitWisely" width="384" height="384" fetchpriority="high" /></div>
     <div class="spinner" role="status" aria-label="A carregar"></div>
   </div>
 
@@ -36,11 +36,23 @@
   <script src="app.js"></script>
   <script>
     if ("serviceWorker" in navigator) {
-      // Procurar uma versão nova a cada 60s. Com skipWaiting()+clients.claim()
-      // no sw.js e o fetch network-first sem cache HTTP, a versão nova passa a
-      // entrar sozinha — sem ter de limpar a cache à mão (mesmo padrão do SplitBill).
+      // O sw.js serve a app da cache (arranque instantâneo) e revalida em
+      // segundo plano. Aqui só lhe pedimos que procure versões novas: ao
+      // arrancar, sempre que a app volta a ficar visível e de 5 em 5 minutos
+      // se ficar aberta. Quando encontra, avisa o app.js por postMessage e a
+      // versão nova entra sozinha — sem limpar a cache à mão.
+      const checkUpdate = (reg) => {
+        reg.update().catch(() => {});
+        navigator.serviceWorker.controller?.postMessage({ type: "check-update" });
+      };
       navigator.serviceWorker.register("sw.js")
-        .then((reg) => { setInterval(() => reg.update().catch(() => {}), 60000); })
+        .then((reg) => {
+          checkUpdate(reg);
+          setInterval(() => checkUpdate(reg), 300000);
+          document.addEventListener("visibilitychange", () => {
+            if (document.visibilityState === "visible") checkUpdate(reg);
+          });
+        })
         .catch(() => {});
     }
     // iOS Safari ignora "user-scalable=no": bloquear o pinch-zoom
