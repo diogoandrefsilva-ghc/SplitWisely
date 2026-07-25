@@ -313,16 +313,6 @@ alter table splitwisely.expenses
 alter table splitwisely.expenses
   add column if not exists category text;
 
--- backfill: despesas antigas com as partes todas iguais (± arredondamento
--- de cêntimos) passam a 'equal' — o resultado é o mesmo, mas reabrem no
--- modo «Partes iguais» em vez de «Exatos»
-update splitwisely.expenses e
-   set split_mode = 'equal'
- where e.split_mode = 'exact'
-   and (select max(s.amount) - min(s.amount)
-          from splitwisely.expense_shares s
-         where s.expense_id = e.id) <= 0.01;
-
 -- Quem pagou (uma ou mais pessoas)
 create table if not exists splitwisely.expense_payers (
   expense_id uuid not null references splitwisely.expenses (id) on delete cascade,
@@ -338,6 +328,19 @@ create table if not exists splitwisely.expense_shares (
   amount numeric(12,2) not null check (amount >= 0),
   primary key (expense_id, member_id)
 );
+
+-- backfill: despesas antigas com as partes todas iguais (± arredondamento
+-- de cêntimos) passam a 'equal' — o resultado é o mesmo, mas reabrem no
+-- modo «Partes iguais» em vez de «Exatos».
+-- Fica aqui, depois de expense_shares existir: estava mais acima, e numa
+-- base de dados nova a 1.ª passagem do ficheiro rebentava com «relation
+-- splitwisely.expense_shares does not exist».
+update splitwisely.expenses e
+   set split_mode = 'equal'
+ where e.split_mode = 'exact'
+   and (select max(s.amount) - min(s.amount)
+          from splitwisely.expense_shares s
+         where s.expense_id = e.id) <= 0.01;
 
 -- Fatura repartida por várias categorias (opcional). Cada linha aloca uma
 -- parte do valor da despesa a uma categoria; a soma das linhas iguala o
@@ -403,6 +406,22 @@ as $$
     select 1 from group_members m
     where m.group_id = gid and m.user_id = auth.uid()
   );
+$$;
+
+-- Ids dos grupos a que o utilizador tem acesso, como CONJUNTO.
+-- Mesma definição do has_group_access(), mas devolvida de uma vez: nas
+-- tabelas que têm group_id próprio (expenses, payments, group_members) isto
+-- deixa o planeador resolver a RLS com um hash único em vez de chamar a
+-- função linha a linha. Medido num grupo com 3000 despesas: a leitura das
+-- despesas passou de 47 ms para 1,4 ms.
+create or replace function splitwisely.my_group_ids()
+returns setof uuid
+language sql stable security definer
+set search_path = splitwisely
+as $$
+  select id from groups where created_by = auth.uid()
+  union
+  select group_id from group_members where user_id = auth.uid();
 $$;
 
 create or replace function splitwisely.expense_group(eid uuid)
@@ -500,6 +519,25 @@ $$;
 
 -- ---------- ROW LEVEL SECURITY ----------
 -- Tudo gated por can_use(): quem não está aprovado não vê nem escreve nada.
+--
+-- DUAS REGRAS DE DESEMPENHO, aprendidas a medir um grupo com 3000 despesas
+-- (18000 quotas), onde abrir o grupo demorava 5 a 7 segundos:
+--
+--  1. As policies de escrita são `for insert` / `for update` / `for delete`,
+--     NUNCA `for all`. Com `for all`, a condição USING da policy de escrita
+--     é avaliada TAMBÉM em cada SELECT (as policies permissivas somam-se por
+--     OR) — ou seja, ler as quotas obrigava a correr o can_write_expense(),
+--     a função mais cara do schema, uma vez por linha. Só isto levava a
+--     leitura das quotas de 5149 ms para 320 ms.
+--
+--  2. As funções que não dependem da linha — can_use(), is_admin() — vão
+--     dentro de `(select ...)`. Uma função STABLE dentro de um filtro de RLS
+--     é reavaliada linha a linha; num sub-select vira InitPlan e corre uma
+--     vez por query. Dos 320 ms para 213 ms.
+--
+-- Nenhuma das duas muda quem vê o quê — só como o Postgres avalia a mesma
+-- condição. Total: leitura de um grupo de 3000 despesas de ~5185 ms para
+-- ~218 ms.
 alter table splitwisely.settings       enable row level security;
 alter table splitwisely.profiles       enable row level security;
 alter table splitwisely.groups         enable row level security;
@@ -518,7 +556,7 @@ alter table splitwisely.payments       enable row level security;
 drop policy if exists "profiles_select" on splitwisely.profiles;
 create policy "profiles_select" on splitwisely.profiles
   for select to authenticated
-  using (id = auth.uid() or splitwisely.is_admin());
+  using (id = (select auth.uid()) or (select splitwisely.is_admin()));
 
 drop policy if exists "profiles_update_own" on splitwisely.profiles;
 create policy "profiles_update_own" on splitwisely.profiles
@@ -533,8 +571,8 @@ create policy "profiles_update_own" on splitwisely.profiles
 drop policy if exists "groups_select" on splitwisely.groups;
 create policy "groups_select" on splitwisely.groups
   for select to authenticated
-  using (splitwisely.can_use()
-         and (created_by = auth.uid() or splitwisely.has_group_access(id)));
+  using ((select splitwisely.can_use())
+         and (created_by = (select auth.uid()) or splitwisely.has_group_access(id)));
 
 drop policy if exists "groups_insert" on splitwisely.groups;
 create policy "groups_insert" on splitwisely.groups
@@ -559,14 +597,29 @@ drop policy if exists "members_all" on splitwisely.group_members;
 drop policy if exists "members_select" on splitwisely.group_members;
 create policy "members_select" on splitwisely.group_members
   for select to authenticated
-  using (splitwisely.can_use() and splitwisely.has_group_access(group_id));
+  using ((select splitwisely.can_use())
+         and group_id in (select splitwisely.my_group_ids()));
+-- escrita separada por comando (ver regra 1 acima)
 drop policy if exists "members_write" on splitwisely.group_members;
-create policy "members_write" on splitwisely.group_members
-  for all to authenticated
+drop policy if exists "members_insert" on splitwisely.group_members;
+drop policy if exists "members_update" on splitwisely.group_members;
+drop policy if exists "members_delete" on splitwisely.group_members;
+create policy "members_insert" on splitwisely.group_members
+  for insert to authenticated
+  with check (splitwisely.can_use() and splitwisely.has_group_access(group_id)
+         and not splitwisely.group_archived(group_id)
+         and splitwisely.my_role(group_id) in ('write_own', 'write_all'));
+create policy "members_update" on splitwisely.group_members
+  for update to authenticated
   using (splitwisely.can_use() and splitwisely.has_group_access(group_id)
          and not splitwisely.group_archived(group_id)
          and splitwisely.my_role(group_id) in ('write_own', 'write_all'))
   with check (splitwisely.can_use() and splitwisely.has_group_access(group_id)
+         and not splitwisely.group_archived(group_id)
+         and splitwisely.my_role(group_id) in ('write_own', 'write_all'));
+create policy "members_delete" on splitwisely.group_members
+  for delete to authenticated
+  using (splitwisely.can_use() and splitwisely.has_group_access(group_id)
          and not splitwisely.group_archived(group_id)
          and splitwisely.my_role(group_id) in ('write_own', 'write_all'));
 
@@ -577,7 +630,8 @@ drop policy if exists "expenses_all" on splitwisely.expenses;  -- policy antiga 
 drop policy if exists "expenses_select" on splitwisely.expenses;
 create policy "expenses_select" on splitwisely.expenses
   for select to authenticated
-  using (splitwisely.can_use() and splitwisely.has_group_access(group_id));
+  using ((select splitwisely.can_use())
+         and group_id in (select splitwisely.my_group_ids()));
 
 drop policy if exists "expenses_insert" on splitwisely.expenses;
 create policy "expenses_insert" on splitwisely.expenses
@@ -612,45 +666,93 @@ drop policy if exists "payers_all" on splitwisely.expense_payers;
 drop policy if exists "payers_select" on splitwisely.expense_payers;
 create policy "payers_select" on splitwisely.expense_payers
   for select to authenticated
-  using (splitwisely.can_use() and splitwisely.has_group_access(splitwisely.expense_group(expense_id)));
+  using ((select splitwisely.can_use())
+         and splitwisely.has_group_access(splitwisely.expense_group(expense_id)));
+-- escrita separada por comando: com `for all`, este USING seria
+-- avaliado tambem em cada SELECT (ver regra 1 no topo da seccao)
 drop policy if exists "payers_write" on splitwisely.expense_payers;
-create policy "payers_write" on splitwisely.expense_payers
-  for all to authenticated
+drop policy if exists "payers_insert" on splitwisely.expense_payers;
+drop policy if exists "payers_update" on splitwisely.expense_payers;
+drop policy if exists "payers_delete" on splitwisely.expense_payers;
+create policy "payers_insert" on splitwisely.expense_payers
+  for insert to authenticated
+  with check (splitwisely.can_use() and splitwisely.can_write_expense(expense_id));
+create policy "payers_update" on splitwisely.expense_payers
+  for update to authenticated
   using (splitwisely.can_use() and splitwisely.can_write_expense(expense_id))
   with check (splitwisely.can_use() and splitwisely.can_write_expense(expense_id));
+create policy "payers_delete" on splitwisely.expense_payers
+  for delete to authenticated
+  using (splitwisely.can_use() and splitwisely.can_write_expense(expense_id));
 
 drop policy if exists "shares_all" on splitwisely.expense_shares;
 drop policy if exists "shares_select" on splitwisely.expense_shares;
 create policy "shares_select" on splitwisely.expense_shares
   for select to authenticated
-  using (splitwisely.can_use() and splitwisely.has_group_access(splitwisely.expense_group(expense_id)));
+  using ((select splitwisely.can_use())
+         and splitwisely.has_group_access(splitwisely.expense_group(expense_id)));
+-- escrita separada por comando: com `for all`, este USING seria
+-- avaliado tambem em cada SELECT (ver regra 1 no topo da seccao)
 drop policy if exists "shares_write" on splitwisely.expense_shares;
-create policy "shares_write" on splitwisely.expense_shares
-  for all to authenticated
+drop policy if exists "shares_insert" on splitwisely.expense_shares;
+drop policy if exists "shares_update" on splitwisely.expense_shares;
+drop policy if exists "shares_delete" on splitwisely.expense_shares;
+create policy "shares_insert" on splitwisely.expense_shares
+  for insert to authenticated
+  with check (splitwisely.can_use() and splitwisely.can_write_expense(expense_id));
+create policy "shares_update" on splitwisely.expense_shares
+  for update to authenticated
   using (splitwisely.can_use() and splitwisely.can_write_expense(expense_id))
   with check (splitwisely.can_use() and splitwisely.can_write_expense(expense_id));
+create policy "shares_delete" on splitwisely.expense_shares
+  for delete to authenticated
+  using (splitwisely.can_use() and splitwisely.can_write_expense(expense_id));
 
 drop policy if exists "expense_categories_all" on splitwisely.expense_categories;
 drop policy if exists "expense_categories_select" on splitwisely.expense_categories;
 create policy "expense_categories_select" on splitwisely.expense_categories
   for select to authenticated
-  using (splitwisely.can_use() and splitwisely.has_group_access(splitwisely.expense_group(expense_id)));
+  using ((select splitwisely.can_use())
+         and splitwisely.has_group_access(splitwisely.expense_group(expense_id)));
+-- escrita separada por comando: com `for all`, este USING seria
+-- avaliado tambem em cada SELECT (ver regra 1 no topo da seccao)
 drop policy if exists "expense_categories_write" on splitwisely.expense_categories;
-create policy "expense_categories_write" on splitwisely.expense_categories
-  for all to authenticated
+drop policy if exists "expense_categories_insert" on splitwisely.expense_categories;
+drop policy if exists "expense_categories_update" on splitwisely.expense_categories;
+drop policy if exists "expense_categories_delete" on splitwisely.expense_categories;
+create policy "expense_categories_insert" on splitwisely.expense_categories
+  for insert to authenticated
+  with check (splitwisely.can_use() and splitwisely.can_write_expense(expense_id));
+create policy "expense_categories_update" on splitwisely.expense_categories
+  for update to authenticated
   using (splitwisely.can_use() and splitwisely.can_write_expense(expense_id))
   with check (splitwisely.can_use() and splitwisely.can_write_expense(expense_id));
+create policy "expense_categories_delete" on splitwisely.expense_categories
+  for delete to authenticated
+  using (splitwisely.can_use() and splitwisely.can_write_expense(expense_id));
 
 drop policy if exists "expense_category_shares_all" on splitwisely.expense_category_shares;
 drop policy if exists "expense_category_shares_select" on splitwisely.expense_category_shares;
 create policy "expense_category_shares_select" on splitwisely.expense_category_shares
   for select to authenticated
-  using (splitwisely.can_use() and splitwisely.has_group_access(splitwisely.expense_group(expense_id)));
+  using ((select splitwisely.can_use())
+         and splitwisely.has_group_access(splitwisely.expense_group(expense_id)));
+-- escrita separada por comando: com `for all`, este USING seria
+-- avaliado tambem em cada SELECT (ver regra 1 no topo da seccao)
 drop policy if exists "expense_category_shares_write" on splitwisely.expense_category_shares;
-create policy "expense_category_shares_write" on splitwisely.expense_category_shares
-  for all to authenticated
+drop policy if exists "expense_category_shares_insert" on splitwisely.expense_category_shares;
+drop policy if exists "expense_category_shares_update" on splitwisely.expense_category_shares;
+drop policy if exists "expense_category_shares_delete" on splitwisely.expense_category_shares;
+create policy "expense_category_shares_insert" on splitwisely.expense_category_shares
+  for insert to authenticated
+  with check (splitwisely.can_use() and splitwisely.can_write_expense(expense_id));
+create policy "expense_category_shares_update" on splitwisely.expense_category_shares
+  for update to authenticated
   using (splitwisely.can_use() and splitwisely.can_write_expense(expense_id))
   with check (splitwisely.can_use() and splitwisely.can_write_expense(expense_id));
+create policy "expense_category_shares_delete" on splitwisely.expense_category_shares
+  for delete to authenticated
+  using (splitwisely.can_use() and splitwisely.can_write_expense(expense_id));
 
 -- Pagamentos: leitura com acesso ao grupo; registar/apagar só quem pode
 -- escrever (role 'write_own' ou 'write_all' — 'read' não mexe nos acertos).
@@ -658,14 +760,28 @@ drop policy if exists "payments_all" on splitwisely.payments;
 drop policy if exists "payments_select" on splitwisely.payments;
 create policy "payments_select" on splitwisely.payments
   for select to authenticated
-  using (splitwisely.can_use() and splitwisely.has_group_access(group_id));
+  using ((select splitwisely.can_use())
+         and group_id in (select splitwisely.my_group_ids()));
 drop policy if exists "payments_write" on splitwisely.payments;
-create policy "payments_write" on splitwisely.payments
-  for all to authenticated
+drop policy if exists "payments_insert" on splitwisely.payments;
+drop policy if exists "payments_update" on splitwisely.payments;
+drop policy if exists "payments_delete" on splitwisely.payments;
+create policy "payments_insert" on splitwisely.payments
+  for insert to authenticated
+  with check (splitwisely.can_use() and splitwisely.has_group_access(group_id)
+         and not splitwisely.group_archived(group_id)
+         and splitwisely.my_role(group_id) in ('write_own', 'write_all'));
+create policy "payments_update" on splitwisely.payments
+  for update to authenticated
   using (splitwisely.can_use() and splitwisely.has_group_access(group_id)
          and not splitwisely.group_archived(group_id)
          and splitwisely.my_role(group_id) in ('write_own', 'write_all'))
   with check (splitwisely.can_use() and splitwisely.has_group_access(group_id)
+         and not splitwisely.group_archived(group_id)
+         and splitwisely.my_role(group_id) in ('write_own', 'write_all'));
+create policy "payments_delete" on splitwisely.payments
+  for delete to authenticated
+  using (splitwisely.can_use() and splitwisely.has_group_access(group_id)
          and not splitwisely.group_archived(group_id)
          and splitwisely.my_role(group_id) in ('write_own', 'write_all'));
 
@@ -871,23 +987,47 @@ drop policy if exists "recurring_payers_all" on splitwisely.recurring_expense_pa
 drop policy if exists "recurring_payers_select" on splitwisely.recurring_expense_payers;
 create policy "recurring_payers_select" on splitwisely.recurring_expense_payers
   for select to authenticated
-  using (splitwisely.can_use() and splitwisely.has_group_access(splitwisely.recurring_group(recurring_id)));
+  using ((select splitwisely.can_use())
+         and splitwisely.has_group_access(splitwisely.recurring_group(recurring_id)));
+-- escrita separada por comando: com `for all`, este USING seria
+-- avaliado tambem em cada SELECT (ver regra 1 no topo da seccao)
 drop policy if exists "recurring_payers_write" on splitwisely.recurring_expense_payers;
-create policy "recurring_payers_write" on splitwisely.recurring_expense_payers
-  for all to authenticated
+drop policy if exists "recurring_payers_insert" on splitwisely.recurring_expense_payers;
+drop policy if exists "recurring_payers_update" on splitwisely.recurring_expense_payers;
+drop policy if exists "recurring_payers_delete" on splitwisely.recurring_expense_payers;
+create policy "recurring_payers_insert" on splitwisely.recurring_expense_payers
+  for insert to authenticated
+  with check (splitwisely.can_use() and splitwisely.can_write_recurring(recurring_id));
+create policy "recurring_payers_update" on splitwisely.recurring_expense_payers
+  for update to authenticated
   using (splitwisely.can_use() and splitwisely.can_write_recurring(recurring_id))
   with check (splitwisely.can_use() and splitwisely.can_write_recurring(recurring_id));
+create policy "recurring_payers_delete" on splitwisely.recurring_expense_payers
+  for delete to authenticated
+  using (splitwisely.can_use() and splitwisely.can_write_recurring(recurring_id));
 
 drop policy if exists "recurring_shares_all" on splitwisely.recurring_expense_shares;
 drop policy if exists "recurring_shares_select" on splitwisely.recurring_expense_shares;
 create policy "recurring_shares_select" on splitwisely.recurring_expense_shares
   for select to authenticated
-  using (splitwisely.can_use() and splitwisely.has_group_access(splitwisely.recurring_group(recurring_id)));
+  using ((select splitwisely.can_use())
+         and splitwisely.has_group_access(splitwisely.recurring_group(recurring_id)));
+-- escrita separada por comando: com `for all`, este USING seria
+-- avaliado tambem em cada SELECT (ver regra 1 no topo da seccao)
 drop policy if exists "recurring_shares_write" on splitwisely.recurring_expense_shares;
-create policy "recurring_shares_write" on splitwisely.recurring_expense_shares
-  for all to authenticated
+drop policy if exists "recurring_shares_insert" on splitwisely.recurring_expense_shares;
+drop policy if exists "recurring_shares_update" on splitwisely.recurring_expense_shares;
+drop policy if exists "recurring_shares_delete" on splitwisely.recurring_expense_shares;
+create policy "recurring_shares_insert" on splitwisely.recurring_expense_shares
+  for insert to authenticated
+  with check (splitwisely.can_use() and splitwisely.can_write_recurring(recurring_id));
+create policy "recurring_shares_update" on splitwisely.recurring_expense_shares
+  for update to authenticated
   using (splitwisely.can_use() and splitwisely.can_write_recurring(recurring_id))
   with check (splitwisely.can_use() and splitwisely.can_write_recurring(recurring_id));
+create policy "recurring_shares_delete" on splitwisely.recurring_expense_shares
+  for delete to authenticated
+  using (splitwisely.can_use() and splitwisely.can_write_recurring(recurring_id));
 
 create index if not exists idx_recurring_group   on splitwisely.recurring_expenses (group_id);
 create index if not exists idx_rec_payers         on splitwisely.recurring_expense_payers (recurring_id);
