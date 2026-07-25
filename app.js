@@ -586,6 +586,56 @@ function renderWaiting() {
 }
 
 // ---------------------------------------------------------------- dados
+
+// ---- o que o cálculo de saldos precisa de ler ----------------------------
+// O exactShareCents() escolhe o ramo de cálculo consoante os campos que a
+// despesa traz: com a divisão por categoria recalcula a fração exata de cada
+// pessoa; sem ela cai nos cêntimos gravados (já arredondados). Ou seja, duas
+// vistas que peçam colunas diferentes calculam saldos diferentes para as
+// MESMAS despesas — era o que acontecia entre a home e a página do grupo.
+//
+// Por isso a lista de tabelas-filhas vive aqui, num sítio só, e as duas
+// vistas usam-na. Os níveis existem apenas para degradar em schemas antigos
+// que ainda não tenham as tabelas da divisão por categoria — e degradam da
+// mesma maneira nos dois lados, portanto continuam a bater certo.
+const BALANCE_JOINS = [
+  "expense_payers(member_id, amount), expense_shares(member_id, amount)",
+  "expense_categories(category, amount)",
+  "expense_category_shares(category, member_id, amount)",
+];
+function balanceJoins(level) {
+  return BALANCE_JOINS.slice(0, level + 1).join(", ");
+}
+
+// Corre uma query de despesas descendo de escalão quando o schema ainda não
+// tem as tabelas da divisão por categoria (ou a coluna split_mode).
+// `build(level, withMode)` devolve a query pronta a aguardar.
+async function selectExpensesDegrading(build) {
+  let r = await build(2, true);
+  if (r.error && /expense_category_shares/i.test(r.error.message)) r = await build(1, true);
+  if (r.error && /expense_categories/i.test(r.error.message)) r = await build(0, true);
+  // sem split_mode as despesas caem no modo 'exact' (valores gravados) — nas
+  // duas vistas ao mesmo tempo, porque nenhuma delas passa a ter a coluna
+  if (r.error && /split_mode/i.test(r.error.message)) r = await build(0, false);
+  return r;
+}
+
+// Traz TODAS as linhas de uma query, aos pedaços. O PostgREST corta a
+// resposta no `max-rows` do projeto (1000 por omissão em muitos) sem dar
+// erro — e um corte silencioso a meio das despesas dava saldos errados,
+// diferentes entre a home (que pede as despesas de todos os grupos de uma
+// vez, logo bate no limite muito antes) e a página do grupo.
+const PAGE = 1000;
+async function fetchAllRows(build) {
+  const out = [];
+  for (let from = 0; ; from += PAGE) {
+    const r = await build(from, from + PAGE - 1);
+    if (r.error) return { data: null, error: r.error };
+    out.push(...r.data);
+    if (r.data.length < PAGE) return { data: out, error: null };
+  }
+}
+
 async function fetchGroups() {
   const { data, error } = await sb.from("groups")
     .select("*").order("created_at", { ascending: false });
@@ -595,33 +645,32 @@ async function fetchGroups() {
 }
 
 async function fetchGroupBundle(groupId) {
-  // nível 2: + divisão por categoria (quem participa em cada);
-  // nível 1: + repartição do valor por categoria; nível 0: base
-  const expenseSelect = (level) => {
-    let sel = "*, expense_payers(member_id, amount), expense_shares(member_id, amount)";
-    if (level >= 1) sel += ", expense_categories(category, amount)";
-    if (level >= 2) sel += ", expense_category_shares(category, member_id, amount)";
-    return sb.from("expenses").select(sel)
-      .eq("group_id", groupId)
-      .order("expense_date", { ascending: false })
-      .order("created_at", { ascending: false });
-  };
+  // as colunas do cálculo vêm do balanceJoins() — as mesmas que a home usa
+  const expenseSelect = (level) =>
+    fetchAllRows((from, to) =>
+      sb.from("expenses").select(`*, ${balanceJoins(level)}`)
+        .eq("group_id", groupId)
+        .order("expense_date", { ascending: false })
+        .order("created_at", { ascending: false })
+        .order("id")                       // desempate estável para a paginação
+        .range(from, to));
   let [g, m, e, p, r] = await Promise.all([
     sb.from("groups").select("*").eq("id", groupId).single(),
-    sb.from("group_members").select("*").eq("group_id", groupId).order("created_at"),
-    expenseSelect(2),
-    sb.from("payments").select("*").eq("group_id", groupId)
-      .order("payment_date", { ascending: false })
-      .order("created_at", { ascending: false }),
+    fetchAllRows((from, to) =>
+      sb.from("group_members").select("*").eq("group_id", groupId)
+        .order("created_at").order("id").range(from, to)),
+    selectExpensesDegrading(expenseSelect),
+    fetchAllRows((from, to) =>
+      sb.from("payments").select("*").eq("group_id", groupId)
+        .order("payment_date", { ascending: false })
+        .order("created_at", { ascending: false })
+        .order("id")
+        .range(from, to)),
     sb.from("recurring_expenses")
       .select("*, recurring_expense_payers(member_id, amount), recurring_expense_shares(member_id, amount)")
       .eq("group_id", groupId)
       .order("created_at"),
   ]);
-  // degrada por escalões conforme o schema: sem a tabela da divisão por
-  // categoria cai para a repartição só; sem esta, cai para o base
-  if (e.error && /expense_category_shares/i.test(e.error.message)) e = await expenseSelect(1);
-  if (e.error && /expense_categories/i.test(e.error.message)) e = await expenseSelect(0);
   for (const rr of [g, m, e]) if (rr.error) throw rr.error;
   // payments e recurring podem ainda não existir (schema antigo por atualizar):
   // degrada sem partir a app, só sem essas funcionalidades.
@@ -738,19 +787,32 @@ async function renderAdmin() {
 
 // Saldo do utilizador em cada grupo onde é membro e última atividade
 // (despesa/pagamento mais recente) de cada grupo, para o resumo da home.
-// 3 queries no total, a RLS filtra pelos grupos a que tem acesso.
+// A RLS filtra pelos grupos a que tem acesso.
+//
+// As despesas são pedidas com EXATAMENTE as mesmas tabelas-filhas que a
+// página do grupo (balanceJoins) e passam pelo mesmo groupBalancesCents():
+// para o mesmo universo de despesas, o saldo que aparece aqui é o mesmo que
+// aparece lá dentro. Antes faltavam aqui as tabelas da divisão por categoria
+// e essas despesas eram somadas pelos cêntimos já arredondados — o desvio
+// acumulava despesa após despesa e as duas vistas divergiam.
 async function fetchMyGroupBalances() {
   const uid = session.user.id;
-  const [m, e0, p] = await Promise.all([
-    sb.from("group_members").select("id, group_id, user_id"),
-    sb.from("expenses").select("group_id, created_at, amount, split_mode, expense_payers(member_id, amount), expense_shares(member_id, amount)"),
-    sb.from("payments").select("group_id, created_at, from_member, to_member, amount"),
+  const expenseSelect = (level, withMode) =>
+    fetchAllRows((from, to) =>
+      sb.from("expenses")
+        .select(`group_id, created_at, amount${withMode ? ", split_mode" : ""}, ${balanceJoins(level)}`)
+        .order("id")                       // desempate estável para a paginação
+        .range(from, to));
+  const [m, e, p] = await Promise.all([
+    // paginado como o resto: o roundPreservingSum final corre sobre os
+    // membros do grupo, e uma lista truncada dava saldos errados
+    fetchAllRows((from, to) =>
+      sb.from("group_members").select("id, group_id, user_id").order("id").range(from, to)),
+    selectExpensesDegrading(expenseSelect),
+    fetchAllRows((from, to) =>
+      sb.from("payments").select("group_id, created_at, from_member, to_member, amount")
+        .order("id").range(from, to)),
   ]);
-  // schemas antigos sem a coluna split_mode: repete o pedido sem ela e as
-  // despesas caem no modo 'exact' (valores gravados) no apuramento
-  const e = e0.error
-    ? await sb.from("expenses").select("group_id, created_at, amount, expense_payers(member_id, amount), expense_shares(member_id, amount)")
-    : e0;
   if (m.error || e.error) return { balances: {}, activity: {} };
   const pays = p.error ? [] : p.data;
 
