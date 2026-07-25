@@ -621,11 +621,18 @@ async function selectExpensesDegrading(build) {
 }
 
 // Traz TODAS as linhas de uma query, aos pedaços. O PostgREST corta a
-// resposta no `max-rows` do projeto (1000 por omissão em muitos) sem dar
-// erro — e um corte silencioso a meio das despesas dava saldos errados,
-// diferentes entre a home (que pede as despesas de todos os grupos de uma
-// vez, logo bate no limite muito antes) e a página do grupo.
-const PAGE = 1000;
+// resposta no `max-rows` do projeto sem dar erro — e um corte silencioso a
+// meio das despesas dava saldos errados, diferentes entre a home (que pede
+// as despesas de todos os grupos de uma vez, logo bate no limite muito
+// antes) e a página do grupo.
+//
+// INVARIANTE: PAGE tem de ser MENOR do que o `max-rows` configurado no
+// Supabase (hoje 10000). A paragem do ciclo é "veio menos do que pedi, logo
+// acabou" — se PAGE fosse igual ou maior que o max-rows, uma página cheia
+// cortada pelo servidor parecia o fim dos dados e voltávamos a truncar em
+// silêncio. Se algum dia baixares o max-rows abaixo de 5000, baixa isto
+// também. Com 5000 a esmagadora maioria dos casos resolve-se num só pedido.
+const PAGE = 5000;
 async function fetchAllRows(build) {
   const out = [];
   for (let from = 0; ; from += PAGE) {
