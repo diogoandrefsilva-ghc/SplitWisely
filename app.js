@@ -513,7 +513,7 @@ function renderLogin() {
   $topbarUser.innerHTML = "";
   $app.innerHTML = `
     <div class="card login-box" style="max-width:460px;margin:2rem auto;">
-      <div class="brand-big"><img src="icons/icon-512.png" alt="SplitWisely" /></div>
+      <div class="brand-big"><img src="icons/icon-splash.webp" alt="SplitWisely" width="384" height="384" /></div>
       <p class="muted">Grupos, eventos e despesas partilhadas — quem pagou o quê e quem deve a quem.</p>
       <button class="btn-google" id="btn-google">
         <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#FFC107" d="M43.6 20.1H42V20H24v8h11.3C33.7 32.7 29.3 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.9 1.2 8 3l5.7-5.7C34.3 6.1 29.4 4 24 4 13 4 4 13 4 24s9 20 20 20 20-9 20-20c0-1.3-.1-2.6-.4-3.9z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.9 1.2 8 3l5.7-5.7C34.3 6.1 29.4 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.3 0-9.7-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.1H42V20H24v8h11.3c-.8 2.2-2.2 4.1-4.1 5.5l6.2 5.2C41.3 34.9 44 30 44 24c0-1.3-.1-2.6-.4-3.9z"/></svg>
@@ -571,8 +571,13 @@ function renderWaiting() {
     </div>`;
   document.getElementById("btn-recheck").onclick = async () => {
     await initProfile();
-    if (canUse()) { toast("Conta aprovada 🎉"); route(); }
-    else toast("Ainda não foi aprovada");
+    if (canUse()) {
+      toast("Conta aprovada 🎉");
+      await route();
+      // acabou de ganhar acesso: agora sim, ligar convites e gerar recorrentes
+      choresRun = false;
+      runStartupChores();
+    } else toast("Ainda não foi aprovada");
   };
   document.getElementById("btn-waiting-logout").onclick = async () => {
     await sb.auth.signOut();
@@ -3490,8 +3495,9 @@ function renderSettingsTab($c, ctx) {
 
 // Garante o perfil no schema splitwisely (RPC ensure_profile — não há
 // trigger em auth.users porque o projeto Supabase é partilhado por
-// várias apps; quem foi convidado por email entra já aprovado) e liga os
-// convites por email aos grupos se a conta estiver aprovada.
+// várias apps; quem foi convidado por email entra já aprovado). É a única
+// coisa que a 1.ª vista precisa de saber do servidor antes de desenhar
+// (o canUse() decide entre a app e o ecrã «à espera de aprovação»).
 async function initProfile() {
   const { data, error } = await sb.rpc("ensure_profile");
   if (error) {
@@ -3501,17 +3507,62 @@ async function initProfile() {
     return;
   }
   profile = data;
-  if (canUse()) {
+}
+
+// Tarefas de arranque que NÃO são precisas para desenhar a 1.ª vista:
+// ligar aos grupos os convites feitos por email (claim_memberships) e
+// materializar as despesas recorrentes em atraso (generate_due_recurring).
+// Corriam em série dentro do initProfile(), antes de qualquer render — duas
+// idas ao servidor a segurar o arranque, sendo que a segunda percorre mês a
+// mês todos os moldes ativos em cada abertura da app. Agora correm depois de
+// a 1.ª vista já estar no ecrã e, se mexeram mesmo em dados, a vista é
+// redesenhada por cima. O cálculo é exatamente o mesmo — muda só o momento
+// em que estes dados entram (e no caso normal, sem nada por ligar nem por
+// gerar, não muda nada de todo).
+let choresRun = false;
+async function runStartupChores() {
+  if (choresRun || !canUse()) return;
+  choresRun = true;
+  let changed = false;
+
+  // correm fora do caminho crítico e ninguém espera por elas: se falharem
+  // (rede em baixo, schema antigo) ficam para a próxima abertura, em silêncio
+  try {
     const { data: n } = await sb.rpc("claim_memberships");
-    if (n > 0) toast(`Foste ligado a ${n} grupo${n === 1 ? "" : "s"} onde te tinham convidado 🎉`);
-    // Materializa despesas recorrentes em atraso (idempotente). Sem servidor:
-    // corre sempre que alguém abre a app. Degrada em silêncio se a RPC ainda
-    // não existir (schema antigo por atualizar).
-    try {
-      const { data: gen } = await sb.rpc("generate_due_recurring");
-      if (gen > 0) toast(`${gen} despesa${gen === 1 ? "" : "s"} recorrente${gen === 1 ? "" : "s"} lançada${gen === 1 ? "" : "s"} 🔁`);
-    } catch (_) { /* schema sem recorrentes */ }
-  }
+    if (n > 0) {
+      changed = true;
+      toast(`Foste ligado a ${n} grupo${n === 1 ? "" : "s"} onde te tinham convidado 🎉`);
+    }
+  } catch (e) { console.warn("claim_memberships:", e); }
+
+  // depois do claim (e não em paralelo): um grupo acabado de ligar à conta
+  // também tem moldes recorrentes em atraso para gerar
+  try {
+    const { data: gen } = await sb.rpc("generate_due_recurring");
+    if (gen > 0) {
+      changed = true;
+      toast(`${gen} despesa${gen === 1 ? "" : "s"} recorrente${gen === 1 ? "" : "s"} lançada${gen === 1 ? "" : "s"} 🔁`);
+    }
+  } catch (e) { console.warn("generate_due_recurring:", e); }
+
+  // só redesenha se houve mesmo dados novos — e nunca por cima de um pop-up
+  // aberto (o aviso já foi dado; entra na próxima navegação)
+  if (changed && !$modal) refresh();
+}
+
+// Versão nova detetada pelo service worker (ver sw.js): a cache já ficou
+// atualizada, falta trocar o código que está a correr. Recarrega quando não
+// há nada aberto por gravar; caso contrário avisa e entra ao reabrir.
+let updateSeen = false;
+function watchForUpdates() {
+  if (!("serviceWorker" in navigator)) return;
+  navigator.serviceWorker.addEventListener("message", (e) => {
+    if (e.data?.type !== "update-ready" || updateSeen) return;
+    updateSeen = true;
+    if ($modal) { toast("Há uma versão nova — entra quando reabrires a app"); return; }
+    toast("A atualizar para a versão nova…");
+    setTimeout(() => location.reload(), 1200);
+  });
 }
 
 async function main() {
@@ -3532,9 +3583,11 @@ async function main() {
     session = s;
     if (event === "SIGNED_IN" && wasLoggedOut) {
       await initProfile();
-      route();
+      await route();
+      runStartupChores();
     } else if (event === "SIGNED_OUT") {
       profile = null;
+      choresRun = false;
       route();
     }
   });
@@ -3542,7 +3595,10 @@ async function main() {
   if (session) await initProfile();
 
   window.addEventListener("hashchange", route);
-  route();
+  watchForUpdates();
+  // as tarefas de arranque só depois de a 1.ª vista estar desenhada
+  await route();
+  runStartupChores();
 }
 
 main();
