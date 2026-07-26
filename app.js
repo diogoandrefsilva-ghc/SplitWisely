@@ -651,6 +651,41 @@ async function fetchGroups() {
   return data;
 }
 
+// ---- movimentos por ver ---------------------------------------------------
+// A lista de despesas assinala o que apareceu ou mudou desde a última vez
+// que ESTA pessoa consultou ESTE grupo. O carimbo dessa consulta vive em
+// group_reads (uma linha por pessoa e grupo — ver schema.sql).
+//
+// O carimbo é escrito à ENTRADA do grupo, mas os selos têm de aguentar-se
+// durante toda a visita: cada gravação chama refresh(), que deita fora a
+// cache do grupo e volta a ler tudo — e leria já o carimbo novo. Por isso o
+// valor da visita fica aqui em memória e é ele que manda enquanto se está
+// dentro do grupo. Fechar a app a meio da visita não perde nada: o carimbo
+// já foi escrito à entrada.
+let groupSeen = { id: null, ts: null };
+
+// Marca o grupo como visto agora. Ninguém espera por isto: se falhar (rede
+// em baixo, schema por atualizar) o pior que acontece é os mesmos
+// movimentos voltarem a aparecer assinalados na próxima visita.
+//
+// O carimbo é 'now' — o literal do Postgres para o instante da transação —
+// e não a hora deste dispositivo: é com as datas das despesas que ele vai
+// ser comparado, e essas vêm do relógio do servidor. Um telemóvel com a
+// hora adiantada dez minutos deixaria de assinalar o que se passou nesses
+// dez minutos.
+function markGroupSeen(groupId, bundle) {
+  sb.from("group_reads")
+    .upsert({ user_id: session.user.id, group_id: groupId, last_seen_at: "now" },
+            { onConflict: "user_id,group_id" })
+    .select("last_seen_at").single()
+    .then(({ data, error }) => {
+      if (error) { console.warn("group_reads:", error.message); return; }
+      // a cache do grupo sobrevive à ida à home e volta: sem atualizar aqui o
+      // carimbo, reentrar no grupo assinalava outra vez os mesmos movimentos
+      if (data) bundle.lastSeen = Date.parse(data.last_seen_at) || bundle.lastSeen;
+    });
+}
+
 async function fetchGroupBundle(groupId) {
   // as colunas do cálculo vêm do balanceJoins() — as mesmas que a home usa
   const expenseSelect = (level) =>
@@ -661,7 +696,7 @@ async function fetchGroupBundle(groupId) {
         .order("created_at", { ascending: false })
         .order("id")                       // desempate estável para a paginação
         .range(from, to));
-  let [g, m, e, p, r] = await Promise.all([
+  let [g, m, e, p, r, s] = await Promise.all([
     sb.from("groups").select("*").eq("id", groupId).single(),
     fetchAllRows((from, to) =>
       sb.from("group_members").select("*").eq("group_id", groupId)
@@ -677,18 +712,23 @@ async function fetchGroupBundle(groupId) {
       .select("*, recurring_expense_payers(member_id, amount), recurring_expense_shares(member_id, amount)")
       .eq("group_id", groupId)
       .order("created_at"),
+    sb.from("group_reads").select("last_seen_at")
+      .eq("group_id", groupId).eq("user_id", session.user.id).maybeSingle(),
   ]);
   for (const rr of [g, m, e]) if (rr.error) throw rr.error;
   // payments e recurring podem ainda não existir (schema antigo por atualizar):
   // degrada sem partir a app, só sem essas funcionalidades.
   if (p.error) console.warn("payments indisponível:", p.error.message);
   if (r.error) console.warn("recurring indisponível:", r.error.message);
+  if (s.error) console.warn("group_reads indisponível:", s.error.message);
   return {
     group: g.data, members: m.data, expenses: e.data,
     payments: p.error ? [] : p.data,
     paymentsReady: !p.error,
     recurring: r.error ? [] : r.data,
     recurringReady: !r.error,
+    // null = primeira consulta deste grupo (ou schema antigo): nada a assinalar
+    lastSeen: s.error ? null : (Date.parse(s.data?.last_seen_at) || null),
   };
 }
 
@@ -716,6 +756,9 @@ async function route() {
     if (!canUse()) { renderWaiting(); return; }
     const hash = location.hash || "#/";
     const mGroup = hash.match(/^#\/g\/([0-9a-f-]+)(?:\/(\w+))?/i);
+    // sair do grupo fecha a visita: voltar a entrar volta a carimbar e a
+    // assinalar só o que mudou entretanto
+    if (groupSeen.id && groupSeen.id !== mGroup?.[1]) groupSeen = { id: null, ts: null };
     try {
       if (hash.startsWith("#/admin") && profile.is_admin) {
         await renderAdmin();
@@ -1150,6 +1193,12 @@ async function renderGroup(groupId, tab) {
     bundle = await fetchGroupBundle(groupId);
     groupCache = { id: groupId, data: bundle };
   }
+  // primeira entrada nesta visita: guarda o carimbo da consulta ANTERIOR (é
+  // com ele que a lista assinala) e marca já o grupo como visto
+  if (groupSeen.id !== groupId) {
+    groupSeen = { id: groupId, ts: bundle.lastSeen };
+    markGroupSeen(groupId, bundle);
+  }
   const { group, members, expenses, payments, paymentsReady, recurring, recurringReady } = bundle;
   const isOwner = group.created_by === session.user.id;
   const isArchived = !!group.archived;
@@ -1206,7 +1255,7 @@ async function renderGroup(groupId, tab) {
   const archived = !!group.archived;
   const canWrite = myRole !== "read" && !archived; // pode lançar/registar
 
-  const ctx = { group, members, expenses, payments, paymentsReady, recurring, recurringReady, isOwner, myMember, myRole, canWrite, archived };
+  const ctx = { group, members, expenses, payments, paymentsReady, recurring, recurringReady, isOwner, myMember, myRole, canWrite, archived, lastSeen: groupSeen.ts };
   const $c = document.getElementById("tab-content");
   if (tab === "despesas") renderExpensesTab($c, ctx);
   else if (tab === "saldos") renderBalancesTab($c, ctx);
@@ -1231,6 +1280,24 @@ function renderExpensesTab($c, ctx) {
     if (net === 0 && paid === 0) return "";
     return `<span class="my-impact ${net >= 0 ? "positive" : "negative"}">
       ${net > 0 ? "+" : ""}${fmtMoney(net, cur)}</span>`;
+  };
+
+  // movimentos por ver desde a última consulta a este grupo (ctx.lastSeen —
+  // ver markGroupSeen). Um movimento é "novo" OU "alterado", nunca os dois:
+  // a criação ganha. As alterações do próprio não se assinalam — a lista
+  // serve para dar por aquilo que os OUTROS mexeram —, e sem carimbo
+  // (primeira consulta, ou schema por atualizar) não se assinala nada, para
+  // a lista não acender de uma ponta à outra.
+  const uid = session.user.id;
+  const freshOf = (x) => {
+    if (!ctx.lastSeen) return "";
+    if ((Date.parse(x.created_at) || 0) > ctx.lastSeen)
+      return x.created_by === uid ? "" : "novo";
+    // updated_at só existe depois da migração; sem ela fica tudo por
+    // assinalar, em vez de tudo assinalado
+    if ((Date.parse(x.updated_at) || 0) > ctx.lastSeen && x.updated_by !== uid)
+      return "alterado";
+    return "";
   };
 
   // linhas agrupadas por mês; a data fica num bloco compacto à esquerda
@@ -1347,12 +1414,17 @@ function renderExpensesTab($c, ctx) {
         ? `<span class="item-cats">${catSplits.map(s =>
             `<span class="item-cat">${catOf(s.cat).icon} ${fmtMoney(s.cents, cur)}</span>`).join("")}</span>`
         : "";
+      const fresh = freshOf(x);
+      const freshBadge = fresh
+        ? ` <span class="badge fresh-${fresh}" title="${fresh === "novo"
+            ? "Lançada desde a tua última visita" : "Alterada desde a tua última visita"}">${fresh}</span>`
+        : "";
       return `${head}
-        <li class="clickable" data-open="${x.id}">
+        <li class="clickable${fresh ? " fresh-row" : ""}" data-open="${x.id}">
           ${dateBlock(x.expense_date)}
           ${expenseCatIconHtml(x)}
           <div class="item-main">
-            <span class="item-title">${esc(x.description)}${x.recurring_id ? ` <span class="badge linked" title="Despesa recorrente">🔁</span>` : ""}</span>
+            <span class="item-title">${esc(x.description)}${freshBadge}${x.recurring_id ? ` <span class="badge linked" title="Despesa recorrente">🔁</span>` : ""}</span>
             <span class="item-sub">pago por ${esc(payers)} · ${nShares} pessoa${nShares === 1 ? "" : "s"}</span>
             ${catLine}
           </div>
@@ -1364,9 +1436,17 @@ function renderExpensesTab($c, ctx) {
         </li>`;
     }).join("");
 
+    // aviso do que há por ver — conta o grupo todo, não o recorte dos
+    // filtros: um movimento novo com data antiga fica lá em baixo na lista
+    // (ordenada por data da despesa) e passava despercebido
+    const nFresh = expenses.filter(x => freshOf(x)).length;
+    const freshNote = nFresh === 0 ? "" :
+      `<p class="fresh-note">✨ ${nFresh} movimento${nFresh === 1 ? "" : "s"}
+        ${nFresh === 1 ? "novo ou alterado" : "novos ou alterados"} desde a tua última visita</p>`;
+
     $list.innerHTML = shown.length === 0 && members.length > 0
       ? `<p class="empty">${filtered ? "Nenhuma despesa encontrada com estes filtros." : "Sem despesas ainda."}</p>`
-      : `<ul class="list">${rows}</ul>`;
+      : `${freshNote}<ul class="list">${rows}</ul>`;
 
     // consulta da despesa em pop-up — fechar devolve à lista tal como estava
     $list.querySelectorAll("[data-open]").forEach(li => {

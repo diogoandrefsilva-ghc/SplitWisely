@@ -1040,6 +1040,150 @@ grant select, insert, update, delete
   to authenticated;
 grant execute on all functions in schema splitwisely to authenticated;
 
+-- ============================================================
+-- MOVIMENTOS NOVOS E ALTERADOS
+-- Para a lista de despesas assinalar o que mudou desde a última vez que
+-- cada pessoa consultou aquele grupo, são precisas duas coisas:
+--   1. saber QUANDO cada despesa foi alterada  -> expenses.updated_at
+--   2. saber QUANDO cada pessoa viu o grupo    -> group_reads
+-- Re-correr este ficheiro é seguro (ver a nota do backfill).
+-- ============================================================
+
+-- ---------- 1. QUANDO FOI ALTERADA ----------
+-- updated_at/updated_by mantidos por trigger, não pela app: assim não há
+-- caminho de escrita que se esqueça de os pôr, e o cliente não os pode
+-- forjar. updated_by serve para NÃO assinalar a quem fez a alteração —
+-- a lista marca o que os OUTROS mexeram.
+--
+-- O backfill (updated_at = created_at) tem de correr UMA só vez, na
+-- migração: à segunda passagem do ficheiro deitaria fora as datas de
+-- edição verdadeiras. Por isso vai dentro do teste da coluna, e não num
+-- `add column if not exists` seguido de update. Sem ele, o default now()
+-- marcava TODAS as despesas antigas como alteradas agora e a primeira
+-- consulta acendia a lista inteira.
+do $$
+begin
+  if not exists (
+    select 1 from information_schema.columns
+    where table_schema = 'splitwisely'
+      and table_name = 'expenses'
+      and column_name = 'updated_at'
+  ) then
+    alter table splitwisely.expenses
+      add column updated_at timestamptz not null default now();
+    update splitwisely.expenses set updated_at = created_at;
+  end if;
+end $$;
+
+alter table splitwisely.expenses
+  add column if not exists updated_by uuid references auth.users (id);
+
+create or replace function splitwisely.touch_expense()
+returns trigger
+language plpgsql
+set search_path = splitwisely
+as $$
+begin
+  new.updated_at = now();
+  new.updated_by = auth.uid();
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_touch_expense on splitwisely.expenses;
+create trigger trg_touch_expense before update on splitwisely.expenses
+  for each row execute function splitwisely.touch_expense();
+
+-- Editar uma despesa reescreve também as tabelas-filhas (pagadores, quotas,
+-- categorias) — e há um caminho que mexe SÓ nelas: quando entra um membro
+-- novo, as despesas do grupo são re-divididas para o incluir (só
+-- expense_shares muda). Sem estes triggers, essa alteração passava
+-- despercebida na lista.
+--
+-- security definer: a atualização da despesa-pai é consequência de uma
+-- escrita já autorizada pelas policies das filhas (can_write_expense), não
+-- uma escrita nova a validar.
+create or replace function splitwisely.touch_expense_parent()
+returns trigger
+language plpgsql security definer
+set search_path = splitwisely
+as $$
+declare
+  eid uuid;
+begin
+  -- em cada ramo só se toca no registo que existe: num DELETE o NEW não está
+  -- atribuído e lê-lo rebenta com «record "new" is not assigned yet»
+  if tg_op = 'DELETE' then
+    eid = old.expense_id;
+  else
+    eid = new.expense_id;
+  end if;
+  -- `now()` é o instante do INÍCIO da transação: depois da primeira linha o
+  -- carimbo já lá está e as restantes não escrevem nada. Inserir as 10 quotas
+  -- de uma despesa dá uma escrita na despesa-pai, não dez.
+  update splitwisely.expenses
+     set updated_at = now(), updated_by = auth.uid()
+   where id = eid and updated_at < now();
+  return null;
+end;
+$$;
+
+drop trigger if exists trg_touch_parent_payers on splitwisely.expense_payers;
+create trigger trg_touch_parent_payers
+  after insert or update or delete on splitwisely.expense_payers
+  for each row execute function splitwisely.touch_expense_parent();
+
+drop trigger if exists trg_touch_parent_shares on splitwisely.expense_shares;
+create trigger trg_touch_parent_shares
+  after insert or update or delete on splitwisely.expense_shares
+  for each row execute function splitwisely.touch_expense_parent();
+
+drop trigger if exists trg_touch_parent_cats on splitwisely.expense_categories;
+create trigger trg_touch_parent_cats
+  after insert or update or delete on splitwisely.expense_categories
+  for each row execute function splitwisely.touch_expense_parent();
+
+drop trigger if exists trg_touch_parent_catshares on splitwisely.expense_category_shares;
+create trigger trg_touch_parent_catshares
+  after insert or update or delete on splitwisely.expense_category_shares
+  for each row execute function splitwisely.touch_expense_parent();
+
+-- ---------- 2. QUANDO FOI VISTO ----------
+-- Uma linha por (pessoa, grupo) com o instante da última consulta. A app
+-- escreve o carimbo à ENTRADA do grupo e usa o valor anterior (o que estava
+-- lá) durante toda a visita — por isso não é preciso guardar dois carimbos.
+create table if not exists splitwisely.group_reads (
+  user_id uuid not null references auth.users (id) on delete cascade,
+  group_id uuid not null references splitwisely.groups (id) on delete cascade,
+  last_seen_at timestamptz not null default now(),
+  primary key (user_id, group_id)
+);
+
+alter table splitwisely.group_reads enable row level security;
+
+-- Cada um só vê e só escreve o SEU carimbo. Um grupo em histórico continua
+-- a marcar-se como visto: isto não são dados do grupo, é do utilizador.
+drop policy if exists "group_reads_select" on splitwisely.group_reads;
+create policy "group_reads_select" on splitwisely.group_reads
+  for select to authenticated
+  using ((select splitwisely.can_use()) and user_id = (select auth.uid()));
+
+drop policy if exists "group_reads_insert" on splitwisely.group_reads;
+create policy "group_reads_insert" on splitwisely.group_reads
+  for insert to authenticated
+  with check (splitwisely.can_use() and user_id = auth.uid()
+              and splitwisely.has_group_access(group_id));
+
+drop policy if exists "group_reads_update" on splitwisely.group_reads;
+create policy "group_reads_update" on splitwisely.group_reads
+  for update to authenticated
+  using (splitwisely.can_use() and user_id = auth.uid())
+  with check (splitwisely.can_use() and user_id = auth.uid());
+
+-- sem policy de delete: o carimbo não se apaga (sai com a conta/grupo, em cascata)
+grant select, insert, update on splitwisely.group_reads to authenticated;
+grant execute on all functions in schema splitwisely to authenticated;
+
 -- Recarrega a cache de schema do PostgREST já — sem isto, colunas novas
 -- (ex.: group_members.settle_with) podem demorar a aparecer na Data API
 -- e a app dá «Could not find the column ... in the schema cache».

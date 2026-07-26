@@ -801,6 +801,28 @@ details.hint p { margin: .4rem 0 0; font-size: .8rem; color: var(--muted); line-
 }
 .badge.linked { color: var(--primary); background: var(--chip-pos-bg); }
 
+/* movimentos por ver desde a última visita ao grupo */
+.badge.fresh-novo { color: var(--primary); background: var(--chip-pos-bg); }
+.badge.fresh-alterado {
+  color: var(--gold-text);
+  background: var(--gold-bg);
+  border: 1px solid var(--gold-border);
+}
+/* filete à esquerda da linha: dá para ver o que mudou a passar os olhos,
+   sem ter de ler as etiquetas uma a uma */
+.list li.fresh-row {
+  padding-left: .55rem;
+  margin-left: -.55rem;
+  box-shadow: inset 2px 0 0 var(--primary);
+}
+.list li.fresh-row:has(.fresh-alterado) { box-shadow: inset 2px 0 0 var(--gold-accent); }
+.fresh-note {
+  margin: 0 0 .5rem;
+  font-size: .78rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
 /* etiqueta de permissões restringidas na lista de membros */
 .role-badge {
   display: inline-flex;
