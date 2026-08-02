@@ -1446,7 +1446,7 @@ function renderExpensesTab($c, ctx) {
 
     $list.innerHTML = shown.length === 0 && members.length > 0
       ? `<p class="empty">${filtered ? "Nenhuma despesa encontrada com estes filtros." : "Sem despesas ainda."}</p>`
-      : `${freshNote}<ul class="list">${rows}</ul>`;
+      : `${freshNote}<ul class="list compact">${rows}</ul>`;
 
     // consulta da despesa em pop-up — fechar devolve à lista tal como estava
     $list.querySelectorAll("[data-open]").forEach(li => {
@@ -3428,7 +3428,7 @@ function renderRecurringSection($c, ctx) {
         ${members.length === 0 ? `<p class="empty">Adiciona primeiro membros em baixo.</p>` : ""}
         ${recurring.length === 0 && members.length > 0
           ? `<p class="empty">Sem despesas recorrentes ainda.</p>`
-          : `<ul class="list">${rows}</ul>`}
+          : `<ul class="list compact">${rows}</ul>`}
       </div>`;
 
     // criar/editar abre no mesmo pop-up usado a partir da lista de despesas
