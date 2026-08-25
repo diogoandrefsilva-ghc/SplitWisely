@@ -90,6 +90,14 @@ function fmtDate(d) {
   return new Date(d + "T00:00:00").toLocaleDateString("pt-PT", { day: "numeric", month: "short", year: "numeric" });
 }
 
+// "2026-08-25" -> "25/ago" (etiquetas curtas de data, ex.: «Hoje, 25/ago»)
+function fmtDiaMes(d) {
+  if (!d) return "";
+  const dt = new Date(d + "T00:00:00");
+  const mes = dt.toLocaleDateString("pt-PT", { month: "short" }).replace(/\.$/, "");
+  return `${dt.getDate()}/${mes}`;
+}
+
 // "Maria Costa Santos" -> "Maria S." (para linhas compactas)
 function shortName(name) {
   const parts = String(name || "?").trim().split(/\s+/);
@@ -1996,6 +2004,9 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
   }
 
   const ontem = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  // o seletor de «outra data» só aparece depois de pedido (ou se a despesa
+  // já tiver uma data que não seja hoje nem ontem)
+  let dataAberta = false;
 
   function draw() {
     if (isOccurrence && !occChoiceDone) return drawOccChoice();
@@ -2066,7 +2077,7 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
 
     // linha de repetição: uma só linha, que abre os campos do molde quando se
     // liga. Numa ocorrência ou no próprio molde não faz sentido (já é série).
-    const repeteLinha = (isRecurringRecord || isOccurrence) ? "" : `
+    const repeteLinha = (isRecurringRecord || isOccurrence || !detalhe) ? "" : `
       <label class="check-line hero-rep">
         <input type="checkbox" data-type="${state.recurring ? "occ" : "rec"}" ${state.recurring ? "checked" : ""} />
         🔁 Repete-se todos os meses
@@ -2089,23 +2100,57 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
           nos meses mais curtos) quando alguém abre a app.</span>
       </label>` : `
       <div class="pick-row">
-        <button type="button" class="pick ${state.date === today ? "on" : ""}" data-date="${today}">Hoje</button>
-        <button type="button" class="pick ${state.date === ontem ? "on" : ""}" data-date="${ontem}">Ontem</button>
-        <input id="x-date" type="date" value="${esc(state.date)}" />
-      </div>`;
+        <button type="button" class="pick ${state.date === today ? "on" : ""}" data-date="${today}">
+          Hoje<span class="pick-sub">${fmtDiaMes(today)}</span></button>
+        <button type="button" class="pick ${state.date === ontem ? "on" : ""}" data-date="${ontem}">
+          Ontem<span class="pick-sub">${fmtDiaMes(ontem)}</span></button>
+        ${dataAberta || (state.date !== today && state.date !== ontem) ? "" : `
+          <button type="button" class="pick" id="x-outra">Outra…</button>`}
+      </div>
+      ${dataAberta || (state.date !== today && state.date !== ontem) ? `
+        <input id="x-date" class="outra-data" type="date" value="${esc(state.date)}" />` : ""}`;
 
-    // o que o modo rápido vai assumir, dito por palavras (nada é adivinhado
-    // às escondidas: quem regista pagou, divide-se pelo normal do grupo)
-    const euNome = shortName(nameOf([...state.payers][0] || (myMember ? myMember.id : members[0].id)));
-    const nDiv = state.participants.size;
-    const assumeLinha = `
-      <p class="assume">
-        <strong>${esc(euNome)}</strong> pagou · divide-se
-        ${state.mode === "weights" ? "pelas proporções do grupo" : "em partes iguais"}
-        por <strong>${nDiv} pessoa${nDiv === 1 ? "" : "s"}</strong>${state.category
-          ? ` · ${catOf(state.category).icon} ${esc(catOf(state.category).label)}` : ""}.
-        <span>Toca em «Mais detalhe» para mudar.</span>
-      </p>`;
+    // resumo do que vai ser gravado, já no cartão inicial: quem pagou, como
+    // se divide, a categoria e quanto fica cada pessoa. Cada linha abre a
+    // folha por baixo, já no bloco onde se muda.
+    const paidResumo = state.payers.size
+      ? joinNames([...state.payers].map(id => `${shortName(nameOf(id))} ${fmtMoney(state.payerAmounts[id] || 0, cur)}`))
+      : "—";
+    const idsDiv = Object.keys(shares);
+    const divResumo = catDividing() ? "Por categoria"
+      : idsDiv.length === 0 ? "—"
+      : `${state.mode === "equal" ? "Partes iguais" : state.mode === "weights" ? "Por proporção" : "Valores exatos"}`
+        + ` · ${idsDiv.length === members.length ? "todo o grupo" : joinNames(idsDiv.map(id => shortName(nameOf(id))))}`;
+    const catResumo = state.catSplit
+      ? (catEntries().map(([id]) => `${catOf(id).icon} ${catOf(id).label}`).join(" · ") || "Sem categoria")
+      : (state.category ? `${catOf(state.category).icon} ${catOf(state.category).label}` : "Sem categoria");
+
+    const resumoRow = (blk, k, v, ok) => `
+      <button type="button" class="rev-row ${ok ? "" : "warn"}" data-more="${blk}">
+        <span class="rev-k">${k}</span>
+        <span class="rev-v">${v}</span>
+        <span class="chevron">›</span>
+      </button>`;
+
+    const resumoRapido = `
+      <div class="resumo">
+        <div class="resumo-head">Vai ficar assim</div>
+        <div class="rev-list">
+          ${resumoRow("pagou", "Quem pagou", esc(paidResumo), okPaid)}
+          ${resumoRow("divide", "Divisão", esc(divResumo), okDivide)}
+          ${resumoRow("cat", state.catSplit ? "Categorias" : "Categoria", esc(catResumo), okCat)}
+        </div>
+        ${idsDiv.length && state.totalCents > 0 ? `
+          <div class="rev-shares">
+            <div class="rev-shares-head">Cada pessoa fica com</div>
+            ${members.filter(m => (shares[m.id] || 0) > 0).map(m => `
+              <div class="rev-share">
+                ${avatarHtml(m.name, "small")}
+                <span class="rev-share-name">${esc(m.name)}</span>
+                <span class="rev-share-val">${fmtMoney(shares[m.id] || 0, cur)}</span>
+              </div>`).join("")}
+          </div>` : ""}
+      </div>`;
 
     const heroBlock = `
       <div class="sheet-hero ${flash === "hero" ? "flash" : ""}" data-blk="hero">
@@ -2118,7 +2163,7 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
         ${whenBlock}
         ${repeteLinha}
         ${detalhe || readOnly ? "" : `
-          ${assumeLinha}
+          ${resumoRapido}
           <div class="hero-acoes">
             <button id="x-save" ${okValor ? "" : "disabled"}>${state.recurring ? "Criar recorrente" : "Registar"}</button>
             <button type="button" class="secondary" id="x-more">Mais detalhe</button>
@@ -2405,7 +2450,22 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
       draw();
     };
     slot.querySelectorAll("[data-date]").forEach(b => {
-      b.onclick = () => { state.date = b.dataset.date; draw(); };
+      b.onclick = () => { state.date = b.dataset.date; dataAberta = false; draw(); };
+    });
+    slot.querySelector("#x-outra")?.addEventListener("click", () => {
+      dataAberta = true;
+      draw();
+      const $d = slot.querySelector("#x-date");
+      $d?.focus();
+      try { $d?.showPicker(); } catch (_) { /* browsers sem showPicker */ }
+    });
+    slot.querySelectorAll("[data-more]").forEach(b => {
+      b.onclick = () => {
+        const alvo = b.dataset.more;
+        detalhe = true;
+        draw();
+        slot.querySelector(`[data-blk="${alvo}"]`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+      };
     });
     const $date = slot.querySelector("#x-date");
     if ($date) $date.onchange = () => { state.date = $date.value; draw(); };

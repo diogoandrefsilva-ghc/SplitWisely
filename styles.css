@@ -1533,7 +1533,27 @@ p.hint { margin: .5rem 0 0; font-size: .78rem; color: var(--muted); line-height:
     padding: calc(.85rem + env(safe-area-inset-top)) .85rem calc(.85rem + env(safe-area-inset-bottom));
   }
 }
+/* o formulário a ecrã cheio ganha moldura: um filete da cor da marca no
+   topo e um rebordo esverdeado à volta, para se ler como um ecrã próprio
+   e não como uma folha branca solta */
+.modal-backdrop.modal-full .modal-card {
+  position: relative;
+  box-shadow: inset 0 0 0 2px rgba(15, 157, 118, .22);
+}
+.modal-backdrop.modal-full .modal-card::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: calc(6px + env(safe-area-inset-top));
+  background: linear-gradient(90deg, var(--primary-2), var(--primary));
+}
+@media (prefers-color-scheme: dark) {
+  .modal-backdrop.modal-full .modal-card { box-shadow: inset 0 0 0 2px rgba(18, 184, 134, .26); }
+}
 .expense-detail.sheet { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.expense-detail.sheet .form-head h2 { color: var(--primary); }
 .sheet-body { flex: 1; }
 .sheet-body[inert] { opacity: .78; }
 
@@ -1576,16 +1596,65 @@ p.hint { margin: .5rem 0 0; font-size: .78rem; color: var(--muted); line-height:
 .hero-acoes { display: flex; flex-direction: column; gap: .5rem; margin-top: .9rem; }
 .hero-acoes button { width: 100%; padding: .85rem 1.1rem; font-size: 1rem; border-radius: 14px; }
 
-/* o que o modo rápido vai assumir, dito por palavras */
-.assume {
-  margin: .9rem 0 0;
-  padding: .7rem .8rem;
-  background: var(--chip-pos-bg);
-  border-radius: 12px;
-  font-size: .85rem;
-  line-height: 1.5;
+/* resumo do que vai ser gravado, já no cartão inicial */
+.resumo { margin-top: 1rem; }
+.resumo-head {
+  margin-bottom: .45rem;
+  font-size: .7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--primary);
 }
-.assume span { display: block; margin-top: .15rem; font-size: .78rem; color: var(--muted); }
+.rev-list { display: flex; flex-direction: column; gap: .42rem; }
+.rev-row {
+  display: flex;
+  align-items: center;
+  gap: .7rem;
+  width: 100%;
+  min-height: 54px;
+  padding: .6rem .8rem;
+  text-align: left;
+  white-space: normal;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  color: var(--text);
+  box-shadow: none;
+  font-weight: 500;
+}
+.rev-row:hover { filter: none; background: var(--card-inner); }
+.rev-k {
+  flex: none;
+  width: 32%;
+  font-size: .68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--muted);
+  line-height: 1.25;
+}
+.rev-v { flex: 1; min-width: 0; font-size: .9rem; line-height: 1.3; }
+.rev-row.warn { border-color: var(--danger); }
+.rev-row.warn .rev-v { color: var(--danger); }
+.rev-shares {
+  margin-top: .55rem;
+  padding: .7rem .85rem;
+  background: var(--card);
+  border: 1px solid var(--border-soft);
+  border-radius: 14px;
+}
+.rev-shares-head {
+  font-size: .7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--muted);
+  margin-bottom: .4rem;
+}
+.rev-share { display: flex; align-items: center; gap: .5rem; padding: .22rem 0; font-size: .88rem; }
+.rev-share-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rev-share-val { flex: none; font-weight: 650; font-variant-numeric: tabular-nums; }
 
 /* bloco numerado: cabeçalho com o resumo à direita, corpo sempre aberto */
 .blk {
@@ -1668,18 +1737,25 @@ p.hint { margin: .5rem 0 0; font-size: .78rem; color: var(--muted); line-height:
 /* escolhas rápidas de data */
 .pick-row { display: flex; gap: .45rem; align-items: center; flex-wrap: wrap; }
 .pick {
-  flex: none;
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: .1rem;
   background: var(--card);
   border: 1px solid var(--border);
   color: var(--text);
   box-shadow: none;
   border-radius: 12px;
-  padding: .6rem .95rem;
-  font-weight: 550;
+  padding: .55rem .7rem;
+  font-weight: 600;
 }
+.pick-sub { font-size: .72rem; font-weight: 500; color: var(--muted); }
+.pick.on .pick-sub { color: inherit; opacity: .8; }
+.outra-data { margin-top: .45rem; height: 46px; background: var(--card); }
 .pick:hover { filter: none; background: var(--card-inner); }
 .pick.on { border-color: var(--primary); background: var(--chip-pos-bg); color: var(--primary); font-weight: 650; }
-.pick-row input[type="date"] { flex: 1; min-width: 132px; height: 46px; background: var(--card); }
 
 /* cartões de escolha grandes (modo de divisão) */
 .big-choice { display: flex; flex-direction: column; gap: .5rem; margin-bottom: .9rem; }
