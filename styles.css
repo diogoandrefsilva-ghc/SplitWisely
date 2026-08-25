@@ -1534,6 +1534,26 @@ p.hint { margin: .5rem 0 0; font-size: .78rem; color: var(--muted); line-height:
   }
 }
 
+/* o formulário a ecrã cheio ganha moldura: um filete da cor da marca no
+   topo e um rebordo esverdeado à volta, para se perceber que é um ecrã
+   próprio e não uma folha branca solta */
+.modal-backdrop.modal-full .modal-card {
+  position: relative;
+  box-shadow: inset 0 0 0 2px rgba(15, 157, 118, .22);
+}
+.modal-backdrop.modal-full .modal-card::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: calc(6px + env(safe-area-inset-top));
+  background: linear-gradient(90deg, var(--primary-2), var(--primary));
+}
+@media (prefers-color-scheme: dark) {
+  .modal-backdrop.modal-full .modal-card { box-shadow: inset 0 0 0 2px rgba(18, 184, 134, .26); }
+}
+
 .wiz-top {
   display: flex;
   align-items: center;
@@ -1588,7 +1608,7 @@ p.hint { margin: .5rem 0 0; font-size: .78rem; color: var(--muted); line-height:
 
 /* o cartão a ecrã cheio estica: o corpo cresce e a barra de ação fica em baixo */
 .expense-detail.wiz { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-.wiz-title { margin: 0 0 .2rem; font-size: 1.3rem; letter-spacing: -.01em; }
+.wiz-title { margin: 0 0 .2rem; font-size: 1.3rem; letter-spacing: -.01em; color: var(--primary); }
 .wiz-sub { margin: 0 0 1rem; color: var(--muted); font-size: .86rem; line-height: 1.4; }
 .wiz-body { flex: 1; min-height: 210px; }
 .wiz-body[inert] { opacity: .78; }
@@ -1611,16 +1631,16 @@ p.hint { margin: .5rem 0 0; font-size: .78rem; color: var(--muted); line-height:
 .wiz-foot.dupla .wiz-next, .wiz-foot.dupla .wiz-more { width: 100%; }
 .wiz-more { padding: .8rem 1.1rem; border-radius: 14px; font-size: .95rem; }
 
-/* o que o modo rápido vai assumir, dito por palavras */
-.assume {
-  margin: 1rem 0 0;
-  padding: .7rem .8rem;
-  background: var(--chip-pos-bg);
-  border-radius: 12px;
-  font-size: .85rem;
-  line-height: 1.5;
+/* resumo do que vai ser gravado, já no cartão inicial */
+.resumo { margin-top: 1.1rem; }
+.resumo-head {
+  margin-bottom: .45rem;
+  font-size: .7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--primary);
 }
-.assume span { display: block; margin-top: .15rem; font-size: .78rem; color: var(--muted); }
 .wiz-next { flex: 1; padding: .85rem 1.1rem; font-size: 1rem; border-radius: 14px; }
 
 /* campo do valor: o protagonista do 1.º passo */
@@ -1659,18 +1679,25 @@ p.hint { margin: .5rem 0 0; font-size: .78rem; color: var(--muted); line-height:
 /* escolhas rápidas de data */
 .pick-row { display: flex; gap: .45rem; align-items: center; flex-wrap: wrap; }
 .pick {
-  flex: none;
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: .1rem;
   background: var(--card-inner);
   border: 1px solid var(--border);
   color: var(--text);
   box-shadow: none;
   border-radius: 12px;
-  padding: .6rem .95rem;
-  font-weight: 550;
+  padding: .55rem .7rem;
+  font-weight: 600;
 }
+.pick-sub { font-size: .72rem; font-weight: 500; color: var(--muted); }
+.pick.on .pick-sub { color: inherit; opacity: .8; }
+.outra-data { margin-top: .45rem; height: 46px; }
 .pick:hover { filter: none; background: var(--card); }
 .pick.on { border-color: var(--primary); background: var(--chip-pos-bg); color: var(--primary); font-weight: 650; }
-.pick-row input[type="date"] { flex: 1; min-width: 132px; height: 46px; }
 
 /* cartões de escolha grandes (tipo de despesa, modo de divisão) */
 .big-choice { display: flex; flex-direction: column; gap: .5rem; margin-bottom: .9rem; }
