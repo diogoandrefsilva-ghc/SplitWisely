@@ -1514,3 +1514,301 @@ p.hint { margin: .5rem 0 0; font-size: .78rem; color: var(--muted); line-height:
   /* os 3 separadores do detalhe da despesa têm de caber no ecrã */
   .form-tabs button, .form-section .tabs button { font-size: .84rem; padding: .38rem .3rem; }
 }
+
+/* ================================================================ folha de despesa (B) */
+/* O formulário de despesa é uma folha só, de cima a baixo: o valor em
+   grande no topo e depois blocos numerados sempre abertos. Nada em
+   separadores nem escondido — rola-se e vê-se o formulário inteiro. */
+
+/* no telemóvel a folha ocupa o ecrã todo (é uma tarefa, não um pop-up) */
+@media (max-width: 520px) {
+  .modal-backdrop.modal-full { padding: 0; }
+  .modal-backdrop.modal-full .modal-card {
+    display: flex;
+    flex-direction: column;
+    min-height: 100%;
+    max-width: none;
+    border: none;
+    border-radius: 0;
+    padding: calc(.85rem + env(safe-area-inset-top)) .85rem calc(.85rem + env(safe-area-inset-bottom));
+  }
+}
+.expense-detail.sheet { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.sheet-body { flex: 1; }
+.sheet-body[inert] { opacity: .78; }
+
+/* topo: o valor e a descrição, os dois campos que interessam sempre */
+.sheet-hero {
+  padding: .9rem .9rem 1rem;
+  margin-bottom: 1rem;
+  background: var(--card-inner);
+  border: 1px solid var(--border-soft);
+  border-radius: 18px;
+}
+.hero-amount {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: .4rem;
+  padding: .3rem 0 .6rem;
+}
+.hero-amount input {
+  flex: 0 1 auto;
+  width: 6.5ch;
+  height: auto;
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: 2.3rem;
+  font-weight: 750;
+  text-align: right;
+  letter-spacing: -.02em;
+  font-variant-numeric: tabular-nums;
+}
+.hero-amount input:focus { box-shadow: none; }
+.hero-amount input::placeholder { color: var(--muted); opacity: .4; font-weight: 700; }
+.hero-cur { flex: none; font-size: 1.3rem; font-weight: 600; color: var(--muted); }
+.hero-desc { height: 48px; background: var(--card); text-align: center; margin-bottom: .2rem; }
+.sheet-hero .pick-row { margin-top: .7rem; }
+.sheet-hero .row { margin-top: .7rem; }
+.hero-rep { margin: .6rem 0 0; }
+/* as duas ações do modo rápido, dentro do próprio cartão */
+.hero-acoes { display: flex; flex-direction: column; gap: .5rem; margin-top: .9rem; }
+.hero-acoes button { width: 100%; padding: .85rem 1.1rem; font-size: 1rem; border-radius: 14px; }
+
+/* o que o modo rápido vai assumir, dito por palavras */
+.assume {
+  margin: .9rem 0 0;
+  padding: .7rem .8rem;
+  background: var(--chip-pos-bg);
+  border-radius: 12px;
+  font-size: .85rem;
+  line-height: 1.5;
+}
+.assume span { display: block; margin-top: .15rem; font-size: .78rem; color: var(--muted); }
+
+/* bloco numerado: cabeçalho com o resumo à direita, corpo sempre aberto */
+.blk {
+  margin-bottom: 1rem;
+  padding: .85rem .9rem 1rem;
+  background: var(--card-inner);
+  border: 1px solid var(--border-soft);
+  border-radius: 18px;
+  scroll-margin: 1rem;
+}
+.blk-head {
+  display: flex;
+  align-items: center;
+  gap: .55rem;
+  margin-bottom: .8rem;
+}
+.blk-head h3 { margin: 0; font-size: 1rem; flex: none; letter-spacing: -.01em; }
+.blk-n {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--primary-2), var(--primary));
+  color: #fff;
+  font-size: .78rem;
+  font-weight: 700;
+}
+.blk-sum {
+  flex: 1;
+  min-width: 0;
+  text-align: right;
+  font-size: .82rem;
+  font-weight: 600;
+  color: var(--primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.blk-sum.soft { color: var(--muted); font-weight: 500; }
+.blk.todo { border-color: var(--danger); }
+.blk.todo .blk-sum { color: var(--danger); }
+/* destaque momentâneo do bloco que falta corrigir ao tentar gravar */
+.blk.flash, .sheet-hero.flash { animation: blk-flash 1.1s ease-out 2; }
+@keyframes blk-flash {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0); }
+  40% { box-shadow: 0 0 0 4px rgba(220, 38, 38, .22); }
+}
+.blk-note {
+  margin: -.2rem 0 .7rem;
+  padding: .45rem .65rem;
+  background: var(--chip-pos-bg);
+  border-radius: 9px;
+  font-size: .8rem;
+  line-height: 1.35;
+}
+
+/* rodapé colado ao ecrã: o que vai ser gravado + a ação */
+.sheet-foot {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  margin-top: .4rem;
+  padding: .6rem 0 .25rem;
+  background: var(--card);
+  box-shadow: 0 -14px 18px -14px rgba(0, 0, 0, .22);
+}
+.foot-sum {
+  margin: 0 0 .5rem;
+  font-size: .82rem;
+  line-height: 1.35;
+  color: var(--text);
+  text-align: center;
+}
+.foot-sum.todo { color: var(--muted); }
+.sheet-foot button { width: 100%; padding: .85rem 1.1rem; font-size: 1rem; border-radius: 14px; }
+
+/* escolhas rápidas de data */
+.pick-row { display: flex; gap: .45rem; align-items: center; flex-wrap: wrap; }
+.pick {
+  flex: none;
+  background: var(--card);
+  border: 1px solid var(--border);
+  color: var(--text);
+  box-shadow: none;
+  border-radius: 12px;
+  padding: .6rem .95rem;
+  font-weight: 550;
+}
+.pick:hover { filter: none; background: var(--card-inner); }
+.pick.on { border-color: var(--primary); background: var(--chip-pos-bg); color: var(--primary); font-weight: 650; }
+.pick-row input[type="date"] { flex: 1; min-width: 132px; height: 46px; background: var(--card); }
+
+/* cartões de escolha grandes (modo de divisão) */
+.big-choice { display: flex; flex-direction: column; gap: .5rem; margin-bottom: .9rem; }
+.bc {
+  display: flex;
+  align-items: center;
+  gap: .7rem;
+  flex-wrap: wrap;
+  width: 100%;
+  text-align: left;
+  white-space: normal;
+  padding: .8rem .85rem;
+  min-height: 58px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  color: var(--text);
+  box-shadow: none;
+  font-weight: 500;
+}
+.bc:hover { filter: none; background: var(--card-inner); }
+.bc-ico { font-size: 1.3rem; line-height: 1; flex: none; }
+.bc strong { font-size: .95rem; }
+.bc > span:last-child { flex-basis: 100%; font-size: .78rem; color: var(--muted); font-weight: 400; line-height: 1.3; }
+.bc.on { border-color: var(--primary); background: var(--chip-pos-bg); box-shadow: inset 0 0 0 1px var(--primary); }
+
+/* botão de largura total com título + explicação */
+.wide-btn {
+  display: flex;
+  align-items: center;
+  gap: .7rem;
+  width: 100%;
+  text-align: left;
+  white-space: normal;
+  margin-top: .9rem;
+  padding: .8rem .85rem;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  color: var(--text);
+  box-shadow: none;
+  font-weight: 500;
+}
+.wide-btn:hover { filter: none; background: var(--card-inner); border-color: var(--primary); }
+.wb-ico { font-size: 1.25rem; line-height: 1; flex: none; }
+.wb-text { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.wb-text strong { font-size: .92rem; }
+.wb-text span { font-size: .78rem; color: var(--muted); font-weight: 400; line-height: 1.3; }
+button.wide { width: 100%; padding: .7rem 1rem; }
+button.danger.wide { margin: .4rem 0 1rem; }
+
+/* grelha de categorias: todas visíveis, sem scroll lateral */
+.cat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(66px, 1fr));
+  gap: .4rem;
+}
+.cat-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: .25rem;
+  min-height: 66px;
+  padding: .45rem .2rem;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  color: var(--text);
+  box-shadow: none;
+  font-weight: 500;
+  white-space: normal;
+}
+.cat-tile:hover { filter: none; background: var(--card-inner); }
+.cat-tile-ico { font-size: 1.4rem; line-height: 1; }
+.cat-tile-label { font-size: .63rem; text-align: center; line-height: 1.1; }
+.cat-tile-val { font-size: .7rem; font-weight: 700; color: var(--primary); }
+.cat-tile.on {
+  border-color: var(--primary);
+  background: var(--chip-pos-bg);
+  color: var(--primary);
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
+
+/* lista de pessoas: uma linha grande por pessoa, toque em qualquer sítio */
+.who-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .6rem;
+  margin: .2rem 0 .35rem;
+  font-size: .74rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--muted);
+}
+.who-head-actions { display: flex; gap: .7rem; }
+.who-list { display: flex; flex-direction: column; gap: .45rem; margin: .2rem 0 .6rem; }
+.who-row { display: flex; align-items: center; gap: .5rem; }
+.who {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: .65rem;
+  min-height: 56px;
+  padding: .5rem .75rem;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  color: var(--text);
+  box-shadow: none;
+  font-weight: 500;
+  text-align: left;
+}
+.who:hover { filter: none; background: var(--card-inner); }
+.who-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: .95rem;
+}
+.who-val { flex: none; font-size: .9rem; font-weight: 650; font-variant-numeric: tabular-nums; }
+.who-mark { flex: none; width: 1.2rem; text-align: center; color: var(--primary); font-weight: 800; }
+.who-row.on .who { border-color: var(--primary); background: var(--chip-pos-bg); }
+.who-amount { flex: none; width: 100px; height: 46px; text-align: right; background: var(--card); font-variant-numeric: tabular-nums; }
+
+/* os blocos internos herdam o fundo do cartão do bloco */
+.blk .cat-split, .blk .cat-div { background: var(--card); }
