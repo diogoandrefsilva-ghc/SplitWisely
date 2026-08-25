@@ -1976,14 +1976,15 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
 
   // ------------------------------------------------------------- ecrã (C)
   // Uma superfície só. Nada de cartões dentro de cartões: o valor é
-  // tipografia sobre um cabeçalho da cor da marca, o resto separa-se por
+  // tipografia sobre um cabeçalho da cor da marca e o resto separa-se por
   // filetes e espaço. Ícones desenhados (não emoji) na interface — o emoji
   // fica só onde é conteúdo, nas categorias.
   //
-  // O caminho normal cabe no primeiro ecrã: descrição, valor, data e
-  // «Registar». A despesa fica em nome de quem a lança e divide-se pelo
-  // normal do grupo, e as três linhas do resumo dizem exatamente isso.
-  // «Mais detalhe» abre o resto por baixo, sem mudar de ecrã.
+  // O ecrã nunca muda: descrição, valor, data e quatro linhas que dizem o
+  // que vai ser gravado — quem pagou, divisão, categoria e repetição. Cada
+  // linha abre um pop-up que sobe de baixo com essa decisão isolada. Por
+  // omissão a despesa fica em nome de quem a lança e divide-se pelo normal
+  // do grupo, por isso o caminho normal é escrever e «Registar».
 
   const ICONS = {
     back: '<path d="M15 19 8 12l7-7"/>',
@@ -1996,33 +1997,63 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     trash: '<path d="M4 7h16"/><path d="M9.5 7V5.2A1.2 1.2 0 0 1 10.7 4h2.6a1.2 1.2 0 0 1 1.2 1.2V7"/><path d="M6.5 7 7.6 20h8.8L17.5 7"/>',
     eye: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="2.6"/>',
   };
-  const SIMBOLO = { EUR: "€", USD: "$", GBP: "£", BRL: "R$", CHF: "CHF" };
   const ico = (n, cls = "") =>
     `<svg class="xp-ico ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor"
       stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[n]}</svg>`;
+  const SIMBOLO = { EUR: "€", USD: "$", GBP: "£", BRL: "R$" };
 
-  // detalhe = o resto do formulário está aberto por baixo. A editar abre
-  // sempre assim; a criar, começa só com o essencial.
-  let detalhe = !!existing;
-  let dataAberta = false;
-  let flash = null;
-  const SECTION_BLK = { dados: "topo", cat: "cat", pagou: "pagou", divide: "divide" };
-  function goToSection(sec) {
-    const alvo = SECTION_BLK[sec] || "topo";
-    if (alvo !== "topo") detalhe = true;
-    flash = alvo;
-    draw();
-    const el = slot.querySelector(`[data-blk="${alvo}"]`);
-    el?.scrollIntoView({ behavior: "smooth", block: alvo === "topo" ? "start" : "center" });
-    if (alvo === "topo") slot.querySelector("#x-amount")?.focus();
+  // ---- pop-ups: cada decisão vive num painel que sobe de baixo
+  let folha = null;      // pagou | divide | cat | repetir
+  let folhaNova = false; // primeira pintura do painel: só aí é que anima
+  let folhaScroll = 0;   // mantém o scroll do painel entre redesenhos
+  const FOLHA_TITULO = {
+    pagou: "Quem pagou", divide: "Como se divide",
+    cat: "Categoria", repetir: "Repetição",
+  };
+  function onEsc(e) {
+    // fecha o pop-up antes de o Escape chegar ao modal e fechar tudo
+    if (e.key !== "Escape") return;
+    e.stopPropagation();
+    e.preventDefault();
+    fecharFolha();
   }
-  function abrir(alvo) {
-    detalhe = true;
+  function abrirFolha(id) {
+    if (!folha) document.addEventListener("keydown", onEsc, true);
+    folha = id;
+    folhaNova = true;
+    folhaScroll = 0;
     draw();
-    slot.querySelector(`[data-blk="${alvo}"]`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+  function fecharFolha() {
+    document.removeEventListener("keydown", onEsc, true);
+    folha = null;
+    draw();
+  }
+  // sair do formulário com um pop-up aberto não pode deixar o listener solto
+  const sair = () => { document.removeEventListener("keydown", onEsc, true); close(); };
+
+  // uma validação que falha abre o pop-up onde se corrige
+  const SECTION_FOLHA = { cat: "cat", pagou: "pagou", divide: "divide" };
+  function goToSection(sec) {
+    if (sec === "dados") {
+      fecharFolha();
+      const $a = slot.querySelector(state.desc.trim() ? "#x-amount" : "#x-desc");
+      $a?.focus();
+      return;
+    }
+    abrirFolha(SECTION_FOLHA[sec] || "pagou");
   }
 
   const ontem = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+
+  // proporção legível para dois: 1.5 e 1 -> "3 : 2"
+  function razao(a, b) {
+    let x = Math.round(a * 10), y = Math.round(b * 10);
+    if (!x || !y) return null;
+    const mdc = (p, q) => q ? mdc(q, p % q) : p;
+    const d = mdc(x, y);
+    return `${x / d} : ${y / d}`;
+  }
 
   function draw() {
     if (isOccurrence && !occChoiceDone) return drawOccChoice();
@@ -2056,98 +2087,105 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     const aviso = (ok, txt) => ok ? "" : `<p class="xp-aviso">${txt}</p>`;
 
     // -------------------------------------------------------------- datas
-    // (desenhadas dentro do cabeçalho, com o valor e a descrição)
     const outraData = state.date !== today && state.date !== ontem;
     const datas = state.recurring ? `
-      <div class="xp-rec">
-        <label class="xp-field">
-          <span>Dia do mês</span>
-          <input id="x-dom" type="number" inputmode="numeric" min="1" max="31" value="${state.dayOfMonth}" />
-        </label>
-        <label class="xp-field">
-          <span>Termina em</span>
-          <input id="x-end" type="date" min="${today}" value="${esc(state.endDate)}" />
-        </label>
-      </div>` : `
+      <p class="xp-quando">${ico("repeat")} Todo o mês no dia ${state.dayOfMonth}</p>` : `
       <div class="xp-seg" role="group" aria-label="Data">
         <button type="button" class="${state.date === today ? "on" : ""}" data-date="${today}">
           Hoje<small>${fmtDiaMes(today)}</small></button>
         <button type="button" class="${state.date === ontem ? "on" : ""}" data-date="${ontem}">
           Ontem<small>${fmtDiaMes(ontem)}</small></button>
-        <button type="button" class="${dataAberta || outraData ? "on" : ""}" id="x-outra">
-          ${outraData ? "Dia" : "Outra"}<small>${outraData ? fmtDiaMes(state.date) : "escolher"}</small></button>
-      </div>
-      ${dataAberta || outraData ? `<input id="x-date" class="xp-date" type="date" value="${esc(state.date)}" />` : ""}`;
+        <label class="xp-seg-o ${outraData ? "on" : ""}">
+          <span>Outra</span>
+          <small>${outraData ? fmtDiaMes(state.date) : "escolher"}</small>
+          <input id="x-date" type="date" value="${esc(state.date)}" aria-label="Outra data" />
+        </label>
+      </div>`;
 
     // ---------------------------------------------------------- cabeçalho
     const titulo = !existing ? (state.recurring ? "Nova recorrente" : "Nova despesa")
       : (isRecurringRecord || isOccurrence) ? "Despesa recorrente" : "Despesa";
 
     const cabecalho = `
-      <header class="xp-head ${flash === "topo" ? "flash" : ""}" data-blk="topo">
+      <header class="xp-head">
         <div class="xp-head-bar">
           <button type="button" class="xp-icon-btn" id="x-back" aria-label="${esc(opts.backLabel || "Voltar")}">${ico("back")}</button>
           <span class="xp-head-title">${esc(titulo)}</span>
-          ${state.recurring ? `<span class="xp-pill">${ico("repeat")} mensal</span>` : `<span class="xp-head-spacer"></span>`}
+          <span class="xp-head-spacer"></span>
         </div>
-        <div class="xp-amount" ${readOnly ? "" : 'data-focus="1"'}>
+        <div class="xp-amount">
           <input id="x-amount" type="text" inputmode="decimal" placeholder="0,00" enterkeyhint="done"
             value="${state.totalCents ? (state.totalCents / 100).toFixed(2).replace(".", ",") : ""}" ${readOnly ? "readonly" : ""} />
           <span class="xp-cur">${esc(SIMBOLO[cur] || cur)}</span>
         </div>
         <input id="x-desc" class="xp-desc" value="${esc(state.desc)}"
           placeholder="Em que foi?" ${readOnly ? "readonly" : ""} />
-        ${readOnly ? `<p class="xp-quando">${esc(state.recurring
-          ? `Todo o mês no dia ${state.dayOfMonth}`
-          : fmtDate(state.date))}</p>` : datas}
+        ${readOnly
+          ? `<p class="xp-quando">${esc(state.recurring ? `Todo o mês no dia ${state.dayOfMonth}` : fmtDate(state.date))}</p>`
+          : datas}
       </header>`;
 
-    // ------------------------------------------------------------- resumo
-    const paidTxt = state.payers.size === 0 ? "—"
+    // ------------------------------------------------- as quatro decisões
+    const paidTxt = state.payers.size === 0 ? "Por escolher"
       : state.payers.size === 1 ? shortName(nameOf([...state.payers][0]))
       : joinNames([...state.payers].map(id => shortName(nameOf(id))));
+
     const idsDiv = Object.keys(shares);
-    const divTxt = catDividing() ? "Por categoria"
-      : idsDiv.length === 0 ? "—"
-      : idsDiv.length === members.length
-        ? (state.mode === "equal" ? "Igual, entre todos" : state.mode === "weights" ? "Por proporção" : "Valores exatos")
-        : `${idsDiv.length} pessoas`;
+    const dois = idsDiv.length === 2;
+    let divTxt;
+    if (catDividing()) divTxt = "Por categoria";
+    else if (idsDiv.length === 0) divTxt = "Por escolher";
+    else if (state.mode === "weights") {
+      const r = dois ? razao(state.weights[idsDiv[0]] || 0, state.weights[idsDiv[1]] || 0) : null;
+      divTxt = r ? `Proporção ${r}` : "Por proporção";
+    } else if (state.mode === "exact") divTxt = "Valores exatos";
+    else divTxt = idsDiv.length === members.length ? "Igual, entre todos" : `Igual, entre ${idsDiv.length}`;
+
     const catTxt = state.catSplit
       ? (catEntries().map(([id]) => `${catOf(id).icon} ${catOf(id).label}`).join(" · ") || "Repartida")
       : (state.category ? `${catOf(state.category).icon} ${catOf(state.category).label}` : "Nenhuma");
 
-    const linha = (alvo, icone, k, v, ok) => `
-      <button type="button" class="xp-row ${ok ? "" : "warn"}" data-more="${alvo}" ${readOnly ? "disabled" : ""}>
+    const repTxt = isOccurrence ? "Parte de uma série"
+      : state.recurring ? `Todo o mês, dia ${state.dayOfMonth}` : "Uma vez";
+
+    const linha = (alvo, icone, k, v, ok, off) => `
+      <button type="button" class="xp-row ${ok ? "" : "warn"}" ${off || readOnly ? "disabled" : `data-folha="${alvo}"`}>
         ${ico(icone, "xp-row-ico")}
         <span class="xp-row-k">${k}</span>
         <span class="xp-row-v">${v}</span>
-        ${readOnly ? "" : ico("chev", "xp-row-chev")}
+        ${off || readOnly ? "" : ico("chev", "xp-row-chev")}
       </button>`;
 
-    // pré-visualização da divisão: avatares empilhados + valor por pessoa
+    // prévia: avatares de quem entra + o que fica a cada um
     const vals = idsDiv.map(id => shares[id] || 0);
     const iguais = vals.length > 0 && vals.every(v => Math.abs(v - vals[0]) <= 1);
-    const previa = idsDiv.length && state.totalCents > 0 ? `
+    let previaTxt = "";
+    if (idsDiv.length && state.totalCents > 0) {
+      previaTxt = iguais ? `<strong>${fmtMoney(vals[0], cur)}</strong> cada`
+        : idsDiv.length <= 3
+          // com duas ou três pessoas cabe dizer quanto fica a cada uma
+          ? idsDiv.map(id => `${esc(shortName(nameOf(id)))} <strong>${fmtMoney(shares[id] || 0, cur)}</strong>`).join(" · ")
+          : `divide-se por <strong>${idsDiv.length}</strong>`;
+    }
+    const previa = previaTxt ? `
       <div class="xp-previa">
         <div class="xp-avatars">
-          ${members.filter(m => idsDiv.includes(m.id)).slice(0, 6)
-            .map(m => avatarHtml(m.name, "small")).join("")}
-          ${idsDiv.length > 6 ? `<span class="xp-avatar-mais">+${idsDiv.length - 6}</span>` : ""}
+          ${members.filter(m => idsDiv.includes(m.id)).slice(0, 5).map(m => avatarHtml(m.name, "small")).join("")}
+          ${idsDiv.length > 5 ? `<span class="xp-avatar-mais">+${idsDiv.length - 5}</span>` : ""}
         </div>
-        <span class="xp-previa-txt">${iguais
-          ? `<strong>${fmtMoney(vals[0], cur)}</strong> cada`
-          : `divide-se por <strong>${idsDiv.length}</strong>`}</span>
+        <span class="xp-previa-txt">${previaTxt}</span>
       </div>` : "";
 
-    const resumo = `
+    const decisoes = `
       <div class="xp-rows">
         ${linha("pagou", "user", "Quem pagou", esc(paidTxt), okPaid)}
         ${linha("divide", "users", "Divisão", esc(divTxt), okDivide)}
         ${linha("cat", "tag", "Categoria", esc(catTxt), okCat)}
+        ${linha("repetir", "repeat", "Repete-se", esc(repTxt), true, isOccurrence)}
       </div>
       ${previa}`;
 
-    // -------------------------------------------------- secções de detalhe
+    // ---------------------------------------- conteúdo de cada pop-up
     const pessoa = (m, { on, attr, input, val }) => `
       <div class="xp-p ${on ? "on" : ""}">
         <button type="button" class="xp-p-hit" ${attr} aria-pressed="${on}">
@@ -2160,143 +2198,153 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
       </div>`;
 
     const multiPayers = state.payers.size > 1;
-    const secPagou = `
-      <section class="xp-sec ${flash === "pagou" ? "flash" : ""}" data-blk="pagou">
-        <div class="xp-sec-h">
-          <h3>Quem pagou</h3>
-          ${multiPayers ? `<button type="button" class="xp-link sm" id="x-dist-payers">Dividir igualmente</button>` : ""}
-        </div>
-        ${aviso(okPaid || state.totalCents === 0, `${fmtMoney(paidSum, cur)} de ${fmtMoney(state.totalCents, cur)} atribuídos`)}
-        <div class="xp-people">
-          ${members.map(m => pessoa(m, {
-            on: state.payers.has(m.id),
-            attr: `data-payer="${m.id}"`,
-            val: state.payers.has(m.id) && !multiPayers ? fmtMoney(state.totalCents, cur) : "",
-            input: state.payers.has(m.id) && multiPayers
-              ? `<input class="xp-p-in" type="number" inputmode="decimal" step="0.01" min="0"
-                   data-payer-amount="${m.id}" value="${((state.payerAmounts[m.id] || 0) / 100).toFixed(2)}" />`
-              : "",
-          })).join("")}
-        </div>
-      </section>`;
+    const corpoPagou = () => `
+      ${aviso(okPaid || state.totalCents === 0, `${fmtMoney(paidSum, cur)} de ${fmtMoney(state.totalCents, cur)} atribuídos`)}
+      <p class="xp-folha-sub">Toca em quem pôs o dinheiro. Podem ser várias pessoas.</p>
+      <div class="xp-people">
+        ${members.map(m => pessoa(m, {
+          on: state.payers.has(m.id),
+          attr: `data-payer="${m.id}"`,
+          val: state.payers.has(m.id) && !multiPayers ? fmtMoney(state.totalCents, cur) : "",
+          input: state.payers.has(m.id) && multiPayers
+            ? `<input class="xp-p-in" type="number" inputmode="decimal" step="0.01" min="0"
+                 data-payer-amount="${m.id}" value="${((state.payerAmounts[m.id] || 0) / 100).toFixed(2)}" />`
+            : "",
+        })).join("")}
+      </div>
+      ${multiPayers ? `<button type="button" class="xp-link" id="x-dist-payers">Dividir o total igualmente pelos pagadores</button>` : ""}`;
 
-    const secDivide = `
-      <section class="xp-sec ${flash === "divide" ? "flash" : ""}" data-blk="divide">
-        <div class="xp-sec-h">
-          <h3>Divisão</h3>
-          ${catDividing() ? "" : `
-            <span class="xp-sec-act">
-              <button type="button" class="xp-link sm" id="x-part-all">Todos</button>
-              <button type="button" class="xp-link sm" id="x-part-none">Nenhum</button>
-            </span>`}
-        </div>
-        ${catDividing() ? `
-          ${aviso(semGente.length === 0, `Falta escolher quem participa em: ${esc(semGente.join(", "))}`)}
-          <label class="xp-check">
-            <input type="checkbox" id="x-cat-divide" checked />
-            <span>Dividir cada categoria por pessoas diferentes</span>
-          </label>
-          <div class="xp-catdiv">
-            ${catList.filter(c => c.id in state.catSplit).map(c => {
-              const cents = state.catSplit[c.id] || 0;
-              const set = state.catParts[c.id] || new Set();
-              const n = members.filter(m => set.has(m.id)).length;
-              const each = n > 0 ? (cents % n === 0 ? fmtMoney(cents / n, cur) : "≈ " + fmtMoney(Math.round(cents / n), cur)) : "";
-              return `<div class="xp-catdiv-b">
-                <div class="xp-catdiv-h"><span>${c.icon} ${esc(c.label)}</span><span>${fmtMoney(cents, cur)}</span></div>
-                <div class="xp-chips">
-                  ${members.map(m => `
-                    <label class="xp-chip ${set.has(m.id) ? "on" : ""}">
-                      <input type="checkbox" data-catpart-cat="${c.id}" data-catpart-mem="${m.id}" ${set.has(m.id) ? "checked" : ""} />
-                      <span>${esc(shortName(m.name))}</span>
-                    </label>`).join("")}
-                </div>
-                <p class="xp-catdiv-f ${n === 0 ? "warn" : ""}">${n === 0
-                  ? "Escolhe quem participa" : `${n} pessoa${n === 1 ? "" : "s"} · ${each} cada`}</p>
-              </div>`;
-            }).join("")}
-          </div>` : `
-          ${aviso(okDivide || state.totalCents === 0, `${fmtMoney(shareSum, cur)} de ${fmtMoney(state.totalCents, cur)} divididos`)}
-          <div class="xp-seg sm" role="group" aria-label="Modo de divisão">
-            <button type="button" class="${state.mode === "equal" ? "on" : ""}" data-mode="equal">Partes iguais</button>
-            ${useWeights ? `<button type="button" class="${state.mode === "weights" ? "on" : ""}" data-mode="weights">Proporção</button>` : ""}
-            <button type="button" class="${state.mode === "exact" ? "on" : ""}" data-mode="exact">Exatos</button>
-          </div>
-          <div class="xp-people">
-            ${members.map(m => {
-              const on = state.participants.has(m.id);
-              let input = "";
-              if (on && state.mode === "weights") {
-                input = `<input class="xp-p-in" type="number" inputmode="decimal" step="0.1" min="0"
-                  data-weight="${m.id}" value="${state.weights[m.id] ?? 0}" />`;
-              } else if (on && state.mode === "exact") {
-                input = `<input class="xp-p-in" type="number" inputmode="decimal" step="0.01" min="0"
-                  data-exact="${m.id}" value="${((state.exact[m.id] || 0) / 100).toFixed(2)}" />`;
-              }
-              return pessoa(m, {
-                on, attr: `data-part="${m.id}"`, input,
-                val: on && state.mode !== "exact" ? fmtMoney(shares[m.id] || 0, cur) : "",
-              });
-            }).join("")}
-          </div>
-          ${state.catSplit ? `
-            <label class="xp-check">
-              <input type="checkbox" id="x-cat-divide" />
-              <span>Dividir cada categoria por pessoas diferentes
-                <small>ex.: o vinho só entre os adultos</small></span>
-            </label>` : ""}`}
-      </section>`;
-
-    const secCat = `
-      <section class="xp-sec ${flash === "cat" ? "flash" : ""}" data-blk="cat">
-        <div class="xp-sec-h">
-          <h3>Categoria</h3>
-          ${state.catAuto && state.category ? `<span class="xp-hint">sugerida</span>` : ""}
-        </div>
-        ${aviso(okCat, `${fmtMoney(catUsed, cur)} de ${fmtMoney(state.totalCents, cur)} atribuídos às categorias`)}
-        <div class="xp-cats">
-          ${catList.map(c => `
-            <button type="button" class="xp-cat ${catOn(c.id) ? "on" : ""}" data-cat="${c.id}">
-              <span class="xp-cat-ico">${c.icon}</span>
-              <span class="xp-cat-lb">${esc(c.label)}</span>
-              ${state.catSplit && catOn(c.id) ? `<span class="xp-cat-v">${fmtMoney(state.catSplit[c.id] || 0, cur)}</span>` : ""}
-            </button>`).join("")}
-        </div>
-        ${!state.catSplit ? (state.recurring ? "" : `
-          <button type="button" class="xp-link" id="x-cat-multi">Repartir a fatura por várias categorias</button>`) : `
-          <div class="xp-catsplit">
-            ${catList.filter(c => c.id in state.catSplit).map(c => `
-              <label class="xp-catsplit-l">
-                <span>${c.icon} ${esc(c.label)}</span>
-                <input type="number" inputmode="decimal" step="0.01" min="0" data-catamount="${c.id}"
-                  value="${((state.catSplit[c.id] || 0) / 100).toFixed(2)}" />
-              </label>`).join("")}
-            ${catsChosen === 0 ? `<p class="xp-nota">Toca nas categorias em cima para as juntar à fatura</p>` : ""}
-            <div class="xp-catsplit-a">
-              <button type="button" class="xp-link sm" id="x-cat-dist">Distribuir igualmente</button>
-              <button type="button" class="xp-link sm" id="x-cat-single">Uma só categoria</button>
+    const corpoDivide = () => catDividing() ? `
+      ${aviso(semGente.length === 0, `Falta escolher quem participa em: ${esc(semGente.join(", "))}`)}
+      <label class="xp-check">
+        <input type="checkbox" id="x-cat-divide" checked />
+        <span>Dividir cada categoria por pessoas diferentes</span>
+      </label>
+      <div class="xp-catdiv">
+        ${catList.filter(c => c.id in state.catSplit).map(c => {
+          const cents = state.catSplit[c.id] || 0;
+          const set = state.catParts[c.id] || new Set();
+          const n = members.filter(m => set.has(m.id)).length;
+          const each = n > 0 ? (cents % n === 0 ? fmtMoney(cents / n, cur) : "≈ " + fmtMoney(Math.round(cents / n), cur)) : "";
+          return `<div class="xp-catdiv-b">
+            <div class="xp-catdiv-h"><span>${c.icon} ${esc(c.label)}</span><span>${fmtMoney(cents, cur)}</span></div>
+            <div class="xp-chips">
+              ${members.map(m => `
+                <label class="xp-chip ${set.has(m.id) ? "on" : ""}">
+                  <input type="checkbox" data-catpart-cat="${c.id}" data-catpart-mem="${m.id}" ${set.has(m.id) ? "checked" : ""} />
+                  <span>${esc(shortName(m.name))}</span>
+                </label>`).join("")}
             </div>
-          </div>`}
-      </section>`;
+            <p class="xp-catdiv-f ${n === 0 ? "warn" : ""}">${n === 0
+              ? "Escolhe quem participa" : `${n} pessoa${n === 1 ? "" : "s"} · ${each} cada`}</p>
+          </div>`;
+        }).join("")}
+      </div>` : `
+      ${aviso(okDivide || state.totalCents === 0, `${fmtMoney(shareSum, cur)} de ${fmtMoney(state.totalCents, cur)} divididos`)}
+      <div class="xp-seg sm" role="group" aria-label="Modo de divisão">
+        <button type="button" class="${state.mode === "equal" ? "on" : ""}" data-mode="equal">Partes iguais</button>
+        ${useWeights ? `<button type="button" class="${state.mode === "weights" ? "on" : ""}" data-mode="weights">Proporção</button>` : ""}
+        <button type="button" class="${state.mode === "exact" ? "on" : ""}" data-mode="exact">Exatos</button>
+      </div>
+      <div class="xp-folha-act">
+        <span class="xp-folha-sub">Quem entra nesta despesa</span>
+        <span>
+          <button type="button" class="xp-link sm" id="x-part-all">Todos</button>
+          <button type="button" class="xp-link sm" id="x-part-none">Nenhum</button>
+        </span>
+      </div>
+      <div class="xp-people">
+        ${members.map(m => {
+          const on = state.participants.has(m.id);
+          let input = "";
+          if (on && state.mode === "weights") {
+            input = `<input class="xp-p-in" type="number" inputmode="decimal" step="0.1" min="0"
+              data-weight="${m.id}" value="${state.weights[m.id] ?? 0}" />`;
+          } else if (on && state.mode === "exact") {
+            input = `<input class="xp-p-in" type="number" inputmode="decimal" step="0.01" min="0"
+              data-exact="${m.id}" value="${((state.exact[m.id] || 0) / 100).toFixed(2)}" />`;
+          }
+          return pessoa(m, {
+            on, attr: `data-part="${m.id}"`, input,
+            val: on && state.mode !== "exact" ? fmtMoney(shares[m.id] || 0, cur) : "",
+          });
+        }).join("")}
+      </div>
+      ${state.catSplit ? `
+        <label class="xp-check">
+          <input type="checkbox" id="x-cat-divide" />
+          <span>Dividir cada categoria por pessoas diferentes
+            <small>ex.: o vinho só entre os adultos</small></span>
+        </label>` : ""}`;
 
-    // repetição (só no detalhe — as recorrentes são raras)
-    const secRepetir = (isRecurringRecord || isOccurrence) ? "" : `
-      <section class="xp-sec">
+    const corpoCat = () => `
+      ${aviso(okCat, `${fmtMoney(catUsed, cur)} de ${fmtMoney(state.totalCents, cur)} atribuídos às categorias`)}
+      ${state.catAuto && state.category ? `<p class="xp-folha-sub">Sugerida a partir da descrição — muda se não for.</p>` : ""}
+      <div class="xp-cats">
+        ${catList.map(c => `
+          <button type="button" class="xp-cat ${catOn(c.id) ? "on" : ""}" data-cat="${c.id}">
+            <span class="xp-cat-ico">${c.icon}</span>
+            <span class="xp-cat-lb">${esc(c.label)}</span>
+            ${state.catSplit && catOn(c.id) ? `<span class="xp-cat-v">${fmtMoney(state.catSplit[c.id] || 0, cur)}</span>` : ""}
+          </button>`).join("")}
+      </div>
+      ${!state.catSplit ? (state.recurring ? "" : `
+        <button type="button" class="xp-link" id="x-cat-multi">Repartir a fatura por várias categorias</button>`) : `
+        <div class="xp-catsplit">
+          ${catList.filter(c => c.id in state.catSplit).map(c => `
+            <label class="xp-catsplit-l">
+              <span>${c.icon} ${esc(c.label)}</span>
+              <input type="number" inputmode="decimal" step="0.01" min="0" data-catamount="${c.id}"
+                value="${((state.catSplit[c.id] || 0) / 100).toFixed(2)}" />
+            </label>`).join("")}
+          ${catsChosen === 0 ? `<p class="xp-nota">Toca nas categorias em cima para as juntar à fatura</p>` : ""}
+          <div class="xp-catsplit-a">
+            <button type="button" class="xp-link sm" id="x-cat-dist">Distribuir igualmente</button>
+            <button type="button" class="xp-link sm" id="x-cat-single">Uma só categoria</button>
+          </div>
+        </div>`}`;
+
+    const corpoRepetir = () => `
+      ${isRecurringRecord ? `<p class="xp-folha-sub">Esta é a série. As alterações valem para as próximas ocorrências.</p>` : `
         <label class="xp-check big">
           <input type="checkbox" data-type="${state.recurring ? "occ" : "rec"}" ${state.recurring ? "checked" : ""} />
           <span>Repete-se todos os meses
-            <small>${state.recurring
-              ? "Lançada sozinha no dia marcado, mês após mês."
-              : "Renda, ginásio, subscrições — a app lança sozinha."}</small></span>
-        </label>
-        ${state.recurring ? `
-          <label class="xp-check">
-            <input type="checkbox" id="x-active" ${state.active ? "checked" : ""} />
-            <span>Série ativa</span>
-          </label>` : ""}
-      </section>`;
+            <small>Renda, ginásio, subscrições — a app lança sozinha.</small></span>
+        </label>`}
+      ${state.recurring ? `
+        <div class="xp-rec">
+          <label class="xp-field">
+            <span>Dia do mês</span>
+            <input id="x-dom" type="number" inputmode="numeric" min="1" max="31" value="${state.dayOfMonth}" />
+          </label>
+          <label class="xp-field">
+            <span>Termina em</span>
+            <input id="x-end" type="date" min="${today}" value="${esc(state.endDate)}" />
+          </label>
+        </div>
+        <label class="xp-check">
+          <input type="checkbox" id="x-active" ${state.active ? "checked" : ""} />
+          <span>Série ativa
+            <small>Lançada no dia marcado (ajustado ao último dia nos meses mais curtos).</small></span>
+        </label>` : ""}`;
 
-    // avisos de contexto (ocorrência de série, molde, só-leitura)
+    const CORPOS = { pagou: corpoPagou, divide: corpoDivide, cat: corpoCat, repetir: corpoRepetir };
+
+    const popup = folha ? `
+      <div class="xp-scrim" id="x-scrim">
+        <div class="xp-folha ${folhaNova ? "entra" : ""}" role="dialog" aria-modal="true" aria-label="${FOLHA_TITULO[folha]}">
+          <div class="xp-folha-h">
+            <span class="xp-grab"></span>
+            <div class="xp-folha-t">
+              <h3>${FOLHA_TITULO[folha]}</h3>
+              <button type="button" class="xp-folha-ok" id="x-folha-ok">Concluir</button>
+            </div>
+          </div>
+          <div class="xp-folha-b" id="x-folha-b">${CORPOS[folha]()}</div>
+        </div>
+      </div>` : "";
+
+    // ------------------------------------------------- avisos de contexto
     const contexto = readOnly ? `
       <div class="xp-note gold">${ico("eye")}
         <span>${ctx.myRole === "read"
@@ -2310,10 +2358,6 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
       </div>` : isOccurrence ? `
       <div class="xp-note">${ico("repeat")}
         <span>Só esta ocorrência de ${esc(fmtDate(existing.expense_date))} — a série fica como está.</span>
-      </div>` : (existing && state.recurring) ? `
-      <div class="xp-note">${ico("repeat")}
-        <span>Vai passar a repetir-se todos os meses.</span>
-        <button type="button" class="xp-link sm" id="x-cancel-convert">Cancelar</button>
       </div>` : "";
 
     const acao = converting && state.recurring ? "Tornar recorrente"
@@ -2325,39 +2369,44 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
       ${cabecalho}
       <div class="xp-body"${readOnly ? " inert" : ""}>
         ${contexto}
-        ${resumo}
-        ${detalhe ? `${secPagou}${secDivide}${secCat}${secRepetir}` : ""}
+        ${decisoes}
         ${existing && !readOnly ? `
           <button type="button" class="xp-del" id="x-del">${ico("trash")} Apagar despesa</button>` : ""}
       </div>
       ${readOnly ? "" : `
       <footer class="xp-foot">
         <button class="xp-cta" id="x-save" ${okValor ? "" : "disabled"}>${acao}</button>
-        ${detalhe ? "" : `<button type="button" class="xp-link wide" id="x-more">Mais detalhe</button>`}
       </footer>`}
+      ${popup}
     </div>`;
-    flash = null;
+
+    // o painel só anima ao abrir; depois disso mantém a posição de scroll
+    const $fb = slot.querySelector("#x-folha-b");
+    if ($fb && !folhaNova) $fb.scrollTop = folhaScroll;
+    if ($fb) $fb.addEventListener("scroll", () => { folhaScroll = $fb.scrollTop; }, { passive: true });
+    folhaNova = false;
+    slot.parentElement?.classList.toggle("folha-aberta", !!folha);
 
     // -------------------------------------------------------------- eventos
-    slot.querySelector("#x-back").onclick = close;
+    slot.querySelector("#x-back").onclick = sair;
     slot.querySelector("#x-save")?.addEventListener("click", doSave);
     slot.querySelector("#x-del")?.addEventListener("click", doDelete);
-    slot.querySelector("#x-more")?.addEventListener("click", () => abrir("pagou"));
-    slot.querySelectorAll("[data-more]").forEach(b => { b.onclick = () => abrir(b.dataset.more); });
+    slot.querySelectorAll("[data-folha]").forEach(b => { b.onclick = () => abrirFolha(b.dataset.folha); });
+    slot.querySelector("#x-folha-ok")?.addEventListener("click", fecharFolha);
+    slot.querySelector("#x-scrim")?.addEventListener("click", (e) => { if (e.target.id === "x-scrim") fecharFolha(); });
 
     const $desc = slot.querySelector("#x-desc");
     if ($desc) $desc.oninput = () => {
       state.desc = $desc.value;
       // sugestão de categoria enquanto se escreve, sem redesenhar (o campo
-      // perderia o foco): só se atualiza a linha do resumo e os ladrilhos
+      // perderia o foco): atualiza-se só a linha do resumo
       if (!state.catManual && !state.catSplit) {
         const allowedIds = groupCatIds(group);
         const g = guessCategory(state.desc, ctx.expenses, allowedIds ? new Set(allowedIds) : null);
         if (g !== state.category) {
           state.category = g;
           state.catAuto = !!g;
-          slot.querySelectorAll("[data-cat]").forEach(b => b.classList.toggle("on", b.dataset.cat === g));
-          const $v = slot.querySelector('[data-more="cat"] .xp-row-v');
+          const $v = slot.querySelector('[data-folha="cat"] .xp-row-v');
           if ($v) $v.textContent = g ? `${catOf(g).icon} ${catOf(g).label}` : "Nenhuma";
         }
       }
@@ -2372,26 +2421,23 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     };
 
     slot.querySelectorAll("[data-date]").forEach(b => {
-      b.onclick = () => { state.date = b.dataset.date; dataAberta = false; draw(); };
-    });
-    slot.querySelector("#x-outra")?.addEventListener("click", () => {
-      dataAberta = true;
-      draw();
-      const $d = slot.querySelector("#x-date");
-      $d?.focus();
-      try { $d?.showPicker(); } catch (_) { /* browsers sem showPicker */ }
+      b.onclick = () => { state.date = b.dataset.date; draw(); };
     });
     const $date = slot.querySelector("#x-date");
-    if ($date) $date.onchange = () => { state.date = $date.value; draw(); };
+    if ($date) {
+      // o campo cobre o terceiro botão: tocar nele abre o calendário nativo
+      $date.onclick = () => { try { $date.showPicker(); } catch (_) { /* sem showPicker */ } };
+      $date.onchange = () => { if ($date.value) { state.date = $date.value; draw(); } };
+    }
     const $dom = slot.querySelector("#x-dom");
     if ($dom) $dom.onchange = () => {
       state.dayOfMonth = Math.min(31, Math.max(1, parseInt($dom.value, 10) || 1));
-      $dom.value = state.dayOfMonth;
+      draw();
     };
     const $end = slot.querySelector("#x-end");
     if ($end) $end.onchange = () => { state.endDate = $end.value; };
     const $active = slot.querySelector("#x-active");
-    if ($active) $active.onchange = () => { state.active = $active.checked; };
+    if ($active) $active.onchange = () => { state.active = $active.checked; draw(); };
 
     slot.querySelectorAll("[data-type]").forEach(cb => {
       cb.onchange = () => {
@@ -2405,7 +2451,6 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
         draw();
       };
     });
-    slot.querySelector("#x-cancel-convert")?.addEventListener("click", () => { state.recurring = false; draw(); });
 
     slot.querySelectorAll("[data-cat]").forEach(b => {
       b.onclick = () => {
