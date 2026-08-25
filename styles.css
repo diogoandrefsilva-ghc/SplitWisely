@@ -1514,3 +1514,348 @@ p.hint { margin: .5rem 0 0; font-size: .78rem; color: var(--muted); line-height:
   /* os 3 separadores do detalhe da despesa têm de caber no ecrã */
   .form-tabs button, .form-section .tabs button { font-size: .84rem; padding: .38rem .3rem; }
 }
+
+/* ================================================================ assistente de despesa (A) */
+/* O formulário de despesa é um assistente: uma pergunta por ecrã, alvos de
+   toque grandes e um resumo final. Todas as opções estão à vista — o que
+   antes vivia em separadores e links passou a passos e botões inteiros. */
+
+/* no telemóvel o assistente ocupa o ecrã todo (é uma tarefa, não um pop-up) */
+@media (max-width: 520px) {
+  .modal-backdrop.modal-full { padding: 0; }
+  .modal-backdrop.modal-full .modal-card {
+    display: flex;
+    flex-direction: column;
+    min-height: 100%;
+    max-width: none;
+    border: none;
+    border-radius: 0;
+    padding: calc(.85rem + env(safe-area-inset-top)) .85rem calc(.85rem + env(safe-area-inset-bottom));
+  }
+}
+
+.wiz-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .7rem;
+  margin-bottom: .75rem;
+}
+.wiz-top .back-pill { margin-bottom: 0; flex: none; }
+.wiz-count {
+  font-size: .72rem;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  white-space: nowrap;
+}
+
+/* barra de progresso: um segmento por passo, todos tocáveis */
+.wiz-bar { display: flex; gap: .3rem; margin-bottom: 1.1rem; }
+.wiz-seg {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: .3rem;
+  background: none;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+  color: var(--muted);
+}
+.wiz-seg::before {
+  content: "";
+  display: block;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--seg-bg);
+}
+.wiz-seg span {
+  font-size: .6rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .03em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wiz-seg:hover { filter: none; color: var(--text); }
+.wiz-seg.done::before { background: var(--primary); opacity: .45; }
+.wiz-seg.now::before { background: linear-gradient(135deg, var(--primary-2), var(--primary)); }
+.wiz-seg.now { color: var(--primary); }
+
+/* o cartão a ecrã cheio estica: o corpo cresce e a barra de ação fica em baixo */
+.expense-detail.wiz { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.wiz-title { margin: 0 0 .2rem; font-size: 1.3rem; letter-spacing: -.01em; }
+.wiz-sub { margin: 0 0 1rem; color: var(--muted); font-size: .86rem; line-height: 1.4; }
+.wiz-body { flex: 1; min-height: 210px; }
+.wiz-body[inert] { opacity: .78; }
+
+/* barra de ação sempre à mão, colada ao fundo do ecrã */
+.wiz-foot {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  display: flex;
+  gap: .6rem;
+  margin-top: 1.1rem;
+  padding: .75rem 0 .25rem;
+  background: var(--card);
+  box-shadow: 0 -14px 18px -14px rgba(0, 0, 0, .22);
+}
+.wiz-prev { flex: none; padding: .85rem 1.1rem; border-radius: 14px; }
+.wiz-next { flex: 1; padding: .85rem 1.1rem; font-size: 1rem; border-radius: 14px; }
+
+/* campo do valor: o protagonista do 1.º passo */
+.hero-amount {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: .4rem;
+  margin: .2rem 0 1rem;
+  padding: .75rem 1rem;
+  background: var(--card-inner);
+  border: 2px solid var(--border);
+  border-radius: 18px;
+  transition: border-color .15s;
+}
+.hero-amount:focus-within { border-color: var(--primary); }
+.hero-amount.filled { border-color: rgba(15, 157, 118, .35); }
+.hero-amount input {
+  flex: 0 1 auto;
+  width: 6.5ch;
+  height: auto;
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: 2.1rem;
+  font-weight: 700;
+  text-align: right;
+  letter-spacing: -.02em;
+  font-variant-numeric: tabular-nums;
+}
+.hero-amount input:focus { box-shadow: none; }
+.hero-amount input::placeholder { color: var(--muted); opacity: .45; font-weight: 600; }
+.hero-cur { font-size: 1.3rem; font-weight: 600; color: var(--muted); flex: none; }
+.big-input { height: 48px; }
+
+/* escolhas rápidas de data */
+.pick-row { display: flex; gap: .45rem; align-items: center; flex-wrap: wrap; }
+.pick {
+  flex: none;
+  background: var(--card-inner);
+  border: 1px solid var(--border);
+  color: var(--text);
+  box-shadow: none;
+  border-radius: 12px;
+  padding: .6rem .95rem;
+  font-weight: 550;
+}
+.pick:hover { filter: none; background: var(--card); }
+.pick.on { border-color: var(--primary); background: var(--chip-pos-bg); color: var(--primary); font-weight: 650; }
+.pick-row input[type="date"] { flex: 1; min-width: 132px; height: 46px; }
+
+/* cartões de escolha grandes (tipo de despesa, modo de divisão) */
+.big-choice { display: flex; flex-direction: column; gap: .5rem; margin-bottom: .9rem; }
+.big-choice.two { flex-direction: row; }
+.big-choice.two .bc { flex: 1 1 0; flex-direction: column; flex-wrap: nowrap; align-items: flex-start; gap: .2rem; }
+.big-choice.two .bc > span:last-child { flex-basis: auto; }
+.bc {
+  display: flex;
+  align-items: center;
+  gap: .7rem;
+  flex-wrap: wrap;
+  width: 100%;
+  text-align: left;
+  white-space: normal;
+  padding: .8rem .85rem;
+  min-height: 58px;
+  background: var(--card-inner);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  color: var(--text);
+  box-shadow: none;
+  font-weight: 500;
+}
+.bc:hover { filter: none; background: var(--card); }
+.bc-ico { font-size: 1.3rem; line-height: 1; flex: none; }
+.bc strong { font-size: .95rem; }
+.bc > span:last-child { flex-basis: 100%; font-size: .78rem; color: var(--muted); font-weight: 400; line-height: 1.3; }
+.bc.on { border-color: var(--primary); background: var(--chip-pos-bg); box-shadow: inset 0 0 0 1px var(--primary); }
+
+/* botão de largura total com título + explicação (ex.: repartir fatura) */
+.wide-btn {
+  display: flex;
+  align-items: center;
+  gap: .7rem;
+  width: 100%;
+  text-align: left;
+  white-space: normal;
+  margin-top: .9rem;
+  padding: .8rem .85rem;
+  background: var(--card-inner);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  color: var(--text);
+  box-shadow: none;
+  font-weight: 500;
+}
+.wide-btn:hover { filter: none; background: var(--card); border-color: var(--primary); }
+.wb-ico { font-size: 1.25rem; line-height: 1; flex: none; }
+.wb-text { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.wb-text strong { font-size: .92rem; }
+.wb-text span { font-size: .78rem; color: var(--muted); font-weight: 400; line-height: 1.3; }
+button.wide { width: 100%; padding: .7rem 1rem; }
+button.danger.wide { margin-top: .9rem; }
+
+/* grelha de categorias: todas visíveis, sem scroll lateral */
+.cat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(94px, 1fr));
+  gap: .5rem;
+}
+.cat-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: .25rem;
+  min-height: 82px;
+  padding: .65rem .3rem;
+  background: var(--card-inner);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  color: var(--text);
+  box-shadow: none;
+  font-weight: 500;
+  white-space: normal;
+}
+.cat-tile:hover { filter: none; background: var(--card); }
+.cat-tile-ico { font-size: 1.65rem; line-height: 1; }
+.cat-tile-label { font-size: .73rem; text-align: center; line-height: 1.15; }
+.cat-tile-val { font-size: .7rem; font-weight: 700; color: var(--primary); }
+.cat-tile.on {
+  border-color: var(--primary);
+  background: var(--chip-pos-bg);
+  color: var(--primary);
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
+
+/* lista de pessoas: uma linha grande por pessoa, toque em qualquer sítio */
+.who-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .6rem;
+  margin: .2rem 0 .35rem;
+  font-size: .74rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--muted);
+}
+.who-head-actions { display: flex; gap: .7rem; }
+.who-list { display: flex; flex-direction: column; gap: .45rem; margin: .2rem 0 .8rem; }
+.who-row { display: flex; align-items: center; gap: .5rem; }
+.who {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: .65rem;
+  min-height: 56px;
+  padding: .5rem .75rem;
+  background: var(--card-inner);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  color: var(--text);
+  box-shadow: none;
+  font-weight: 500;
+  text-align: left;
+}
+.who:hover { filter: none; background: var(--card); }
+.who-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: .95rem;
+}
+.who-val { flex: none; font-size: .9rem; font-weight: 650; font-variant-numeric: tabular-nums; }
+.who-mark { flex: none; width: 1.2rem; text-align: center; color: var(--primary); font-weight: 800; }
+.who-row.on .who { border-color: var(--primary); background: var(--chip-pos-bg); }
+.who-amount { flex: none; width: 100px; height: 46px; text-align: right; font-variant-numeric: tabular-nums; }
+
+/* resumo final (e vista de consulta) */
+.rev-hero {
+  text-align: center;
+  padding: 1.05rem .8rem 1.1rem;
+  background: var(--card-inner);
+  border: 1px solid var(--border-soft);
+  border-radius: 16px;
+  margin-bottom: .9rem;
+}
+.rev-amount { font-size: 2rem; font-weight: 750; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.rev-desc { margin-top: .15rem; color: var(--muted); font-size: .92rem; }
+.rev-list { display: flex; flex-direction: column; gap: .42rem; }
+.rev-row {
+  display: flex;
+  align-items: center;
+  gap: .7rem;
+  width: 100%;
+  min-height: 54px;
+  padding: .6rem .8rem;
+  text-align: left;
+  white-space: normal;
+  background: var(--card-inner);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  color: var(--text);
+  box-shadow: none;
+  font-weight: 500;
+}
+.rev-row:hover { filter: none; background: var(--card); }
+.rev-row:disabled { opacity: 1; cursor: default; }
+.rev-k {
+  flex: none;
+  width: 32%;
+  font-size: .68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--muted);
+  line-height: 1.25;
+}
+.rev-v { flex: 1; min-width: 0; font-size: .9rem; line-height: 1.3; }
+.rev-row.warn { border-color: var(--danger); }
+.rev-row.warn .rev-v { color: var(--danger); }
+.rev-shares {
+  margin-top: .9rem;
+  padding: .7rem .85rem;
+  background: var(--card-inner);
+  border: 1px solid var(--border-soft);
+  border-radius: 14px;
+}
+.rev-shares-head {
+  font-size: .7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--muted);
+  margin-bottom: .4rem;
+}
+.rev-share { display: flex; align-items: center; gap: .5rem; padding: .22rem 0; font-size: .88rem; }
+.rev-share-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rev-share-val { flex: none; font-weight: 650; font-variant-numeric: tabular-nums; }
+/* nota de apoio dentro de um passo (ex.: categoria sugerida) */
+.wiz-note {
+  margin: 0 0 .7rem;
+  padding: .5rem .7rem;
+  background: var(--chip-pos-bg);
+  border-radius: 10px;
+  font-size: .82rem;
+  line-height: 1.4;
+}

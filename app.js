@@ -1568,7 +1568,6 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
   }
 
   const state = {
-    section: "dados", // dados | pagou | divide
     desc: existing?.description || "",
     date: existing?.expense_date || new Date().toISOString().slice(0, 10),
     category: existing?.category && catOf(existing.category) ? existing.category : null,
@@ -1697,28 +1696,344 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     slot.querySelector("#x-edit-occ").onclick = () => { occChoiceDone = true; draw(); };
   }
 
+
+  // Apagar o registo aberto (despesa, ocorrência de série ou molde).
+  async function doDelete() {
+    if (isRecurringRecord) {
+      if (!confirm("Apagar esta despesa recorrente? As despesas já lançadas mantêm-se — só deixa de lançar novas.")) return;
+      const { error } = await sb.from("recurring_expenses").delete().eq("id", existing.id);
+      if (error) return toast(error.message, true);
+      toast("Recorrente apagada");
+      return refresh();
+    }
+    if (isOccurrence) {
+      if (!confirm("Apagar esta ocorrência? Faz parte de uma despesa recorrente e pode voltar a ser lançada automaticamente. "
+        + "Para parar de vez, apaga ou pausa a série nas Definições.")) return;
+      const { error } = await sb.from("expenses").delete().eq("id", existing.id);
+      if (error) return toast(error.message, true);
+      toast("Ocorrência apagada");
+      return refresh();
+    }
+    if (!confirm("Apagar esta despesa?")) return;
+    const { error } = await sb.from("expenses").delete().eq("id", existing.id);
+    if (error) return toast(error.message, true);
+    toast("Despesa apagada");
+    refresh();
+  }
+
+  // Validar e gravar. As validações que falham levam o utilizador ao
+  // sítio onde se corrigem (goToSection), definido por cada desenho do
+  // formulário.
+  async function doSave() {
+    const desc = state.desc.trim();
+    const date = state.date;
+    const shares2 = computedShares();
+    const paidSum2 = [...state.payers].reduce((a, id) => a + (state.payerAmounts[id] || 0), 0);
+    const shareSum2 = Object.values(shares2).reduce((a, b) => a + b, 0);
+
+    const fail = (section, msg) => { goToSection(section); toast(msg, true); };
+    if (!desc) return fail("dados", "Falta a descrição");
+    if (state.totalCents <= 0) return fail("dados", "O valor tem de ser maior que zero");
+    if (state.payers.size === 0) return fail("pagou", "Escolhe quem pagou");
+    if (paidSum2 !== state.totalCents) return fail("pagou", "Os valores pagos não somam o total");
+    if (Object.keys(shares2).length === 0) return fail("divide", "Escolhe por quem se divide");
+    // dividir por categoria: cada categoria com valor precisa de alguém
+    if (catDividing()) {
+      const semGente = catEntries()
+        .filter(([cat]) => ![...(state.catParts[cat] || [])].some(id => members.some(m => m.id === id)))
+        .map(([cat]) => catOf(cat).label);
+      if (semGente.length) return fail("divide", `Escolhe quem participa em: ${semGente.join(", ")}`);
+    }
+    if (shareSum2 !== state.totalCents) return fail("divide", "A divisão não soma o total");
+
+    // fatura repartida por categorias: a alocação tem de somar o total
+    // (sem nenhuma categoria escolhida, a despesa fica sem categoria)
+    const catRows = catEntries();
+    if (state.catSplit && catRows.length > 0) {
+      const catSum = catRows.reduce((a, [, c]) => a + c, 0);
+      if (catSum !== state.totalCents) return fail("cat", "Os valores das categorias não somam o total da fatura");
+    }
+    // o que vai para expenses.category: a única, ou a principal da repartição
+    const catId = primaryCategory();
+    // linhas da divisão por categoria (só quando está ativa)
+    const catShareRows = [];
+    if (catDividing()) {
+      const per = perCategoryShares();
+      for (const [cat, byMem] of Object.entries(per))
+        for (const [mem, c] of Object.entries(byMem))
+          if (c > 0) catShareRows.push({ category: cat, member_id: mem, amount: (c / 100).toFixed(2) });
+    }
+
+    // ----- converter uma despesa ocasional em recorrente daí para a frente -----
+    // cria um molde a partir desta despesa e liga-a como 1.ª ocorrência (o
+    // índice único impede que a geração a duplique). Guarda: não pode existir
+    // outra despesa com a mesma descrição em data POSTERIOR, senão a geração
+    // criaria duplicados dos meses que já foram lançados à mão.
+    if (state.recurring && converting) {
+      if (state.dayOfMonth < 1 || state.dayOfMonth > 31) return fail("dados", "Dia do mês tem de ser entre 1 e 31");
+      if (state.endDate && state.endDate < today) return fail("dados", "A data de fim não pode ser anterior a hoje");
+
+      const { data: later, error: qErr } = await sb.from("expenses")
+        .select("id, expense_date")
+        .eq("group_id", group.id)
+        .eq("description", desc)
+        .gt("expense_date", existing.expense_date)
+        .order("expense_date").limit(1);
+      if (qErr) return toast(qErr.message, true);
+      if (later && later.length) {
+        return fail("dados", `Já existe uma despesa «${desc}» em ${fmtDate(later[0].expense_date)}, posterior a esta. `
+          + "Apaga-a ou muda a descrição antes de tornar recorrente (senão ficavam duplicadas).");
+      }
+
+      const period = existing.expense_date.slice(0, 8) + "01"; // 1.º dia do mês (YYYY-MM-01)
+      // 1) cria o molde a partir dos valores atuais do formulário
+      const rpayload = {
+        group_id: group.id, description: desc, amount: (state.totalCents / 100).toFixed(2),
+        category: catId, split_mode: state.mode, day_of_month: state.dayOfMonth,
+        start_date: period, end_date: state.endDate || null, active: state.active,
+      };
+      const { data: rec, error: rErr } = await sb.from("recurring_expenses").insert(rpayload).select().single();
+      if (rErr) return toast(rErr.message, true);
+      const rPayerRows = [...state.payers].filter(id => (state.payerAmounts[id] || 0) > 0)
+        .map(id => ({ recurring_id: rec.id, member_id: id, amount: (state.payerAmounts[id] / 100).toFixed(2) }));
+      const rShareRows = Object.entries(shares2).filter(([, c]) => c > 0)
+        .map(([id, c]) => ({ recurring_id: rec.id, member_id: id, amount: (c / 100).toFixed(2) }));
+      const re1 = await sb.from("recurring_expense_payers").insert(rPayerRows);
+      const re2 = await sb.from("recurring_expense_shares").insert(rShareRows);
+      if (re1.error || re2.error) return toast((re1.error || re2.error).message, true);
+
+      // 2) atualiza a despesa (aplica edições) e liga-a ao molde como 1.ª ocorrência
+      const { error: uErr } = await sb.from("expenses").update({
+        description: desc, amount: (state.totalCents / 100).toFixed(2),
+        split_mode: state.mode, category: catId,
+        recurring_id: rec.id, recurring_period: period,
+      }).eq("id", existing.id);
+      if (uErr) return toast(uErr.message, true);
+      await sb.from("expense_payers").delete().eq("expense_id", existing.id);
+      await sb.from("expense_shares").delete().eq("expense_id", existing.id);
+      // a 1.ª ocorrência fica com a categoria única do molde — limpa uma
+      // eventual repartição/divisão antiga (erros ignorados: schema sem a tabela)
+      await sb.from("expense_categories").delete().eq("expense_id", existing.id);
+      await sb.from("expense_category_shares").delete().eq("expense_id", existing.id);
+      const pRows = [...state.payers].filter(id => (state.payerAmounts[id] || 0) > 0)
+        .map(id => ({ expense_id: existing.id, member_id: id, amount: (state.payerAmounts[id] / 100).toFixed(2) }));
+      const sRows = Object.entries(shares2).filter(([, c]) => c > 0)
+        .map(([id, c]) => ({ expense_id: existing.id, member_id: id, amount: (c / 100).toFixed(2) }));
+      const pi1 = await sb.from("expense_payers").insert(pRows);
+      const pi2 = await sb.from("expense_shares").insert(sRows);
+      if (pi1.error || pi2.error) return toast((pi1.error || pi2.error).message, true);
+
+      if (catId) learnCategory(desc, catId);
+      try { await sb.rpc("generate_due_recurring"); } catch (_) { /* schema sem RPC */ }
+      toast("Despesa convertida em recorrente");
+      return refresh();
+    }
+
+    // ----- molde recorrente: grava em recurring_* e materializa já -----
+    if (state.recurring) {
+      if (state.dayOfMonth < 1 || state.dayOfMonth > 31) return fail("dados", "Dia do mês tem de ser entre 1 e 31");
+      if (state.endDate && state.endDate < today) return fail("dados", "A data de fim não pode ser anterior a hoje");
+
+      const rpayload = {
+        group_id: group.id,
+        description: desc,
+        amount: (state.totalCents / 100).toFixed(2),
+        category: catId,
+        split_mode: state.mode,
+        day_of_month: state.dayOfMonth,
+        start_date: state.startDate,
+        end_date: state.endDate || null,
+        active: state.active,
+      };
+      let recId = existing?.id;
+      if (existing) {
+        const { error } = await sb.from("recurring_expenses").update(rpayload).eq("id", existing.id);
+        if (error) return toast(error.message, true);
+        await sb.from("recurring_expense_payers").delete().eq("recurring_id", existing.id);
+        await sb.from("recurring_expense_shares").delete().eq("recurring_id", existing.id);
+      } else {
+        const { data, error } = await sb.from("recurring_expenses").insert(rpayload).select().single();
+        if (error) return toast(error.message, true);
+        recId = data.id;
+      }
+      const rPayerRows = [...state.payers]
+        .filter(id => (state.payerAmounts[id] || 0) > 0)
+        .map(id => ({ recurring_id: recId, member_id: id, amount: (state.payerAmounts[id] / 100).toFixed(2) }));
+      const rShareRows = Object.entries(shares2)
+        .filter(([, c]) => c > 0)
+        .map(([id, c]) => ({ recurring_id: recId, member_id: id, amount: (c / 100).toFixed(2) }));
+      const e1 = await sb.from("recurring_expense_payers").insert(rPayerRows);
+      const e2 = await sb.from("recurring_expense_shares").insert(rShareRows);
+      if (e1.error || e2.error) return toast((e1.error || e2.error).message, true);
+
+      if (catId) learnCategory(desc, catId);
+      // materializa já as ocorrências em atraso deste molde (idempotente)
+      try { await sb.rpc("generate_due_recurring"); } catch (_) { /* schema sem RPC */ }
+      toast(existing ? "Despesa recorrente atualizada" : "Despesa recorrente criada");
+      return refresh();
+    }
+
+    const payload = {
+      group_id: group.id,
+      description: desc,
+      amount: (state.totalCents / 100).toFixed(2),
+      expense_date: date || new Date().toISOString().slice(0, 10),
+      // dividir por categoria produz valores por pessoa arbitrários: grava
+      // como "exact" para reabrir fiel mesmo sem a tabela da divisão
+      split_mode: catDividing() ? "exact" : state.mode,
+      category: catId,
+    };
+
+    // schema antigo sem as colunas split_mode/category: grava na mesma
+    // sem esses campos (o PostgREST acusa uma coluna em falta de cada vez)
+    const stripMissingCol = (error) => {
+      if (!error) return false;
+      if (/split_mode/i.test(error.message) && "split_mode" in payload) {
+        toast("Modo de divisão não gravado — corre o schema.sql mais recente no Supabase", true);
+        delete payload.split_mode;
+        return true;
+      }
+      if (/category/i.test(error.message) && "category" in payload) {
+        toast("Categoria não gravada — corre o schema.sql mais recente no Supabase", true);
+        delete payload.category;
+        return true;
+      }
+      return false;
+    };
+
+    let expenseId = existing?.id;
+    if (existing) {
+      let { error } = await sb.from("expenses").update(payload).eq("id", existing.id);
+      while (stripMissingCol(error)) ({ error } = await sb.from("expenses").update(payload).eq("id", existing.id));
+      if (error) return toast(error.message, true);
+      const d1 = await sb.from("expense_payers").delete().eq("expense_id", existing.id);
+      const d2 = await sb.from("expense_shares").delete().eq("expense_id", existing.id);
+      if (d1.error || d2.error) return toast((d1.error || d2.error).message, true);
+    } else {
+      let { data, error } = await sb.from("expenses").insert(payload).select().single();
+      while (stripMissingCol(error)) ({ data, error } = await sb.from("expenses").insert(payload).select().single());
+      if (error) return toast(error.message, true);
+      expenseId = data.id;
+    }
+
+    // aprender: reforça a ligação descrição -> categoria para as próximas
+    // sugestões automáticas ficarem cada vez mais certeiras (na fatura
+    // repartida aprende-se a principal)
+    if (catId) learnCategory(desc, catId);
+
+    // fatura repartida: substitui as linhas em expense_categories (com 0
+    // ou 1 categoria não há linhas — a coluna category chega). Schema
+    // antigo sem a tabela: degrada com aviso, a despesa fica na principal.
+    const catInsRows = catRows.length >= 2
+      ? catRows.map(([id, c]) => ({ expense_id: expenseId, category: id, amount: (c / 100).toFixed(2) }))
+      : [];
+    const dc = await sb.from("expense_categories").delete().eq("expense_id", expenseId);
+    const catsMissing = !!dc.error && /expense_categories/i.test(dc.error.message);
+    if (dc.error && !catsMissing) return toast(dc.error.message, true);
+    if (catInsRows.length && !catsMissing) {
+      const ic = await sb.from("expense_categories").insert(catInsRows);
+      if (ic.error) return toast(ic.error.message, true);
+    }
+    if (catInsRows.length && catsMissing) {
+      toast("Repartição por categorias não gravada — corre o schema.sql mais recente no Supabase", true);
+    }
+
+    // divisão do custo por categoria (quem participa em cada): substitui as
+    // linhas. Sem esta divisão não há linhas — expense_shares (a soma) chega.
+    const catShareInsRows = catShareRows.map(r => ({ expense_id: expenseId, ...r }));
+    const ds = await sb.from("expense_category_shares").delete().eq("expense_id", expenseId);
+    const catShMissing = !!ds.error && /expense_category_shares/i.test(ds.error.message);
+    if (ds.error && !catShMissing) return toast(ds.error.message, true);
+    if (catShareInsRows.length && !catShMissing) {
+      const is = await sb.from("expense_category_shares").insert(catShareInsRows);
+      if (is.error) return toast(is.error.message, true);
+    }
+    if (catShareInsRows.length && catShMissing) {
+      toast("Divisão por categoria não gravada — corre o schema.sql mais recente no Supabase", true);
+    }
+
+    const payerRows = [...state.payers]
+      .filter(id => (state.payerAmounts[id] || 0) > 0)
+      .map(id => ({ expense_id: expenseId, member_id: id, amount: (state.payerAmounts[id] / 100).toFixed(2) }));
+    const shareRows = Object.entries(shares2)
+      .filter(([, c]) => c > 0)
+      .map(([id, c]) => ({ expense_id: expenseId, member_id: id, amount: (c / 100).toFixed(2) }));
+
+    const i1 = await sb.from("expense_payers").insert(payerRows);
+    const i2 = await sb.from("expense_shares").insert(shareRows);
+    if (i1.error || i2.error) return toast((i1.error || i2.error).message, true);
+
+    toast(existing ? "Despesa atualizada" : "Despesa adicionada");
+    refresh();
+  }
+
+  // --------------------------------------------------------- assistente (A)
+  // O formulário é um assistente: uma pergunta por ecrã, alvos de toque
+  // grandes e um resumo final antes de gravar. Nada fica escondido atrás de
+  // separadores — a barra de progresso no topo mostra sempre onde se está e
+  // salta para qualquer passo, e o resumo repete tudo o que vai ser gravado.
+  const STEPS = ["valor", "cat", "pagou", "divide", "rever"];
+  const STEP_LABEL = {
+    valor: "Valor", cat: "Categoria", pagou: "Pagou",
+    divide: "Divisão", rever: "Rever",
+  };
+  // onde aterra cada validação do gravar (ver doSave -> fail)
+  const SECTION_STEP = { dados: "valor", cat: "cat", pagou: "pagou", divide: "divide" };
+
+  // ao editar entra-se pelo resumo (vê-se tudo de uma vez e salta-se para o
+  // que se quer mudar); a criar, começa-se no princípio
+  let step = existing ? "rever" : "valor";
+  // passos já vistos: só esses ganham o ✓ verde na barra (senão a barra
+  // ficava toda verde à partida, por os passos seguintes já terem defaults)
+  const visited = new Set(existing ? STEPS : [step]);
+  function goToStep(id) { step = id; visited.add(id); draw(); }
+  function goToSection(sec) { goToStep(SECTION_STEP[sec] || "valor"); }
+
+  const ontem = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+
   function draw() {
     if (isOccurrence && !occChoiceDone) return drawOccChoice();
+    if (readOnly) step = "rever"; // sem edição, só o resumo faz sentido
+    const cur = group.currency;
     const shares = computedShares();
     const paidSum = [...state.payers].reduce((a, id) => a + (state.payerAmounts[id] || 0), 0);
     const shareSum = Object.values(shares).reduce((a, b) => a + b, 0);
-    const okPaid = paidSum === state.totalCents && state.totalCents > 0;
-    const okShare = shareSum === state.totalCents && state.totalCents > 0;
-    const okDados = !!state.desc.trim() && state.totalCents > 0;
-    const cur = group.currency;
+    const catUsed = Object.values(state.catSplit || {}).reduce((a, c) => a + c, 0);
+    const catsChosen = Object.keys(state.catSplit || {}).length;
 
-    const amountField = `
-      <div class="field">
-        <label>Valor (${esc(cur)})</label>
-        <input id="x-amount" type="number" step="0.01" min="0" value="${state.totalCents ? (state.totalCents / 100).toFixed(2) : ""}" />
-      </div>`;
-    // topo do formulário: como se identifica/escolhe o tipo da despesa.
-    //  · molde recorrente (a editar a série)  -> aviso fixo
-    //  · ocorrência de uma série              -> aviso + atalho «gerir série»
-    //  · despesa ocasional (nova/convertível) -> seletor Ocasional/Recorrente
-    let typeHeader;
+    // estado de cada passo — alimenta os ✓ da barra e o botão «Continuar»
+    const okValor = !!state.desc.trim() && state.totalCents > 0;
+    const okCat = !state.catSplit || catsChosen === 0 || catUsed === state.totalCents;
+    const okPaid = state.totalCents > 0 && paidSum === state.totalCents;
+    const semGente = catDividing()
+      ? catEntries().filter(([c]) => ![...(state.catParts[c] || [])].some(id => members.some(m => m.id === id))).map(([c]) => catOf(c).label)
+      : [];
+    const okDivide = state.totalCents > 0 && shareSum === state.totalCents && semGente.length === 0;
+    const okOf = { valor: okValor, cat: okCat, pagou: okPaid, divide: okDivide };
+    okOf.rever = okValor && okCat && okPaid && okDivide;
+
+    // categorias a mostrar: as do grupo + as que a despesa já usa (o grupo
+    // pode ter sido restringido depois de a despesa ser gravada)
+    const catList = groupCategories(group).slice();
+    for (const id of (state.catSplit ? Object.keys(state.catSplit) : (state.category ? [state.category] : []))) {
+      if (!catList.some(c => c.id === id)) {
+        const extraCat = catOf(id);
+        if (extraCat) catList.push(extraCat);
+      }
+    }
+    const catOn = (id) => state.catSplit ? (id in state.catSplit) : state.category === id;
+
+    const nameOf = id => members.find(m => m.id === id)?.name || "?";
+    const joinNames = arr => arr.length <= 1 ? arr.join("")
+      : `${arr.slice(0, -1).join(", ")} e ${arr[arr.length - 1]}`;
+    const status = (ok, txt, neutral) => ok ? "" :
+      `<p class="form-status${neutral ? " neutral" : ""}">${txt}</p>`;
+
+    // ---------------------------------------------------------- passo: valor
+    // tipo da despesa: escolha grande ao criar, aviso/atalho ao editar
+    let typeBlock;
     if (isRecurringRecord) {
-      typeHeader = `
+      typeBlock = `
         <div class="rec-banner">
           <span class="rec-ico">🔁</span>
           <div class="rec-banner-text">
@@ -1729,7 +2044,7 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
           </div>
         </div>`;
     } else if (isOccurrence) {
-      typeHeader = `
+      typeBlock = `
         <div class="rec-banner">
           <span class="rec-ico">✏️</span>
           <div class="rec-banner-text">
@@ -1738,15 +2053,17 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
           </div>
         </div>`;
     } else if (!existing) {
-      // criar de raiz: escolher o tipo à cabeça faz sentido
-      typeHeader = `
-        <div class="tabs type-toggle" style="margin-bottom:.7rem;">
-          <button type="button" data-type="occ" class="${state.recurring ? "" : "active"}">Ocasional</button>
-          <button type="button" data-type="rec" class="${state.recurring ? "active" : ""}">Recorrente</button>
+      typeBlock = `
+        <div class="big-choice two">
+          <button type="button" class="bc ${state.recurring ? "" : "on"}" data-type="occ">
+            <span class="bc-ico">🧾</span><strong>Ocasional</strong><span>Só desta vez</span>
+          </button>
+          <button type="button" class="bc ${state.recurring ? "on" : ""}" data-type="rec">
+            <span class="bc-ico">🔁</span><strong>Recorrente</strong><span>Todos os meses</span>
+          </button>
         </div>`;
     } else if (state.recurring) {
-      // conversão ligada: banner claro do que vai acontecer + cancelar
-      typeHeader = `
+      typeBlock = `
         <div class="rec-banner">
           <span class="rec-ico">🔁</span>
           <div class="rec-banner-text">
@@ -1756,10 +2073,8 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
           <button type="button" class="secondary small" id="x-cancel-convert">Cancelar</button>
         </div>`;
     } else {
-      // despesa ocasional existente: oferta de conversão como ação explícita
-      // (o antigo seletor Ocasional/Recorrente parecia um filtro e confundia)
-      typeHeader = `
-        <button type="button" class="rec-choice-btn" id="x-convert" style="margin-bottom:.8rem;">
+      typeBlock = `
+        <button type="button" class="rec-choice-btn" id="x-convert">
           <span class="rec-ico">🔁</span>
           <span class="rec-choice-text">
             <strong>Tornar recorrente</strong>
@@ -1768,231 +2083,300 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
           <span class="chevron">›</span>
         </button>`;
     }
-    // recorrente: dia do mês + terminar em (>= hoje) + ativa;  ocasional: data
-    const scheduleFields = state.recurring ? `
-      <div class="row">
-        ${amountField}
-        <div class="field">
-          <label>Dia do mês</label>
-          <input id="x-dom" type="number" min="1" max="31" value="${state.dayOfMonth}" />
-        </div>
+
+    const whenBlock = state.recurring ? `
+      <div class="field">
+        <label>Dia do mês em que se repete</label>
+        <input id="x-dom" type="number" inputmode="numeric" min="1" max="31" value="${state.dayOfMonth}" />
       </div>
-      <div class="row">
-        <div class="field"><label>Terminar em (opcional)</label>
-          <input id="x-end" type="date" min="${today}" value="${esc(state.endDate)}" /></div>
-        <label class="check-line" style="flex:1;align-items:center;">
-          <input type="checkbox" id="x-active" ${state.active ? "checked" : ""} /> Ativa
-        </label>
+      <div class="field">
+        <label>Terminar em (opcional)</label>
+        <input id="x-end" type="date" min="${today}" value="${esc(state.endDate)}" />
       </div>
-      <p class="check-note" style="margin-top:-.3rem;">Repete-se todo o mês neste dia (ajustado ao último dia nos meses mais curtos).
-        É lançada automaticamente quando alguém abre a app.</p>` : `
-      <div class="row">
-        ${amountField}
-        <div class="field">
-          <label>Data</label>
+      <label class="check-line">
+        <input type="checkbox" id="x-active" ${state.active ? "checked" : ""} /> Série ativa
+        <span class="check-note">É lançada automaticamente no dia marcado (ajustado ao último dia
+          nos meses mais curtos) quando alguém abre a app.</span>
+      </label>` : `
+      <div class="field">
+        <label>Quando</label>
+        <div class="pick-row">
+          <button type="button" class="pick ${state.date === today ? "on" : ""}" data-date="${today}">Hoje</button>
+          <button type="button" class="pick ${state.date === ontem ? "on" : ""}" data-date="${ontem}">Ontem</button>
           <input id="x-date" type="date" value="${esc(state.date)}" />
         </div>
       </div>`;
 
-    // categorias a mostrar: as que se aplicam ao grupo (definições). Se a
-    // despesa já usa categorias fora dessa lista (grupo restringido depois
-    // de gravada), mantêm-se visíveis para não se perderem ao editar.
-    const catList = groupCategories(group).slice();
-    for (const id of (state.catSplit ? Object.keys(state.catSplit) : (state.category ? [state.category] : []))) {
-      if (!catList.some(c => c.id === id)) {
-        const extraCat = catOf(id);
-        if (extraCat) catList.push(extraCat);
-      }
-    }
-    // chip aceso: a categoria única, ou cada uma das partes da repartição
-    const catOn = (id) => state.catSplit ? (id in state.catSplit) : state.category === id;
+    const valorBody = `
+      ${typeBlock}
+      <div class="hero-amount ${state.totalCents > 0 ? "filled" : ""}">
+        <input id="x-amount" type="number" inputmode="decimal" step="0.01" min="0" placeholder="0.00"
+          value="${state.totalCents ? (state.totalCents / 100).toFixed(2) : ""}" />
+        <span class="hero-cur">${esc(cur)}</span>
+      </div>
+      <div class="field">
+        <label>Descrição</label>
+        <input id="x-desc" class="big-input" value="${esc(state.desc)}" placeholder="Ex.: Jantar no restaurante" />
+      </div>
+      ${whenBlock}`;
 
-    // bloco da fatura repartida (por baixo dos chips): um input de valor por
-    // categoria escolhida + estado da alocação. Os moldes recorrentes ficam
-    // fora disto — têm sempre uma categoria única.
-    const catUsed = Object.values(state.catSplit || {}).reduce((a, c) => a + c, 0);
+    // ------------------------------------------------------ passo: categoria
     const catSplitBlock = !state.catSplit
-      ? (state.recurring ? "" : `<button type="button" class="link-btn" id="x-cat-multi">Fatura com várias categorias? Reparte o valor</button>`)
+      ? (state.recurring ? "" : `
+        <button type="button" class="wide-btn" id="x-cat-multi">
+          <span class="wb-ico">➗</span>
+          <span class="wb-text"><strong>Repartir por várias categorias</strong>
+            <span>Ex.: 35 € restaurante + 10 € bebidas + 5 € sobremesa</span></span>
+          <span class="chevron">›</span>
+        </button>`)
       : `
         <div class="cat-split">
           ${catList.filter(c => c.id in state.catSplit).map(c => `
             <div class="cat-split-line">
               <span class="cat-split-name">${c.icon} ${esc(c.label)}</span>
-              <input type="number" step="0.01" min="0" data-catamount="${c.id}"
+              <input type="number" inputmode="decimal" step="0.01" min="0" data-catamount="${c.id}"
                 value="${((state.catSplit[c.id] || 0) / 100).toFixed(2)}" />
             </div>`).join("")}
-          ${Object.keys(state.catSplit).length === 0
+          ${catsChosen === 0
             ? `<p class="form-status neutral">Toca nas categorias em cima para as juntar à fatura</p>`
-            : catUsed === state.totalCents ? ""
-            : `<p class="form-status">${fmtMoney(catUsed, cur)} de ${fmtMoney(state.totalCents, cur)} atribuídos</p>`}
+            : status(catUsed === state.totalCents, `${fmtMoney(catUsed, cur)} de ${fmtMoney(state.totalCents, cur)} atribuídos`)}
           <div class="cat-split-actions">
             <button type="button" class="secondary small" id="x-cat-dist">Distribuir igualmente</button>
             <button type="button" class="secondary small" id="x-cat-single">Voltar a uma só categoria</button>
           </div>
         </div>`;
 
-    const sections = {
-      dados: `
-        ${typeHeader}
-        <div class="field">
-          <label>Descrição</label>
-          <input id="x-desc" value="${esc(state.desc)}" placeholder="Ex.: Jantar no restaurante" />
-        </div>
-        ${scheduleFields}
-        <div class="field" style="margin-bottom:.3rem;">
-          <label>Categoria${state.catSplit ? "s" : ""} <span class="cat-hint" id="x-cat-hint">${state.catAuto && state.category ? "· sugerida automaticamente" : ""}</span></label>
-          <div class="cat-row" id="x-cat-row">
-            ${catList.map(c => `
-              <button type="button" class="cat-chip ${catOn(c.id) ? "active" : ""}" data-cat="${c.id}">
-                ${c.icon}<span>${esc(c.label)}</span>
-              </button>`).join("")}
-          </div>
-          ${catSplitBlock}
-        </div>`,
-      pagou: `
-        ${okPaid ? "" : state.totalCents === 0
-          ? `<p class="form-status neutral">Indica primeiro o valor na secção «Dados»</p>`
-          : `<p class="form-status">${fmtMoney(paidSum, cur)} de ${fmtMoney(state.totalCents, cur)} atribuídos</p>`}
-        <table class="split-table">
-          ${members.map(m => `
-            <tr>
-              <td style="width:30px;"><input type="checkbox" data-payer="${m.id}" ${state.payers.has(m.id) ? "checked" : ""} /></td>
-              <td>${esc(m.name)}</td>
-              <td style="width:130px;">
-                <input type="number" step="0.01" min="0" data-payer-amount="${m.id}"
-                  value="${state.payers.has(m.id) ? ((state.payerAmounts[m.id] || 0) / 100).toFixed(2) : ""}"
-                  ${state.payers.has(m.id) ? "" : "disabled"} />
-              </td>
-            </tr>`).join("")}
-        </table>
-        <button class="secondary small" id="x-dist-payers" style="margin-top:.6rem;">Distribuir igualmente pelos pagadores</button>`,
-      divide: `
-        ${okShare ? "" : state.totalCents === 0
-          ? `<p class="form-status neutral">Indica primeiro o valor na secção «Dados»</p>`
-          : `<p class="form-status">${fmtMoney(shareSum, cur)} de ${fmtMoney(state.totalCents, cur)} divididos</p>`}
-        ${state.catSplit ? `
-          <label class="check-line" style="margin-bottom:.7rem;">
-            <input type="checkbox" id="x-cat-divide" ${state.catDivide ? "checked" : ""} />
-            Dividir cada categoria por pessoas diferentes
-            <span class="check-note">cada categoria divide-se em partes iguais por quem participa nela</span>
-          </label>` : ""}
-        ${catDividing() ? `
-          <div class="cat-div-list">
-            ${catList.filter(c => c.id in state.catSplit).map(c => {
-              const cents = state.catSplit[c.id] || 0;
-              const set = state.catParts[c.id] || new Set();
-              const n = members.filter(m => set.has(m.id)).length;
-              const each = n > 0 ? (cents % n === 0 ? fmtMoney(cents / n, cur) : "≈ " + fmtMoney(Math.round(cents / n), cur)) : "";
-              return `<div class="cat-div">
-                <div class="cat-div-head">${c.icon} ${esc(c.label)} <span class="cat-div-val">· ${fmtMoney(cents, cur)}</span></div>
-                <div class="cat-pick">
-                  ${members.map(m => {
-                    const on = set.has(m.id);
-                    return `<label class="cat-pick-item ${on ? "on" : ""}">
-                      <input type="checkbox" data-catpart-cat="${c.id}" data-catpart-mem="${m.id}" ${on ? "checked" : ""} />
-                      <span>${esc(m.name)}</span>
-                    </label>`;
-                  }).join("")}
-                </div>
-                <div class="cat-div-foot ${n === 0 ? "warn" : ""}">${n === 0
-                  ? "Escolhe quem participa nesta categoria"
-                  : `${n} pessoa${n === 1 ? "" : "s"} · ${each} cada`}</div>
-              </div>`;
-            }).join("")}
-          </div>` : `
-          <div class="tabs" style="margin-bottom:.6rem;">
-            <button data-mode="equal" class="${state.mode === "equal" ? "active" : ""}">Partes iguais</button>
-            ${useWeights ? `<button data-mode="weights" class="${state.mode === "weights" ? "active" : ""}">Proporção</button>` : ""}
-            <button data-mode="exact" class="${state.mode === "exact" ? "active" : ""}">Exatos</button>
-          </div>
-          <table class="split-table">
-            <tr><th></th><th>Pessoa</th><th>${state.mode === "weights" ? "Peso" : state.mode === "exact" ? "Valor" : ""}</th><th style="text-align:right;">Fica com</th></tr>
-            ${members.map(m => {
-              const inShare = state.participants.has(m.id);
-              let ctrl = "";
-              if (state.mode === "weights") {
-                ctrl = `<input type="number" step="0.1" min="0" data-weight="${m.id}" value="${state.weights[m.id] ?? 0}" ${inShare ? "" : "disabled"} />`;
-              } else if (state.mode === "exact") {
-                ctrl = `<input type="number" step="0.01" min="0" data-exact="${m.id}" value="${inShare ? ((state.exact[m.id] || 0) / 100).toFixed(2) : ""}" ${inShare ? "" : "disabled"} />`;
-              }
-              return `<tr>
-                <td style="width:30px;"><input type="checkbox" data-part="${m.id}" ${inShare ? "checked" : ""} /></td>
-                <td>${esc(m.name)}</td>
-                <td style="width:130px;">${ctrl}</td>
-                <td style="text-align:right;" class="amount">${inShare ? fmtMoney(shares[m.id] || 0, cur) : "—"}</td>
-              </tr>`;
-            }).join("")}
-          </table>`}`,
+    const catBody = `
+      ${state.catAuto && state.category ? `<p class="wiz-note">✨ Sugerimos <strong>${catOf(state.category).icon} ${esc(catOf(state.category).label)}</strong> pela descrição — muda se não for.</p>` : ""}
+      <div class="cat-grid">
+        ${catList.map(c => `
+          <button type="button" class="cat-tile ${catOn(c.id) ? "on" : ""}" data-cat="${c.id}">
+            <span class="cat-tile-ico">${c.icon}</span>
+            <span class="cat-tile-label">${esc(c.label)}</span>
+            ${state.catSplit && catOn(c.id)
+              ? `<span class="cat-tile-val">${fmtMoney(state.catSplit[c.id] || 0, cur)}</span>` : ""}
+          </button>`).join("")}
+      </div>
+      ${catSplitBlock}`;
+
+    // --------------------------------------------------------- passo: pagou
+    const whoRow = (m, { on, toggleAttr, input, right }) => `
+      <div class="who-row ${on ? "on" : ""}">
+        <button type="button" class="who" ${toggleAttr} aria-pressed="${on}">
+          ${avatarHtml(m.name)}
+          <span class="who-name">${esc(m.name)}</span>
+          ${right || ""}
+          <span class="who-mark">${on ? "✓" : ""}</span>
+        </button>
+        ${input || ""}
+      </div>`;
+
+    const multiPayers = state.payers.size > 1;
+    const pagouBody = `
+      ${state.totalCents === 0
+        ? `<p class="form-status neutral">Indica primeiro o valor da despesa</p>`
+        : status(okPaid, `${fmtMoney(paidSum, cur)} de ${fmtMoney(state.totalCents, cur)} atribuídos`)}
+      <div class="who-list">
+        ${members.map(m => whoRow(m, {
+          on: state.payers.has(m.id),
+          toggleAttr: `data-payer="${m.id}"`,
+          input: state.payers.has(m.id) && multiPayers
+            ? `<input class="who-amount" type="number" inputmode="decimal" step="0.01" min="0"
+                 data-payer-amount="${m.id}" value="${((state.payerAmounts[m.id] || 0) / 100).toFixed(2)}" />`
+            : "",
+          right: state.payers.has(m.id) && !multiPayers
+            ? `<span class="who-val">${fmtMoney(state.totalCents, cur)}</span>` : "",
+        })).join("")}
+      </div>
+      ${multiPayers
+        ? `<button type="button" class="secondary wide" id="x-dist-payers">Dividir o total igualmente pelos pagadores</button>`
+        : ""}`;
+
+    // -------------------------------------------------------- passo: divisão
+    const modeCard = (id, ico, title, sub) => `
+      <button type="button" class="bc ${state.mode === id ? "on" : ""}" data-mode="${id}">
+        <span class="bc-ico">${ico}</span><strong>${title}</strong><span>${sub}</span>
+      </button>`;
+
+    const divideBody = catDividing() ? `
+      ${status(semGente.length === 0, `Falta escolher quem participa em: ${esc(semGente.join(", "))}`)}
+      <label class="check-line">
+        <input type="checkbox" id="x-cat-divide" checked /> Dividir cada categoria por pessoas diferentes
+        <span class="check-note">cada categoria divide-se em partes iguais por quem participa nela</span>
+      </label>
+      <div class="cat-div-list">
+        ${catList.filter(c => c.id in state.catSplit).map(c => {
+          const cents = state.catSplit[c.id] || 0;
+          const set = state.catParts[c.id] || new Set();
+          const n = members.filter(m => set.has(m.id)).length;
+          const each = n > 0 ? (cents % n === 0 ? fmtMoney(cents / n, cur) : "≈ " + fmtMoney(Math.round(cents / n), cur)) : "";
+          return `<div class="cat-div">
+            <div class="cat-div-head">${c.icon} ${esc(c.label)} <span class="cat-div-val">· ${fmtMoney(cents, cur)}</span></div>
+            <div class="cat-pick">
+              ${members.map(m => {
+                const on = set.has(m.id);
+                return `<label class="cat-pick-item ${on ? "on" : ""}">
+                  <input type="checkbox" data-catpart-cat="${c.id}" data-catpart-mem="${m.id}" ${on ? "checked" : ""} />
+                  <span>${esc(m.name)}</span>
+                </label>`;
+              }).join("")}
+            </div>
+            <div class="cat-div-foot ${n === 0 ? "warn" : ""}">${n === 0
+              ? "Escolhe quem participa nesta categoria"
+              : `${n} pessoa${n === 1 ? "" : "s"} · ${each} cada`}</div>
+          </div>`;
+        }).join("")}
+      </div>` : `
+      ${state.totalCents === 0
+        ? `<p class="form-status neutral">Indica primeiro o valor da despesa</p>`
+        : status(okDivide, `${fmtMoney(shareSum, cur)} de ${fmtMoney(state.totalCents, cur)} divididos`)}
+      <div class="big-choice">
+        ${modeCard("equal", "🟰", "Partes iguais", "O total divide-se pelo número de pessoas")}
+        ${useWeights ? modeCard("weights", "⚖️", "Por proporção", "Cada pessoa entra com o seu peso") : ""}
+        ${modeCard("exact", "✏️", "Valores exatos", "Escreves quanto fica cada pessoa")}
+      </div>
+      <div class="who-head">
+        <span>Divide-se por</span>
+        <span class="who-head-actions">
+          <button type="button" class="link-btn" id="x-part-all">Todos</button>
+          <button type="button" class="link-btn" id="x-part-none">Nenhum</button>
+        </span>
+      </div>
+      <div class="who-list">
+        ${members.map(m => {
+          const on = state.participants.has(m.id);
+          let input = "";
+          if (on && state.mode === "weights") {
+            input = `<input class="who-amount" type="number" inputmode="decimal" step="0.1" min="0"
+              data-weight="${m.id}" value="${state.weights[m.id] ?? 0}" />`;
+          } else if (on && state.mode === "exact") {
+            input = `<input class="who-amount" type="number" inputmode="decimal" step="0.01" min="0"
+              data-exact="${m.id}" value="${((state.exact[m.id] || 0) / 100).toFixed(2)}" />`;
+          }
+          return whoRow(m, {
+            on,
+            toggleAttr: `data-part="${m.id}"`,
+            input,
+            right: on && state.mode !== "exact"
+              ? `<span class="who-val">${fmtMoney(shares[m.id] || 0, cur)}</span>` : "",
+          });
+        }).join("")}
+      </div>
+      ${state.catSplit ? `
+        <label class="check-line">
+          <input type="checkbox" id="x-cat-divide" />
+          Dividir cada categoria por pessoas diferentes
+          <span class="check-note">ex.: o vinho só entre os adultos, a sobremesa só para quem comeu</span>
+        </label>` : ""}`;
+
+    // ---------------------------------------------------------- passo: rever
+    const catTxt = state.catSplit
+      ? (catEntries().map(([id]) => `${catOf(id).icon} ${catOf(id).label}`).join(" · ") || "Sem categoria")
+      : (state.category ? `${catOf(state.category).icon} ${catOf(state.category).label}` : "Sem categoria");
+    const whenTxt = state.recurring
+      ? `Todo o mês no dia ${state.dayOfMonth}${state.endDate ? ` · até ${fmtDate(state.endDate)}` : ""}${state.active ? "" : " · pausada"}`
+      : fmtDate(state.date);
+    const paidTxt = state.payers.size
+      ? joinNames([...state.payers].map(id => `${shortName(nameOf(id))} ${fmtMoney(state.payerAmounts[id] || 0, cur)}`))
+      : "—";
+    const shareIds = Object.keys(shares);
+    const divTxt = catDividing() ? "Por categoria"
+      : shareIds.length === 0 ? "—"
+      : `${state.mode === "equal" ? "Partes iguais" : state.mode === "weights" ? "Por proporção" : "Valores exatos"} · ${shareIds.length === members.length ? "todo o grupo" : joinNames(shareIds.map(id => shortName(nameOf(id))))}`;
+
+    const revRow = (goto, k, v, ok) => `
+      <button type="button" class="rev-row ${ok ? "" : "warn"}" ${readOnly ? "disabled" : `data-goto="${goto}"`}>
+        <span class="rev-k">${k}</span>
+        <span class="rev-v">${v}</span>
+        ${readOnly ? "" : `<span class="chevron">›</span>`}
+      </button>`;
+
+    const reverBody = `
+      <div class="rev-hero">
+        <div class="rev-amount">${fmtMoney(state.totalCents, cur)}</div>
+        <div class="rev-desc">${state.desc.trim() ? esc(state.desc) : "<em>sem descrição</em>"}</div>
+      </div>
+      <div class="rev-list">
+        ${revRow("valor", "Valor e descrição", `${fmtMoney(state.totalCents, cur)} · ${state.desc.trim() ? esc(state.desc) : "—"}`, okValor)}
+        ${revRow("valor", state.recurring ? "Repetição" : "Data", esc(whenTxt), true)}
+        ${revRow("cat", state.catSplit ? "Categorias" : "Categoria", esc(catTxt), okCat)}
+        ${revRow("pagou", "Quem pagou", esc(paidTxt), okPaid)}
+        ${revRow("divide", "Divisão", esc(divTxt), okDivide)}
+      </div>
+      ${okOf.rever ? "" : `<p class="form-status">Falta acertar o que está assinalado a vermelho</p>`}
+      ${!readOnly && shareIds.length ? `
+        <div class="rev-shares">
+          <div class="rev-shares-head">Cada pessoa fica com</div>
+          ${members.filter(m => (shares[m.id] || 0) > 0).map(m => `
+            <div class="rev-share">
+              ${avatarHtml(m.name, "small")}
+              <span class="rev-share-name">${esc(m.name)}</span>
+              <span class="rev-share-val">${fmtMoney(shares[m.id] || 0, cur)}</span>
+            </div>`).join("")}
+        </div>` : ""}`;
+
+    const bodies = { valor: valorBody, cat: catBody, pagou: pagouBody, divide: divideBody, rever: reverBody };
+    const titles = {
+      valor: state.recurring ? "Quanto e quando se repete?" : "Quanto foi?",
+      cat: "Em quê?",
+      pagou: "Quem pagou?",
+      divide: "Por quem se divide?",
+      rever: existing ? "Detalhe da despesa" : "Está tudo certo?",
+    };
+    const subs = {
+      valor: "O valor e uma descrição curta chegam para começar.",
+      cat: "Escolhe uma categoria — ou nenhuma, se não se aplicar.",
+      pagou: "Toca em quem pôs o dinheiro. Podem ser várias pessoas.",
+      divide: "Toca em quem entra nesta despesa.",
+      rever: readOnly ? "" : "Toca em qualquer linha para voltar atrás e mudar.",
     };
 
-    // frase-resumo do que vai ser gravado: quem pagou e como se divide
-    const nameOf = id => shortName(members.find(m => m.id === id)?.name || "?");
-    const joinNames = arr => arr.length <= 1 ? arr.join("")
-      : `${arr.slice(0, -1).join(", ")} e ${arr[arr.length - 1]}`;
-    let summary = "";
-    if (state.totalCents > 0 && state.payers.size > 0) {
-      const payerIds = [...state.payers];
-      const paidTxt = joinNames(payerIds.map(id =>
-        `<strong>${esc(nameOf(id))}</strong> pagou ${fmtMoney(state.payerAmounts[id] || 0, cur)}`));
-      const shareIds = Object.keys(shares);
-      let divTxt = "";
-      if (catDividing()) {
-        divTxt = ", dividido por categoria";
-      } else if (shareIds.length > 0) {
-        let modeTxt = state.mode === "equal" ? "em partes iguais"
-          : state.mode === "weights" ? "por proporção" : "em valores exatos";
-        // despesas antigas sem split_mode reabrem em "exatos"; se as partes
-        // forem todas iguais (± arredondamento) a frase natural é "partes iguais"
-        if (state.mode === "exact") {
-          const vals = Object.values(shares);
-          if (vals.length > 1 && vals.every(v => Math.abs(v - vals[0]) <= 1)) modeTxt = "em partes iguais";
-        }
-        const who = shareIds.length === members.length
-          ? "todos os elementos do grupo"
-          : joinNames(shareIds.map(id => `<strong>${esc(nameOf(id))}</strong>`));
-        divTxt = `, dividido ${modeTxt} por ${who}`;
-      }
-      summary = `<p class="form-summary">${paidTxt}${divTxt}.</p>`;
-    }
-
-    const secTab = (id, label, ok) =>
-      `<button data-sec="${id}" class="${state.section === id ? "active" : ""}">${label}${ok ? ' <span class="tab-ok">✓</span>' : ""}</button>`;
+    const idx = STEPS.indexOf(step);
+    const isLast = step === "rever";
 
     slot.innerHTML = `
-    <div class="expense-detail">
-      <div class="form-head">
+    <div class="expense-detail wiz">
+      <div class="wiz-top">
         <button class="back-pill" id="x-back"><span class="arr">←</span> ${esc(opts.backLabel || "Despesas")}</button>
-        <h2 style="margin:0;">${!existing ? "Nova despesa"
-          : (isRecurringRecord || isOccurrence) ? "Despesa recorrente"
-          : "Detalhe da despesa"}</h2>
+        ${readOnly ? "" : `<span class="wiz-count">Passo ${idx + 1} de ${STEPS.length}</span>`}
       </div>
+      ${readOnly ? "" : `
+      <div class="wiz-bar">
+        ${STEPS.map((s, i) => `
+          <button type="button" class="wiz-seg ${s === step ? "now" : ""} ${okOf[s] && visited.has(s) && s !== step ? "done" : ""}"
+            data-goto="${s}" title="${STEP_LABEL[s]}"><span>${STEP_LABEL[s]}</span></button>`).join("")}
+      </div>`}
       ${readOnly ? `<div class="ro-banner">
         <span class="ro-ico" aria-hidden="true">👁️</span>
         <span>${ctx.myRole === "read"
           ? "Tens acesso de leitura a este grupo — podes consultar mas não alterar."
           : "Só podes editar as despesas que criaste. Esta é de outra pessoa — só consulta."}</span>
       </div>` : ""}
-      <div class="tabs form-tabs">
-        ${secTab("dados", "Dados", okDados)}
-        ${secTab("pagou", "Quem pagou", okPaid)}
-        ${secTab("divide", "Divisão", okShare)}
-      </div>
-      <div class="form-section"${readOnly ? " inert" : ""}>${sections[state.section]}</div>
-      ${summary}
+      <h2 class="wiz-title">${titles[step]}</h2>
+      ${subs[step] ? `<p class="wiz-sub">${subs[step]}</p>` : ""}
+      <div class="wiz-body"${readOnly ? " inert" : ""}>${bodies[step]}</div>
       ${readOnly ? "" : `
-      <div class="form-actions">
-        <button id="x-save">${converting && state.recurring ? "Tornar recorrente"
-          : existing ? "Guardar alterações"
-          : (state.recurring ? "Criar recorrente" : "Adicionar despesa")}</button>
-        ${existing ? `<button class="danger" id="x-del">Apagar</button>` : ""}
+      ${existing && isLast ? `<button class="danger wide" id="x-del">Apagar despesa</button>` : ""}
+      <div class="wiz-foot">
+        ${idx > 0 ? `<button type="button" class="secondary wiz-prev" id="x-prev">Voltar</button>` : ""}
+        ${isLast
+          ? `<button class="wiz-next" id="x-save">${converting && state.recurring ? "Tornar recorrente"
+              : existing ? "Guardar alterações"
+              : (state.recurring ? "Criar recorrente" : "Adicionar despesa")}</button>`
+          : `<button class="wiz-next" id="x-next" ${okOf[step] ? "" : "disabled"}>Continuar</button>`}
       </div>`}
     </div>`;
 
-    // ---- listeners
+    // ------------------------------------------------------------ listeners
     slot.querySelector("#x-back").onclick = close;
-    slot.querySelectorAll("[data-sec]").forEach(b => {
-      b.onclick = () => { state.section = b.dataset.sec; draw(); };
+    slot.querySelectorAll("[data-goto]").forEach(b => {
+      b.onclick = () => goToStep(b.dataset.goto);
     });
+    slot.querySelector("#x-prev")?.addEventListener("click", () => goToStep(STEPS[idx - 1]));
+    slot.querySelector("#x-next")?.addEventListener("click", () => goToStep(STEPS[idx + 1]));
+    slot.querySelector("#x-save")?.addEventListener("click", doSave);
+    slot.querySelector("#x-del")?.addEventListener("click", doDelete);
+
     slot.querySelectorAll("[data-type]").forEach(b => {
       b.onclick = () => {
         const rec = b.dataset.type === "rec";
@@ -2001,36 +2385,39 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
         draw();
       };
     });
-    // conversão de despesa ocasional existente em recorrente (liga/cancela)
     slot.querySelector("#x-convert")?.addEventListener("click", () => {
       state.recurring = true;
-      // os moldes recorrentes têm uma categoria única — uma fatura
-      // repartida colapsa na categoria principal ao converter
+      // os moldes recorrentes têm uma categoria única — uma fatura repartida
+      // colapsa na categoria principal ao converter
       if (state.catSplit) { state.category = primaryCategory(); state.catSplit = null; }
       draw();
     });
     slot.querySelector("#x-cancel-convert")?.addEventListener("click", () => { state.recurring = false; draw(); });
+
     const $desc = slot.querySelector("#x-desc");
     if ($desc) $desc.oninput = () => {
       state.desc = $desc.value;
-      // sugestão automática de categoria enquanto se escreve — atualiza os
-      // chips diretamente (sem draw()) para o input não perder o foco
+      // sugestão automática de categoria enquanto se escreve (sem redesenhar,
+      // para o campo não perder o foco): só marca o passo da categoria
       if (!state.catManual && !state.catSplit) {
         const allowedIds = groupCatIds(group);
-        const g = guessCategory(state.desc, ctx.expenses, allowedIds ? new Set(allowedIds) : null);
-        if (g !== state.category) {
-          state.category = g;
-          state.catAuto = !!g;
-          slot.querySelectorAll("[data-cat]").forEach(b =>
-            b.classList.toggle("active", b.dataset.cat === g));
-          const $hint = slot.querySelector("#x-cat-hint");
-          if ($hint) $hint.textContent = g ? "· sugerida automaticamente" : "";
-          scrollCatIntoView();
-        }
+        state.category = guessCategory(state.desc, ctx.expenses, allowedIds ? new Set(allowedIds) : null);
+        state.catAuto = !!state.category;
       }
+      const $next = slot.querySelector("#x-next");
+      if ($next) $next.disabled = !(state.desc.trim() && state.totalCents > 0);
     };
+    const $amount = slot.querySelector("#x-amount");
+    if ($amount) $amount.onchange = () => {
+      state.totalCents = toCents($amount.value);
+      distributePayersEqually();
+      draw();
+    };
+    slot.querySelectorAll("[data-date]").forEach(b => {
+      b.onclick = () => { state.date = b.dataset.date; draw(); };
+    });
     const $date = slot.querySelector("#x-date");
-    if ($date) $date.onchange = () => { state.date = $date.value; };
+    if ($date) $date.onchange = () => { state.date = $date.value; draw(); };
     const $dom = slot.querySelector("#x-dom");
     if ($dom) $dom.onchange = () => {
       state.dayOfMonth = Math.min(31, Math.max(1, parseInt($dom.value, 10) || 1));
@@ -2040,33 +2427,20 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     if ($end) $end.onchange = () => { state.endDate = $end.value; };
     const $active = slot.querySelector("#x-active");
     if ($active) $active.onchange = () => { state.active = $active.checked; };
-    const $amount = slot.querySelector("#x-amount");
-    if ($amount) $amount.onchange = () => {
-      state.totalCents = toCents($amount.value);
-      distributePayersEqually();
-      draw();
-    };
 
-    // garante que o chip da categoria ativa fica visível na fila com scroll
-    function scrollCatIntoView() {
-      const active = slot.querySelector("#x-cat-row .cat-chip.active");
-      if (active) active.parentElement.scrollLeft = Math.max(0, active.offsetLeft - 12);
-    }
     slot.querySelectorAll("[data-cat]").forEach(b => {
       b.onclick = () => {
         const id = b.dataset.cat;
         if (state.catSplit) {
-          // modo repartido: o chip junta/tira a categoria da fatura; ao
-          // juntar, leva logo o valor que falta atribuir
+          // modo repartido: o chip junta/tira a categoria da fatura; ao juntar,
+          // leva logo o valor que falta atribuir
           if (id in state.catSplit) { delete state.catSplit[id]; delete state.catParts[id]; }
           else {
             const used = Object.values(state.catSplit).reduce((a, c) => a + c, 0);
             state.catSplit[id] = Math.max(state.totalCents - used, 0);
-            // participantes default da categoria nova: quem já entra na despesa
             state.catParts[id] = new Set(state.participants);
           }
         } else {
-          // tocar no chip ativo tira a categoria; noutro, troca
           state.category = state.category === id ? null : id;
         }
         state.catManual = true;
@@ -2074,7 +2448,6 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
         draw();
       };
     });
-    // fatura repartida: ativar/desativar o modo e editar as alocações
     slot.querySelector("#x-cat-multi")?.addEventListener("click", () => {
       state.catSplit = state.category ? { [state.category]: state.totalCents } : {};
       state.catManual = true;
@@ -2084,6 +2457,7 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     slot.querySelector("#x-cat-single")?.addEventListener("click", () => {
       state.category = primaryCategory(); // fica a de maior valor
       state.catSplit = null;
+      state.catDivide = false;
       draw();
     });
     slot.querySelector("#x-cat-dist")?.addEventListener("click", () => {
@@ -2095,16 +2469,10 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
       draw();
     });
     slot.querySelectorAll("[data-catamount]").forEach(inp => {
-      inp.onchange = () => {
-        state.catSplit[inp.dataset.catamount] = toCents(inp.value);
-        draw();
-      };
+      inp.onchange = () => { state.catSplit[inp.dataset.catamount] = toCents(inp.value); draw(); };
     });
-    // dividir por categoria: ligar/desligar e escolher quem participa em cada
-    slot.querySelector("#x-cat-divide")?.addEventListener("click", (e) => {
+    slot.querySelector("#x-cat-divide")?.addEventListener("change", (e) => {
       state.catDivide = e.target.checked;
-      // ao ligar, garante que cada categoria tem um conjunto de participantes
-      // (default: quem entra na despesa)
       if (state.catDivide) for (const id of Object.keys(state.catSplit))
         if (!state.catParts[id]) state.catParts[id] = new Set(state.participants);
       draw();
@@ -2117,313 +2485,43 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
         draw();
       };
     });
-    if (state.section === "dados") scrollCatIntoView();
 
-    slot.querySelectorAll("[data-payer]").forEach(cb => {
-      cb.onchange = () => {
-        cb.checked ? state.payers.add(cb.dataset.payer) : state.payers.delete(cb.dataset.payer);
+    slot.querySelectorAll("[data-payer]").forEach(b => {
+      b.onclick = () => {
+        state.payers.has(b.dataset.payer) ? state.payers.delete(b.dataset.payer) : state.payers.add(b.dataset.payer);
         distributePayersEqually();
         draw();
       };
     });
     slot.querySelectorAll("[data-payer-amount]").forEach(inp => {
-      inp.onchange = () => {
-        state.payerAmounts[inp.dataset.payerAmount] = toCents(inp.value);
-        draw();
-      };
+      inp.onchange = () => { state.payerAmounts[inp.dataset.payerAmount] = toCents(inp.value); draw(); };
     });
-    const $dist = slot.querySelector("#x-dist-payers");
-    if ($dist) $dist.onclick = () => { distributePayersEqually(); draw(); };
+    slot.querySelector("#x-dist-payers")?.addEventListener("click", () => { distributePayersEqually(); draw(); });
 
     slot.querySelectorAll("[data-mode]").forEach(b => {
       b.onclick = () => { state.mode = b.dataset.mode; draw(); };
     });
-    slot.querySelectorAll("[data-part]").forEach(cb => {
-      cb.onchange = () => {
-        cb.checked ? state.participants.add(cb.dataset.part) : state.participants.delete(cb.dataset.part);
+    slot.querySelectorAll("[data-part]").forEach(b => {
+      b.onclick = () => {
+        state.participants.has(b.dataset.part) ? state.participants.delete(b.dataset.part) : state.participants.add(b.dataset.part);
         draw();
       };
     });
+    slot.querySelector("#x-part-all")?.addEventListener("click", () => {
+      members.forEach(m => state.participants.add(m.id));
+      draw();
+    });
+    slot.querySelector("#x-part-none")?.addEventListener("click", () => { state.participants.clear(); draw(); });
     slot.querySelectorAll("[data-weight]").forEach(inp => {
-      inp.onchange = () => {
-        state.weights[inp.dataset.weight] = parseFloat(inp.value) || 0;
-        draw();
-      };
+      inp.onchange = () => { state.weights[inp.dataset.weight] = parseFloat(inp.value) || 0; draw(); };
     });
     slot.querySelectorAll("[data-exact]").forEach(inp => {
-      inp.onchange = () => {
-        state.exact[inp.dataset.exact] = toCents(inp.value);
-        draw();
-      };
+      inp.onchange = () => { state.exact[inp.dataset.exact] = toCents(inp.value); draw(); };
     });
-
-    slot.querySelector("#x-del")?.addEventListener("click", async () => {
-      if (isRecurringRecord) {
-        if (!confirm("Apagar esta despesa recorrente? As despesas já lançadas mantêm-se — só deixa de lançar novas.")) return;
-        const { error } = await sb.from("recurring_expenses").delete().eq("id", existing.id);
-        if (error) return toast(error.message, true);
-        toast("Recorrente apagada");
-        return refresh();
-      }
-      if (isOccurrence) {
-        if (!confirm("Apagar esta ocorrência? Faz parte de uma despesa recorrente e pode voltar a ser lançada automaticamente. "
-          + "Para parar de vez, apaga ou pausa a série nas Definições.")) return;
-        const { error } = await sb.from("expenses").delete().eq("id", existing.id);
-        if (error) return toast(error.message, true);
-        toast("Ocorrência apagada");
-        return refresh();
-      }
-      if (!confirm("Apagar esta despesa?")) return;
-      const { error } = await sb.from("expenses").delete().eq("id", existing.id);
-      if (error) return toast(error.message, true);
-      toast("Despesa apagada");
-      refresh();
-    });
-
-    const $save = slot.querySelector("#x-save");
-    if ($save) $save.onclick = async () => {
-      const desc = state.desc.trim();
-      const date = state.date;
-      const shares2 = computedShares();
-      const paidSum2 = [...state.payers].reduce((a, id) => a + (state.payerAmounts[id] || 0), 0);
-      const shareSum2 = Object.values(shares2).reduce((a, b) => a + b, 0);
-
-      const fail = (section, msg) => { state.section = section; draw(); toast(msg, true); };
-      if (!desc) return fail("dados", "Falta a descrição");
-      if (state.totalCents <= 0) return fail("dados", "O valor tem de ser maior que zero");
-      if (state.payers.size === 0) return fail("pagou", "Escolhe quem pagou");
-      if (paidSum2 !== state.totalCents) return fail("pagou", "Os valores pagos não somam o total");
-      if (Object.keys(shares2).length === 0) return fail("divide", "Escolhe por quem se divide");
-      // dividir por categoria: cada categoria com valor precisa de alguém
-      if (catDividing()) {
-        const semGente = catEntries()
-          .filter(([cat]) => ![...(state.catParts[cat] || [])].some(id => members.some(m => m.id === id)))
-          .map(([cat]) => catOf(cat).label);
-        if (semGente.length) return fail("divide", `Escolhe quem participa em: ${semGente.join(", ")}`);
-      }
-      if (shareSum2 !== state.totalCents) return fail("divide", "A divisão não soma o total");
-
-      // fatura repartida por categorias: a alocação tem de somar o total
-      // (sem nenhuma categoria escolhida, a despesa fica sem categoria)
-      const catRows = catEntries();
-      if (state.catSplit && catRows.length > 0) {
-        const catSum = catRows.reduce((a, [, c]) => a + c, 0);
-        if (catSum !== state.totalCents) return fail("dados", "Os valores das categorias não somam o total da fatura");
-      }
-      // o que vai para expenses.category: a única, ou a principal da repartição
-      const catId = primaryCategory();
-      // linhas da divisão por categoria (só quando está ativa)
-      const catShareRows = [];
-      if (catDividing()) {
-        const per = perCategoryShares();
-        for (const [cat, byMem] of Object.entries(per))
-          for (const [mem, c] of Object.entries(byMem))
-            if (c > 0) catShareRows.push({ category: cat, member_id: mem, amount: (c / 100).toFixed(2) });
-      }
-
-      // ----- converter uma despesa ocasional em recorrente daí para a frente -----
-      // cria um molde a partir desta despesa e liga-a como 1.ª ocorrência (o
-      // índice único impede que a geração a duplique). Guarda: não pode existir
-      // outra despesa com a mesma descrição em data POSTERIOR, senão a geração
-      // criaria duplicados dos meses que já foram lançados à mão.
-      if (state.recurring && converting) {
-        if (state.dayOfMonth < 1 || state.dayOfMonth > 31) return fail("dados", "Dia do mês tem de ser entre 1 e 31");
-        if (state.endDate && state.endDate < today) return fail("dados", "A data de fim não pode ser anterior a hoje");
-
-        const { data: later, error: qErr } = await sb.from("expenses")
-          .select("id, expense_date")
-          .eq("group_id", group.id)
-          .eq("description", desc)
-          .gt("expense_date", existing.expense_date)
-          .order("expense_date").limit(1);
-        if (qErr) return toast(qErr.message, true);
-        if (later && later.length) {
-          return fail("dados", `Já existe uma despesa «${desc}» em ${fmtDate(later[0].expense_date)}, posterior a esta. `
-            + "Apaga-a ou muda a descrição antes de tornar recorrente (senão ficavam duplicadas).");
-        }
-
-        const period = existing.expense_date.slice(0, 8) + "01"; // 1.º dia do mês (YYYY-MM-01)
-        // 1) cria o molde a partir dos valores atuais do formulário
-        const rpayload = {
-          group_id: group.id, description: desc, amount: (state.totalCents / 100).toFixed(2),
-          category: catId, split_mode: state.mode, day_of_month: state.dayOfMonth,
-          start_date: period, end_date: state.endDate || null, active: state.active,
-        };
-        const { data: rec, error: rErr } = await sb.from("recurring_expenses").insert(rpayload).select().single();
-        if (rErr) return toast(rErr.message, true);
-        const rPayerRows = [...state.payers].filter(id => (state.payerAmounts[id] || 0) > 0)
-          .map(id => ({ recurring_id: rec.id, member_id: id, amount: (state.payerAmounts[id] / 100).toFixed(2) }));
-        const rShareRows = Object.entries(shares2).filter(([, c]) => c > 0)
-          .map(([id, c]) => ({ recurring_id: rec.id, member_id: id, amount: (c / 100).toFixed(2) }));
-        const re1 = await sb.from("recurring_expense_payers").insert(rPayerRows);
-        const re2 = await sb.from("recurring_expense_shares").insert(rShareRows);
-        if (re1.error || re2.error) return toast((re1.error || re2.error).message, true);
-
-        // 2) atualiza a despesa (aplica edições) e liga-a ao molde como 1.ª ocorrência
-        const { error: uErr } = await sb.from("expenses").update({
-          description: desc, amount: (state.totalCents / 100).toFixed(2),
-          split_mode: state.mode, category: catId,
-          recurring_id: rec.id, recurring_period: period,
-        }).eq("id", existing.id);
-        if (uErr) return toast(uErr.message, true);
-        await sb.from("expense_payers").delete().eq("expense_id", existing.id);
-        await sb.from("expense_shares").delete().eq("expense_id", existing.id);
-        // a 1.ª ocorrência fica com a categoria única do molde — limpa uma
-        // eventual repartição/divisão antiga (erros ignorados: schema sem a tabela)
-        await sb.from("expense_categories").delete().eq("expense_id", existing.id);
-        await sb.from("expense_category_shares").delete().eq("expense_id", existing.id);
-        const pRows = [...state.payers].filter(id => (state.payerAmounts[id] || 0) > 0)
-          .map(id => ({ expense_id: existing.id, member_id: id, amount: (state.payerAmounts[id] / 100).toFixed(2) }));
-        const sRows = Object.entries(shares2).filter(([, c]) => c > 0)
-          .map(([id, c]) => ({ expense_id: existing.id, member_id: id, amount: (c / 100).toFixed(2) }));
-        const pi1 = await sb.from("expense_payers").insert(pRows);
-        const pi2 = await sb.from("expense_shares").insert(sRows);
-        if (pi1.error || pi2.error) return toast((pi1.error || pi2.error).message, true);
-
-        if (catId) learnCategory(desc, catId);
-        try { await sb.rpc("generate_due_recurring"); } catch (_) { /* schema sem RPC */ }
-        toast("Despesa convertida em recorrente");
-        return refresh();
-      }
-
-      // ----- molde recorrente: grava em recurring_* e materializa já -----
-      if (state.recurring) {
-        if (state.dayOfMonth < 1 || state.dayOfMonth > 31) return fail("dados", "Dia do mês tem de ser entre 1 e 31");
-        if (state.endDate && state.endDate < today) return fail("dados", "A data de fim não pode ser anterior a hoje");
-
-        const rpayload = {
-          group_id: group.id,
-          description: desc,
-          amount: (state.totalCents / 100).toFixed(2),
-          category: catId,
-          split_mode: state.mode,
-          day_of_month: state.dayOfMonth,
-          start_date: state.startDate,
-          end_date: state.endDate || null,
-          active: state.active,
-        };
-        let recId = existing?.id;
-        if (existing) {
-          const { error } = await sb.from("recurring_expenses").update(rpayload).eq("id", existing.id);
-          if (error) return toast(error.message, true);
-          await sb.from("recurring_expense_payers").delete().eq("recurring_id", existing.id);
-          await sb.from("recurring_expense_shares").delete().eq("recurring_id", existing.id);
-        } else {
-          const { data, error } = await sb.from("recurring_expenses").insert(rpayload).select().single();
-          if (error) return toast(error.message, true);
-          recId = data.id;
-        }
-        const rPayerRows = [...state.payers]
-          .filter(id => (state.payerAmounts[id] || 0) > 0)
-          .map(id => ({ recurring_id: recId, member_id: id, amount: (state.payerAmounts[id] / 100).toFixed(2) }));
-        const rShareRows = Object.entries(shares2)
-          .filter(([, c]) => c > 0)
-          .map(([id, c]) => ({ recurring_id: recId, member_id: id, amount: (c / 100).toFixed(2) }));
-        const e1 = await sb.from("recurring_expense_payers").insert(rPayerRows);
-        const e2 = await sb.from("recurring_expense_shares").insert(rShareRows);
-        if (e1.error || e2.error) return toast((e1.error || e2.error).message, true);
-
-        if (catId) learnCategory(desc, catId);
-        // materializa já as ocorrências em atraso deste molde (idempotente)
-        try { await sb.rpc("generate_due_recurring"); } catch (_) { /* schema sem RPC */ }
-        toast(existing ? "Despesa recorrente atualizada" : "Despesa recorrente criada");
-        return refresh();
-      }
-
-      const payload = {
-        group_id: group.id,
-        description: desc,
-        amount: (state.totalCents / 100).toFixed(2),
-        expense_date: date || new Date().toISOString().slice(0, 10),
-        // dividir por categoria produz valores por pessoa arbitrários: grava
-        // como "exact" para reabrir fiel mesmo sem a tabela da divisão
-        split_mode: catDividing() ? "exact" : state.mode,
-        category: catId,
-      };
-
-      // schema antigo sem as colunas split_mode/category: grava na mesma
-      // sem esses campos (o PostgREST acusa uma coluna em falta de cada vez)
-      const stripMissingCol = (error) => {
-        if (!error) return false;
-        if (/split_mode/i.test(error.message) && "split_mode" in payload) {
-          toast("Modo de divisão não gravado — corre o schema.sql mais recente no Supabase", true);
-          delete payload.split_mode;
-          return true;
-        }
-        if (/category/i.test(error.message) && "category" in payload) {
-          toast("Categoria não gravada — corre o schema.sql mais recente no Supabase", true);
-          delete payload.category;
-          return true;
-        }
-        return false;
-      };
-
-      let expenseId = existing?.id;
-      if (existing) {
-        let { error } = await sb.from("expenses").update(payload).eq("id", existing.id);
-        while (stripMissingCol(error)) ({ error } = await sb.from("expenses").update(payload).eq("id", existing.id));
-        if (error) return toast(error.message, true);
-        const d1 = await sb.from("expense_payers").delete().eq("expense_id", existing.id);
-        const d2 = await sb.from("expense_shares").delete().eq("expense_id", existing.id);
-        if (d1.error || d2.error) return toast((d1.error || d2.error).message, true);
-      } else {
-        let { data, error } = await sb.from("expenses").insert(payload).select().single();
-        while (stripMissingCol(error)) ({ data, error } = await sb.from("expenses").insert(payload).select().single());
-        if (error) return toast(error.message, true);
-        expenseId = data.id;
-      }
-
-      // aprender: reforça a ligação descrição -> categoria para as próximas
-      // sugestões automáticas ficarem cada vez mais certeiras (na fatura
-      // repartida aprende-se a principal)
-      if (catId) learnCategory(desc, catId);
-
-      // fatura repartida: substitui as linhas em expense_categories (com 0
-      // ou 1 categoria não há linhas — a coluna category chega). Schema
-      // antigo sem a tabela: degrada com aviso, a despesa fica na principal.
-      const catInsRows = catRows.length >= 2
-        ? catRows.map(([id, c]) => ({ expense_id: expenseId, category: id, amount: (c / 100).toFixed(2) }))
-        : [];
-      const dc = await sb.from("expense_categories").delete().eq("expense_id", expenseId);
-      const catsMissing = !!dc.error && /expense_categories/i.test(dc.error.message);
-      if (dc.error && !catsMissing) return toast(dc.error.message, true);
-      if (catInsRows.length && !catsMissing) {
-        const ic = await sb.from("expense_categories").insert(catInsRows);
-        if (ic.error) return toast(ic.error.message, true);
-      }
-      if (catInsRows.length && catsMissing) {
-        toast("Repartição por categorias não gravada — corre o schema.sql mais recente no Supabase", true);
-      }
-
-      // divisão do custo por categoria (quem participa em cada): substitui as
-      // linhas. Sem esta divisão não há linhas — expense_shares (a soma) chega.
-      const catShareInsRows = catShareRows.map(r => ({ expense_id: expenseId, ...r }));
-      const ds = await sb.from("expense_category_shares").delete().eq("expense_id", expenseId);
-      const catShMissing = !!ds.error && /expense_category_shares/i.test(ds.error.message);
-      if (ds.error && !catShMissing) return toast(ds.error.message, true);
-      if (catShareInsRows.length && !catShMissing) {
-        const is = await sb.from("expense_category_shares").insert(catShareInsRows);
-        if (is.error) return toast(is.error.message, true);
-      }
-      if (catShareInsRows.length && catShMissing) {
-        toast("Divisão por categoria não gravada — corre o schema.sql mais recente no Supabase", true);
-      }
-
-      const payerRows = [...state.payers]
-        .filter(id => (state.payerAmounts[id] || 0) > 0)
-        .map(id => ({ expense_id: expenseId, member_id: id, amount: (state.payerAmounts[id] / 100).toFixed(2) }));
-      const shareRows = Object.entries(shares2)
-        .filter(([, c]) => c > 0)
-        .map(([id, c]) => ({ expense_id: expenseId, member_id: id, amount: (c / 100).toFixed(2) }));
-
-      const i1 = await sb.from("expense_payers").insert(payerRows);
-      const i2 = await sb.from("expense_shares").insert(shareRows);
-      if (i1.error || i2.error) return toast((i1.error || i2.error).message, true);
-
-      toast(existing ? "Despesa atualizada" : "Despesa adicionada");
-      refresh();
-    };
   }
+
+  // no telemóvel o formulário ocupa o ecrã todo: é uma tarefa, não um pop-up
+  slot.parentElement?.classList.add("modal-full");
 
   draw();
 }
