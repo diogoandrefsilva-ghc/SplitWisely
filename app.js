@@ -1968,26 +1968,35 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
   }
 
   // --------------------------------------------------------- assistente (A)
-  // O formulário é um assistente: uma pergunta por ecrã, alvos de toque
-  // grandes e um resumo final antes de gravar. Nada fica escondido atrás de
-  // separadores — a barra de progresso no topo mostra sempre onde se está e
-  // salta para qualquer passo, e o resumo repete tudo o que vai ser gravado.
-  const STEPS = ["valor", "cat", "pagou", "divide", "rever"];
+  // O caminho normal é um cartão só: descrição, valor, data e «Registar».
+  // A despesa fica em nome de quem a lança e com a divisão normal do grupo —
+  // o cartão diz em texto o que vai assumir, para não haver surpresas.
+  // Quem precisar de mais (categoria, vários pagadores, divisão à medida)
+  // toca em «Mais detalhe» e o cartão abre-se num assistente de 5 passos,
+  // uma pergunta por ecrã, com um resumo final antes de gravar.
+  const STEPS = ["despesa", "cat", "pagou", "divide", "rever"];
   const STEP_LABEL = {
-    valor: "Valor", cat: "Categoria", pagou: "Pagou",
+    despesa: "Despesa", cat: "Categoria", pagou: "Pagou",
     divide: "Divisão", rever: "Rever",
   };
   // onde aterra cada validação do gravar (ver doSave -> fail)
-  const SECTION_STEP = { dados: "valor", cat: "cat", pagou: "pagou", divide: "divide" };
+  const SECTION_STEP = { dados: "despesa", cat: "cat", pagou: "pagou", divide: "divide" };
 
-  // ao editar entra-se pelo resumo (vê-se tudo de uma vez e salta-se para o
-  // que se quer mudar); a criar, começa-se no princípio
-  let step = existing ? "rever" : "valor";
+  // detalhe = o assistente completo está aberto. A editar abre sempre assim
+  // (pelo resumo, que mostra tudo de uma vez); a criar, começa no cartão.
+  let detalhe = !!existing;
+  let step = existing ? "rever" : "despesa";
   // passos já vistos: só esses ganham o ✓ verde na barra (senão a barra
   // ficava toda verde à partida, por os passos seguintes já terem defaults)
   const visited = new Set(existing ? STEPS : [step]);
   function goToStep(id) { step = id; visited.add(id); draw(); }
-  function goToSection(sec) { goToStep(SECTION_STEP[sec] || "valor"); }
+  function abrirDetalhe(id) { detalhe = true; goToStep(id || "cat"); }
+  function goToSection(sec) {
+    const alvo = SECTION_STEP[sec] || "despesa";
+    // um erro fora da descrição/valor só se corrige no assistente
+    if (alvo !== "despesa") detalhe = true;
+    goToStep(alvo);
+  }
 
   const ontem = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
 
@@ -2053,15 +2062,7 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
           </div>
         </div>`;
     } else if (!existing) {
-      typeBlock = `
-        <div class="big-choice two">
-          <button type="button" class="bc ${state.recurring ? "" : "on"}" data-type="occ">
-            <span class="bc-ico">🧾</span><strong>Ocasional</strong><span>Só desta vez</span>
-          </button>
-          <button type="button" class="bc ${state.recurring ? "on" : ""}" data-type="rec">
-            <span class="bc-ico">🔁</span><strong>Recorrente</strong><span>Todos os meses</span>
-          </button>
-        </div>`;
+      typeBlock = ""; // o tipo escolhe-se numa linha por baixo da data
     } else if (state.recurring) {
       typeBlock = `
         <div class="rec-banner">
@@ -2084,20 +2085,31 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
         </button>`;
     }
 
+    // linha de repetição: uma só linha no caminho normal, que abre os campos
+    // do molde quando se liga (o tipo deixou de ser uma escolha à cabeça)
+    const repeteLinha = (isRecurringRecord || isOccurrence || existing) ? "" : `
+      <label class="check-line" style="margin-top:.6rem;">
+        <input type="checkbox" data-type="${state.recurring ? "occ" : "rec"}" ${state.recurring ? "checked" : ""} />
+        🔁 Repete-se todos os meses
+      </label>`;
+
     const whenBlock = state.recurring ? `
-      <div class="field">
-        <label>Dia do mês em que se repete</label>
-        <input id="x-dom" type="number" inputmode="numeric" min="1" max="31" value="${state.dayOfMonth}" />
-      </div>
-      <div class="field">
-        <label>Terminar em (opcional)</label>
-        <input id="x-end" type="date" min="${today}" value="${esc(state.endDate)}" />
+      <div class="row">
+        <div class="field">
+          <label>Dia do mês</label>
+          <input id="x-dom" type="number" inputmode="numeric" min="1" max="31" value="${state.dayOfMonth}" />
+        </div>
+        <div class="field">
+          <label>Terminar em (opcional)</label>
+          <input id="x-end" type="date" min="${today}" value="${esc(state.endDate)}" />
+        </div>
       </div>
       <label class="check-line">
         <input type="checkbox" id="x-active" ${state.active ? "checked" : ""} /> Série ativa
         <span class="check-note">É lançada automaticamente no dia marcado (ajustado ao último dia
           nos meses mais curtos) quando alguém abre a app.</span>
-      </label>` : `
+      </label>
+      ${repeteLinha}` : `
       <div class="field">
         <label>Quando</label>
         <div class="pick-row">
@@ -2105,20 +2117,35 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
           <button type="button" class="pick ${state.date === ontem ? "on" : ""}" data-date="${ontem}">Ontem</button>
           <input id="x-date" type="date" value="${esc(state.date)}" />
         </div>
-      </div>`;
+      </div>
+      ${repeteLinha}`;
+
+    // o que o modo rápido vai assumir, dito por palavras (nada é adivinhado
+    // às escondidas: quem regista pagou, divide-se pelo normal do grupo)
+    const euNome = shortName(nameOf([...state.payers][0] || (myMember ? myMember.id : members[0].id)));
+    const nDiv = state.participants.size;
+    const assumeLinha = `
+      <p class="assume">
+        <strong>${esc(euNome)}</strong> pagou · divide-se
+        ${state.mode === "weights" ? "pelas proporções do grupo" : "em partes iguais"}
+        por <strong>${nDiv} pessoa${nDiv === 1 ? "" : "s"}</strong>${state.category
+          ? ` · ${catOf(state.category).icon} ${esc(catOf(state.category).label)}` : ""}.
+        <span>Toca em «Mais detalhe» para mudar.</span>
+      </p>`;
 
     const valorBody = `
       ${typeBlock}
+      <div class="field">
+        <label>Descrição</label>
+        <input id="x-desc" class="big-input" value="${esc(state.desc)}" placeholder="Ex.: Jantar no restaurante" />
+      </div>
       <div class="hero-amount ${state.totalCents > 0 ? "filled" : ""}">
         <input id="x-amount" type="number" inputmode="decimal" step="0.01" min="0" placeholder="0.00"
           value="${state.totalCents ? (state.totalCents / 100).toFixed(2) : ""}" />
         <span class="hero-cur">${esc(cur)}</span>
       </div>
-      <div class="field">
-        <label>Descrição</label>
-        <input id="x-desc" class="big-input" value="${esc(state.desc)}" placeholder="Ex.: Jantar no restaurante" />
-      </div>
-      ${whenBlock}`;
+      ${whenBlock}
+      ${detalhe ? "" : assumeLinha}`;
 
     // ------------------------------------------------------ passo: categoria
     const catSplitBlock = !state.catSplit
@@ -2315,16 +2342,17 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
             </div>`).join("")}
         </div>` : ""}`;
 
-    const bodies = { valor: valorBody, cat: catBody, pagou: pagouBody, divide: divideBody, rever: reverBody };
+    const bodies = { despesa: valorBody, cat: catBody, pagou: pagouBody, divide: divideBody, rever: reverBody };
     const titles = {
-      valor: state.recurring ? "Quanto e quando se repete?" : "Quanto foi?",
+      despesa: !detalhe ? (state.recurring ? "Nova despesa recorrente" : "Nova despesa")
+        : (state.recurring ? "Quanto e quando se repete?" : "O que foi e quanto?"),
       cat: "Em quê?",
       pagou: "Quem pagou?",
       divide: "Por quem se divide?",
       rever: existing ? "Detalhe da despesa" : "Está tudo certo?",
     };
     const subs = {
-      valor: "O valor e uma descrição curta chegam para começar.",
+      despesa: detalhe ? "" : "Descreve, mete o valor, confirma a data — e regista.",
       cat: "Escolhe uma categoria — ou nenhuma, se não se aplicar.",
       pagou: "Toca em quem pôs o dinheiro. Podem ser várias pessoas.",
       divide: "Toca em quem entra nesta despesa.",
@@ -2338,11 +2366,11 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     <div class="expense-detail wiz">
       <div class="wiz-top">
         <button class="back-pill" id="x-back"><span class="arr">←</span> ${esc(opts.backLabel || "Despesas")}</button>
-        ${readOnly ? "" : `<span class="wiz-count">Passo ${idx + 1} de ${STEPS.length}</span>`}
+        ${readOnly || !detalhe ? "" : `<span class="wiz-count">Passo ${idx + 1} de ${STEPS.length}</span>`}
       </div>
-      ${readOnly ? "" : `
+      ${readOnly || !detalhe ? "" : `
       <div class="wiz-bar">
-        ${STEPS.map((s, i) => `
+        ${STEPS.map(s => `
           <button type="button" class="wiz-seg ${s === step ? "now" : ""} ${okOf[s] && visited.has(s) && s !== step ? "done" : ""}"
             data-goto="${s}" title="${STEP_LABEL[s]}"><span>${STEP_LABEL[s]}</span></button>`).join("")}
       </div>`}
@@ -2355,7 +2383,11 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
       <h2 class="wiz-title">${titles[step]}</h2>
       ${subs[step] ? `<p class="wiz-sub">${subs[step]}</p>` : ""}
       <div class="wiz-body"${readOnly ? " inert" : ""}>${bodies[step]}</div>
-      ${readOnly ? "" : `
+      ${readOnly ? "" : (!detalhe ? `
+      <div class="wiz-foot dupla">
+        <button class="wiz-next" id="x-save" ${okValor ? "" : "disabled"}>${state.recurring ? "Criar recorrente" : "Registar"}</button>
+        <button type="button" class="secondary wiz-more" id="x-more">Mais detalhe</button>
+      </div>` : `
       ${existing && isLast ? `<button class="danger wide" id="x-del">Apagar despesa</button>` : ""}
       <div class="wiz-foot">
         ${idx > 0 ? `<button type="button" class="secondary wiz-prev" id="x-prev">Voltar</button>` : ""}
@@ -2364,7 +2396,7 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
               : existing ? "Guardar alterações"
               : (state.recurring ? "Criar recorrente" : "Adicionar despesa")}</button>`
           : `<button class="wiz-next" id="x-next" ${okOf[step] ? "" : "disabled"}>Continuar</button>`}
-      </div>`}
+      </div>`)}
     </div>`;
 
     // ------------------------------------------------------------ listeners
@@ -2374,6 +2406,7 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     });
     slot.querySelector("#x-prev")?.addEventListener("click", () => goToStep(STEPS[idx - 1]));
     slot.querySelector("#x-next")?.addEventListener("click", () => goToStep(STEPS[idx + 1]));
+    slot.querySelector("#x-more")?.addEventListener("click", () => abrirDetalhe("cat"));
     slot.querySelector("#x-save")?.addEventListener("click", doSave);
     slot.querySelector("#x-del")?.addEventListener("click", doDelete);
 
@@ -2404,8 +2437,8 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
         state.category = guessCategory(state.desc, ctx.expenses, allowedIds ? new Set(allowedIds) : null);
         state.catAuto = !!state.category;
       }
-      const $next = slot.querySelector("#x-next");
-      if ($next) $next.disabled = !(state.desc.trim() && state.totalCents > 0);
+      const $acao = slot.querySelector("#x-next") || slot.querySelector("#x-save");
+      if ($acao) $acao.disabled = !(state.desc.trim() && state.totalCents > 0);
     };
     const $amount = slot.querySelector("#x-amount");
     if ($amount) $amount.onchange = () => {

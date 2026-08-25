@@ -1606,6 +1606,21 @@ p.hint { margin: .5rem 0 0; font-size: .78rem; color: var(--muted); line-height:
   box-shadow: 0 -14px 18px -14px rgba(0, 0, 0, .22);
 }
 .wiz-prev { flex: none; padding: .85rem 1.1rem; border-radius: 14px; }
+/* modo rápido: as duas ações empilhadas e ambas de largura total */
+.wiz-foot.dupla { flex-direction: column; gap: .5rem; }
+.wiz-foot.dupla .wiz-next, .wiz-foot.dupla .wiz-more { width: 100%; }
+.wiz-more { padding: .8rem 1.1rem; border-radius: 14px; font-size: .95rem; }
+
+/* o que o modo rápido vai assumir, dito por palavras */
+.assume {
+  margin: 1rem 0 0;
+  padding: .7rem .8rem;
+  background: var(--chip-pos-bg);
+  border-radius: 12px;
+  font-size: .85rem;
+  line-height: 1.5;
+}
+.assume span { display: block; margin-top: .15rem; font-size: .78rem; color: var(--muted); }
 .wiz-next { flex: 1; padding: .85rem 1.1rem; font-size: 1rem; border-radius: 14px; }
 
 /* campo do valor: o protagonista do 1.º passo */
