@@ -2046,13 +2046,39 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
 
   const ontem = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
 
-  // proporção legível para dois: 1.5 e 1 -> "3 : 2"
-  function razao(a, b) {
-    let x = Math.round(a * 10), y = Math.round(b * 10);
-    if (!x || !y) return null;
-    const mdc = (p, q) => q ? mdc(q, p % q) : p;
-    const d = mdc(x, y);
-    return `${x / d} : ${y / d}`;
+  // Nome curto com o mínimo que chegue: só o próprio nome quando é único no
+  // grupo, «Diogo S.» quando há mais do que um Diogo.
+  const primeiroNome = n => String(n || "?").trim().split(/\s+/)[0];
+  const quantosPrimeiros = {};
+  for (const m of members) {
+    const k = primeiroNome(m.name).toLowerCase();
+    quantosPrimeiros[k] = (quantosPrimeiros[k] || 0) + 1;
+  }
+  const curto = n => quantosPrimeiros[primeiroNome(n).toLowerCase()] > 1 ? shortName(n) : primeiroNome(n);
+
+  // Proporção entre dois em percentagem — é assim que se pensa nela
+  // (0,55 e 0,45 dá «55/45», e não uma razão reduzida como «11 : 9»).
+  function proporcao(a, b) {
+    const total = a + b;
+    if (!(total > 0) || a < 0 || b < 0) return null;
+    const p = Math.round((a / total) * 100);
+    return `${p}/${100 - p}`;
+  }
+
+  // Data: em vez de redesenhar o ecrã (que destruía o campo nativo aberto e,
+  // no iOS, deixava o ecrã em branco), acerta-se só o que muda nos atalhos.
+  function pintarDatas() {
+    const outra = state.date !== today && state.date !== ontem;
+    slot.querySelectorAll(".xp-seg [data-date]").forEach(b =>
+      b.classList.toggle("on", !outra && b.dataset.date === state.date));
+    const $o = slot.querySelector(".xp-seg-o");
+    if ($o) {
+      $o.classList.toggle("on", outra);
+      const $s = $o.querySelector("small");
+      if ($s) $s.textContent = outra ? fmtDiaMes(state.date) : "escolher";
+      const $i = $o.querySelector("input");
+      if ($i) $i.value = state.date; // o calendário abre sempre na data atual
+    }
   }
 
   function draw() {
@@ -2127,8 +2153,8 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
 
     // ------------------------------------------------- as quatro decisões
     const paidTxt = state.payers.size === 0 ? "Por escolher"
-      : state.payers.size === 1 ? shortName(nameOf([...state.payers][0]))
-      : joinNames([...state.payers].map(id => shortName(nameOf(id))));
+      : state.payers.size === 1 ? curto(nameOf([...state.payers][0]))
+      : joinNames([...state.payers].map(id => curto(nameOf(id))));
 
     const idsDiv = Object.keys(shares);
     const dois = idsDiv.length === 2;
@@ -2136,7 +2162,7 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     if (catDividing()) divTxt = "Por categoria";
     else if (idsDiv.length === 0) divTxt = "Por escolher";
     else if (state.mode === "weights") {
-      const r = dois ? razao(state.weights[idsDiv[0]] || 0, state.weights[idsDiv[1]] || 0) : null;
+      const r = dois ? proporcao(state.weights[idsDiv[0]] || 0, state.weights[idsDiv[1]] || 0) : null;
       divTxt = r ? `Proporção ${r}` : "Por proporção";
     } else if (state.mode === "exact") divTxt = "Valores exatos";
     else divTxt = idsDiv.length === members.length ? "Igual, entre todos" : `Igual, entre ${idsDiv.length}`;
@@ -2164,7 +2190,7 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
       previaTxt = iguais ? `<strong>${fmtMoney(vals[0], cur)}</strong> cada`
         : idsDiv.length <= 3
           // com duas ou três pessoas cabe dizer quanto fica a cada uma
-          ? idsDiv.map(id => `${esc(shortName(nameOf(id)))} <strong>${fmtMoney(shares[id] || 0, cur)}</strong>`).join(" · ")
+          ? idsDiv.map(id => `${esc(curto(nameOf(id)))} <strong>${fmtMoney(shares[id] || 0, cur)}</strong>`).join(" · ")
           : `divide-se por <strong>${idsDiv.length}</strong>`;
     }
     const previa = previaTxt ? `
@@ -2186,12 +2212,14 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
       ${previa}`;
 
     // ---------------------------------------- conteúdo de cada pop-up
+    // Com um campo à direita (proporção, valores exatos) o nome não tem
+    // espaço para o valor ao lado: nesse caso ele passa a segunda linha.
     const pessoa = (m, { on, attr, input, val }) => `
       <div class="xp-p ${on ? "on" : ""}">
         <button type="button" class="xp-p-hit" ${attr} aria-pressed="${on}">
           ${avatarHtml(m.name)}
-          <span class="xp-p-n">${esc(m.name)}</span>
-          ${val ? `<span class="xp-p-v">${val}</span>` : ""}
+          <span class="xp-p-n">${esc(m.name)}${input && val ? `<small>${val}</small>` : ""}</span>
+          ${val && !input ? `<span class="xp-p-v">${val}</span>` : ""}
           <span class="xp-p-c">${on ? ico("check") : ""}</span>
         </button>
         ${input || ""}
@@ -2232,7 +2260,7 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
               ${members.map(m => `
                 <label class="xp-chip ${set.has(m.id) ? "on" : ""}">
                   <input type="checkbox" data-catpart-cat="${c.id}" data-catpart-mem="${m.id}" ${set.has(m.id) ? "checked" : ""} />
-                  <span>${esc(shortName(m.name))}</span>
+                  <span>${esc(curto(m.name))}</span>
                 </label>`).join("")}
             </div>
             <p class="xp-catdiv-f ${n === 0 ? "warn" : ""}">${n === 0
@@ -2421,13 +2449,17 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     };
 
     slot.querySelectorAll("[data-date]").forEach(b => {
-      b.onclick = () => { state.date = b.dataset.date; draw(); };
+      b.onclick = () => { state.date = b.dataset.date; pintarDatas(); };
     });
     const $date = slot.querySelector("#x-date");
     if ($date) {
       // o campo cobre o terceiro botão: tocar nele abre o calendário nativo
       $date.onclick = () => { try { $date.showPicker(); } catch (_) { /* sem showPicker */ } };
-      $date.onchange = () => { if ($date.value) { state.date = $date.value; draw(); } };
+      $date.onchange = () => {
+        if (!$date.value) return;
+        state.date = $date.value;
+        pintarDatas();
+      };
     }
     const $dom = slot.querySelector("#x-dom");
     if ($dom) $dom.onchange = () => {

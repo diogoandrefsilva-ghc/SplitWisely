@@ -1653,6 +1653,8 @@ p.hint { margin: .5rem 0 0; font-size: .78rem; color: var(--muted); line-height:
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
+  text-align: center;
   gap: .04rem;
   padding: .5rem .3rem;
   border-radius: 12px;
@@ -1821,7 +1823,23 @@ p.hint { margin: .5rem 0 0; font-size: .78rem; color: var(--muted); line-height:
 .xp-p-hit:active { background: var(--card-inner); }
 .xp-p .avatar { opacity: .38; filter: grayscale(.7); transition: opacity .15s, filter .15s; }
 .xp-p.on .avatar { opacity: 1; filter: none; }
-.xp-p-n { flex: 1; min-width: 0; font-size: .98rem; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.xp-p-n {
+  flex: 1;
+  min-width: 0;
+  font-size: .98rem;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.xp-p-n small {
+  display: block;
+  font-size: .8rem;
+  font-weight: 600;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.xp-p.on .xp-p-n small { color: var(--text); }
 .xp-p.on .xp-p-n { font-weight: 600; }
 .xp-p-v { flex: none; font-size: .95rem; font-weight: 650; color: var(--muted); font-variant-numeric: tabular-nums; }
 .xp-p.on .xp-p-v { color: var(--text); }
@@ -1841,7 +1859,7 @@ p.hint { margin: .5rem 0 0; font-size: .78rem; color: var(--muted); line-height:
   color: #fff;
 }
 .xp-p-c .xp-ico { width: 13px; height: 13px; stroke-width: 3; }
-.xp-p-in { flex: none; width: 94px; height: 40px; text-align: right; border-radius: 10px; font-variant-numeric: tabular-nums; }
+.xp-p-in { flex: none; width: 86px; height: 40px; text-align: right; border-radius: 10px; font-variant-numeric: tabular-nums; }
 
 /* categorias: ícone num disco, sem moldura */
 .xp-cats {
