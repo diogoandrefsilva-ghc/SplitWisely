@@ -8,7 +8,7 @@
    Pedidos a outras origens (API do Supabase) passam direto, sem cache. */
 "use strict";
 
-const CACHE = "splitwisely-v19";
+const CACHE = "splitwisely-v20";
 const SHELL = [
   "./",
   "./index.html",
@@ -102,6 +102,36 @@ self.addEventListener("fetch", (e) => {
               hit || (e.request.mode === "navigate" ? caches.match("./index.html") : Response.error())
             )
       );
+    })
+  );
+});
+
+// Notificações push (despesa nova que afeta alguém que não a lançou) — a
+// Edge Function push-notificar-splitwisely manda um payload
+// {title, body, url}; aqui só se mostra a notificação.
+self.addEventListener("push", (e) => {
+  let data = { title: "SplitWisely", body: "Tens uma novidade na app.", url: "./" };
+  try { Object.assign(data, e.data.json()); } catch (_) { /* payload vazio ou não-JSON */ }
+  e.waitUntil(
+    self.registration.showNotification(data.title, {
+      body: data.body,
+      icon: "./icons/icon-192.png",
+      badge: "./icons/icon-192.png",
+      data: { url: data.url || "./" },
+    })
+  );
+});
+
+// Clique na notificação: foca uma janela já aberta da app, ou abre uma nova.
+self.addEventListener("notificationclick", (e) => {
+  e.notification.close();
+  const url = new URL(e.notification.data?.url || "./", self.registration.scope).href;
+  e.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
+      for (const c of clients) {
+        if (c.url.startsWith(self.registration.scope) && "focus" in c) return c.focus();
+      }
+      return self.clients.openWindow(url);
     })
   );
 });

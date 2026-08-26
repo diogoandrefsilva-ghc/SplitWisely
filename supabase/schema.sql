@@ -1190,6 +1190,71 @@ grant execute on all functions in schema splitwisely to authenticated;
 notify pgrst, 'reload schema';
 
 -- ============================================================
+-- NOTIFICAÇÕES PUSH (Web Push)
+-- Um dispositivo subscreve com o par endpoint+chaves que o browser gera
+-- (Definições da conta → 🔔 Notificações push → Ativar), ligado à CONTA
+-- (user_id) que o ativou — o mesmo utilizador pode ter várias linhas (um
+-- por telemóvel/instalação da PWA).
+--
+-- QUEM ENVIA: a Edge Function `push-notificar-splitwisely` (service
+-- role, bypassa RLS), chamada pela app sempre que se lança uma despesa
+-- nova que afete alguém que não foi quem a lançou (pagou ou ficou a
+-- dever). Resolve destinatários diretamente por user_id — group_members
+-- já liga um membro à conta que o usa — e manda o push a cada dispositivo
+-- subscrito dessa conta.
+--
+-- Sem esta migração a app funciona à mesma: as chamadas falham em
+-- silêncio (try/catch no app.js) e o botão de ativar fica sem efeito.
+-- ============================================================
+create table if not exists splitwisely.push_subscriptions (
+  endpoint text primary key,
+  user_id uuid not null references auth.users (id) on delete cascade,
+  p256dh text not null,
+  auth_key text not null,
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_push_subs_user on splitwisely.push_subscriptions (user_id);
+
+alter table splitwisely.push_subscriptions enable row level security;
+
+-- Cada um só vê/gere as SUAS subscriptions (a Edge Function usa a
+-- service role e não passa por aqui).
+drop policy if exists "push_subs_select" on splitwisely.push_subscriptions;
+create policy "push_subs_select" on splitwisely.push_subscriptions
+  for select to authenticated
+  using (user_id = (select auth.uid()));
+
+drop policy if exists "push_subs_insert" on splitwisely.push_subscriptions;
+create policy "push_subs_insert" on splitwisely.push_subscriptions
+  for insert to authenticated
+  with check (user_id = auth.uid());
+
+-- UPDATE cobre o upsert que a app faz (mesma PK `endpoint`) sempre que
+-- subscreve outra vez neste dispositivo (ex.: chave rodada pelo browser).
+drop policy if exists "push_subs_update" on splitwisely.push_subscriptions;
+create policy "push_subs_update" on splitwisely.push_subscriptions
+  for update to authenticated
+  using (user_id = auth.uid()) with check (user_id = auth.uid());
+
+drop policy if exists "push_subs_delete" on splitwisely.push_subscriptions;
+create policy "push_subs_delete" on splitwisely.push_subscriptions
+  for delete to authenticated
+  using (user_id = auth.uid());
+
+grant select, insert, update, delete on splitwisely.push_subscriptions to authenticated;
+
+-- A service_role (usada pela Edge Function push-notificar-splitwisely)
+-- precisa de acesso ao schema — a RLS ela ignora, mas os GRANTs de
+-- schema/tabela não.
+grant usage on schema splitwisely to service_role;
+grant all on all tables    in schema splitwisely to service_role;
+grant all on all sequences in schema splitwisely to service_role;
+alter default privileges in schema splitwisely grant all on tables    to service_role;
+alter default privileges in schema splitwisely grant all on sequences to service_role;
+
+notify pgrst, 'reload schema';
+
+-- ============================================================
 -- LIMPEZA (opcional): se chegaste a correr a versão ANTIGA deste
 -- schema (que criava tudo em `public` + trigger em auth.users),
 -- descomenta e corre este bloco UMA vez para a remover:

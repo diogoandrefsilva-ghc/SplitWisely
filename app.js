@@ -170,6 +170,218 @@ function inviteBlockHtml(member, group) {
       grava primeiro.</p>`;
 }
 
+// ---------------------------------------------------------------- notificações push
+// Web Push (Notification/Push API), sem servidor próprio de mensagens: o
+// browser gera uma "subscription" (endpoint+chaves) que se guarda em
+// push_subscriptions, ligada à CONTA (user_id) que a ativou. A Edge
+// Function push-notificar-splitwisely resolve os destinatários por
+// user_id e manda o push a cada dispositivo subscrito.
+//
+// Um disparo, chamado depois de gravar uma despesa NOVA (doSave, mais
+// abaixo): avisa quem foi AFETADO — pagou algo ou ficou a dever algo — e
+// não foi quem a lançou. Fire-and-forget: nunca atrasa nem faz falhar a
+// gravação da despesa.
+//
+// Sem a migração (tabela push_subscriptions em falta) ou sem suporte do
+// browser, tudo isto degrada em silêncio (catch) — a app funciona à
+// mesma, só sem notificações.
+
+// Par de chaves só para Web Push (não é a chave do Supabase) — o mesmo
+// par usado pelas outras apps deste projeto Supabase partilhado
+// (FestasBV, SplitBill); não precisa de se repetir por app, só o secret
+// VAPID_PRIVATE_KEY do lado da Edge Function.
+const VAPID_PUBLIC_KEY = "BFiwf_z5NJzkXFP6gzxS_naH9cNC2MfCEmejJf32MID8Y_1i49cb8sGINYhH-aFAZmFQLf3V__2ZyeotQIZYQ0U";
+
+// A app instalada no ecrã principal (PWA "standalone")? No iOS, Web Push
+// só existe nesse modo — numa aba normal do Safari o PushManager nem
+// existe, por mais atualizado que o iOS esteja.
+function emStandalone() {
+  return (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches)
+    || window.navigator.standalone === true;
+}
+function pushSuportado() {
+  return "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+}
+function urlBase64ToUint8Array(base64String) {
+  const padding = "=".repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(base64);
+  return Uint8Array.from([...raw].map(c => c.charCodeAt(0)));
+}
+async function pushSubscricaoAtual() {
+  if (!pushSuportado()) return null;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    return await reg.pushManager.getSubscription();
+  } catch (_) { return null; }
+}
+async function pushAtivar() {
+  if (!pushSuportado()) { toast("Este browser não suporta notificações push", true); return false; }
+  if (!session) return false;
+  try {
+    const permissao = await Notification.requestPermission();
+    if (permissao !== "granted") { toast("Permissão de notificações recusada", true); return false; }
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+    });
+    const js = sub.toJSON();
+    const { error } = await sb.from("push_subscriptions").upsert({
+      endpoint: sub.endpoint,
+      user_id: session.user.id,
+      p256dh: js.keys.p256dh,
+      auth_key: js.keys.auth,
+    }, { onConflict: "endpoint" });
+    if (error) throw error;
+    toast("✓ Notificações ativadas neste dispositivo");
+    return true;
+  } catch (e) {
+    toast("Não foi possível ativar as notificações: " + e.message, true);
+    return false;
+  }
+}
+async function pushDesativar() {
+  try {
+    const sub = await pushSubscricaoAtual();
+    if (sub) {
+      await sb.from("push_subscriptions").delete().eq("endpoint", sub.endpoint);
+      await sub.unsubscribe();
+    }
+    toast("Notificações desativadas neste dispositivo");
+  } catch (_) { /* melhor deixar como está do que falhar a meio */ }
+}
+
+// Chama a Edge Function push-notificar-splitwisely — o texto da
+// notificação escolhe-se sempre no servidor (por `tipo`), nunca vem
+// livre do cliente; aqui só se manda o que o servidor precisa de saber
+// (nomes já resolvidos, valores, destinatários).
+async function sbEnviarPush(tipo, payload) {
+  if (!session) return null;
+  try {
+    const { data, error } = await sb.functions.invoke("push-notificar-splitwisely", {
+      body: { tipo, ...payload },
+    });
+    if (error) { console.warn("push:", error.message); return null; }
+    return data;
+  } catch (e) { console.warn("push:", e.message); return null; }
+}
+
+// Sugestão automática de ativação, logo a seguir ao login (chamada de
+// runStartupChores). Não é "obrigatório" no sentido técnico — nenhum
+// browser deixa um site ativar notificações sem um clique do utilizador
+// — mas isto tira o clique de ter de descobrir o botão nas Definições, e
+// volta a perguntar em toda a abertura da app enquanto a pessoa não
+// decidir («Agora não»/«Ativar»). Permissão já concedida (por este
+// caminho ou por outro) subscreve logo, sem mostrar nada; já recusada, o
+// browser nem deixava voltar a perguntar, por isso também não se mostra
+// nada.
+async function pushSugerirAtivacao() {
+  if (!pushSuportado()) return;
+  if (Notification.permission === "denied") return;
+  if (Notification.permission === "granted") {
+    const sub = await pushSubscricaoAtual();
+    if (!sub) await pushAtivar();
+    return;
+  }
+  if ($modal) return; // não interromper um pop-up já aberto
+  const avisoIOS = !emStandalone() && /iPhone|iPad|iPod/.test(navigator.userAgent);
+  const $c = openModal();
+  $c.innerHTML = `
+    <h2 style="margin:0 0 .5rem;">🔔 Ativar notificações?</h2>
+    <p class="muted">Recebe um aviso quando alguém lançar uma despesa em que estejas incluído
+      (pagaste algo ou ficaste a dever algo) e que não tenhas sido tu a lançar.</p>
+    ${avisoIOS ? `<p class="muted">No iPhone/iPad só funciona depois de instalares a app no ecrã
+      principal (Partilhar → Adicionar ao Ecrã Principal).</p>` : ""}
+    <div class="row" style="margin-top:1rem;">
+      <button class="secondary" id="push-prompt-no">Agora não</button>
+      <button id="push-prompt-yes">🔔 Ativar</button>
+    </div>`;
+  $c.querySelector("#push-prompt-no").onclick = closeModal;
+  $c.querySelector("#push-prompt-yes").onclick = async () => { await pushAtivar(); closeModal(); };
+}
+
+// Ecrã de Conta — acessível pelo botão ⚙️ na barra de topo. Por agora só
+// tem as notificações push; é o sítio onde caberia crescer com mais
+// preferências pessoais no futuro.
+async function openAccountModal() {
+  const $c = openModal();
+  const draw = async () => {
+    const suportado = pushSuportado();
+    const sub = suportado ? await pushSubscricaoAtual() : null;
+    const ativo = !!sub;
+    const u = session.user;
+    const nota = !suportado
+      ? (/iPhone|iPad|iPod/.test(navigator.userAgent) && !emStandalone()
+          ? "No iPhone/iPad só funciona depois de instalares a app no ecrã principal (Partilhar → Adicionar ao Ecrã Principal)."
+          : "Este browser não suporta notificações push.")
+      : "Recebe um aviso quando alguém lançar uma despesa que te afete (pagaste algo ou ficaste a dever algo) e que não tenhas sido tu a lançar.";
+    $c.innerHTML = `
+      <h2 style="margin:0 0 .3rem;">Conta</h2>
+      <p class="muted" style="margin-bottom:1rem;">${esc(u.user_metadata?.full_name || u.email)} · ${esc(u.email)}</p>
+      <label class="toggle-card ${ativo ? "on" : ""}">
+        <span class="toggle-card-ico" aria-hidden="true">🔔</span>
+        <span class="toggle-card-body">
+          <span class="toggle-card-title">Notificações push</span>
+          <span class="toggle-card-note">${nota}</span>
+        </span>
+        ${suportado ? `
+        <span class="switch">
+          <input type="checkbox" id="push-switch" ${ativo ? "checked" : ""} />
+          <span class="switch-track"><span class="switch-thumb"></span></span>
+        </span>` : ""}
+      </label>
+      <button class="secondary" id="account-close" style="margin-top:1rem;">Fechar</button>`;
+    $c.querySelector("#account-close").onclick = closeModal;
+    const $sw = $c.querySelector("#push-switch");
+    if ($sw) $sw.onchange = async () => {
+      $sw.disabled = true;
+      if ($sw.checked) await pushAtivar(); else await pushDesativar();
+      await draw();
+    };
+  };
+  await draw();
+}
+
+// Depois de gravar uma despesa NOVA (nunca ao editar, nem numa ocorrência
+// gerada sozinha por uma série recorrente): avisa quem foi afetado e não
+// foi quem a lançou — pagou algo (payerRows) ou ficou a dever algo
+// (shareRows). Fire-and-forget.
+async function notifyExpenseAdded(group, members, desc, totalCents, payerRows, shareRows) {
+  try {
+    const myUid = session.user.id;
+    const byId = new Map(members.map(m => [m.id, m]));
+    const payerNames = payerRows.map(r => byId.get(r.member_id)?.name).filter(Boolean);
+    const shareIds = shareRows.map(r => r.member_id);
+    const shareIdSet = new Set(shareIds);
+
+    const affectedIds = new Set([...payerRows.map(r => r.member_id), ...shareIds]);
+    const pessoas = [...affectedIds]
+      .map(id => byId.get(id))
+      .filter(m => m && m.user_id && m.user_id !== myUid)
+      .map(m => ({
+        user_id: m.user_id,
+        isOwer: shareIdSet.has(m.id),
+        // as outras pessoas da divisão, à parte deste destinatário — é o
+        // que deixa o servidor nomeá-las em vez de só contar (ver a Edge
+        // Function, splitClause)
+        outrosNomes: shareIds.filter(id => id !== m.id).map(id => byId.get(id)?.name).filter(Boolean),
+      }));
+    if (!pessoas.length) return;
+
+    await sbEnviarPush("despesa_adicionada", {
+      group_id: group.id,
+      descricao: desc,
+      valor: totalCents / 100,
+      moeda: group.currency,
+      payerNames,
+      totalPessoas: shareIds.length,
+      pessoas,
+    });
+  } catch (e) { console.warn("notifyExpenseAdded:", e); }
+}
+
 // Divide `totalCents` por pesos, sem perder cêntimos (maior resto)
 function splitByWeights(totalCents, weights) {
   const sum = weights.reduce((a, b) => a + b, 0);
@@ -552,8 +764,10 @@ function renderTopbar() {
   $topbarUser.innerHTML = `
     ${avatar ? `<img src="${esc(avatar)}" alt="" referrerpolicy="no-referrer" />` : ""}
     <span class="user-name">${esc(name)}</span>
+    <button class="secondary small" id="btn-account" title="Conta e notificações">⚙️</button>
     ${profile?.is_admin ? `<button class="secondary small" id="btn-admin">Admin</button>` : ""}
     <button class="secondary small" id="btn-logout">Sair</button>`;
+  document.getElementById("btn-account").onclick = () => openAccountModal();
   document.getElementById("btn-admin")?.addEventListener("click", () => {
     location.hash = "#/admin";
   });
@@ -1969,6 +2183,8 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     const i1 = await sb.from("expense_payers").insert(payerRows);
     const i2 = await sb.from("expense_shares").insert(shareRows);
     if (i1.error || i2.error) return toast((i1.error || i2.error).message, true);
+
+    if (!existing) notifyExpenseAdded(group, members, desc, state.totalCents, payerRows, shareRows);
 
     toast(existing ? "Despesa atualizada" : "Despesa adicionada");
     refresh();
@@ -3852,6 +4068,8 @@ async function runStartupChores() {
   // só redesenha se houve mesmo dados novos — e nunca por cima de um pop-up
   // aberto (o aviso já foi dado; entra na próxima navegação)
   if (changed && !$modal) refresh();
+
+  pushSugerirAtivacao();
 }
 
 // Versão nova detetada pelo service worker (ver sw.js): a cache já ficou

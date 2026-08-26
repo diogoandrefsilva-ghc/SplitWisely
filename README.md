@@ -22,6 +22,7 @@ App web estilo Splitwise para gerir despesas partilhadas, feita em HTML/JS puro 
 - **Saldos e acerto de contas** — quem deve a quem (com o detalhe de *a quem* por baixo do saldo), sugestões de pagamentos mínimos e **registo de pagamentos**: um clique em «Pagar» numa sugestão pré-preenche o pagamento; os pagamentos registados abatem nos saldos e podem ser apagados.
 - **Grupos em histórico** — quando um evento termina e as **contas ficam saldadas** (saldos a zero), o criador pode **passar o grupo a histórico** nas **Definições**. Os grupos em histórico saem dos cards em destaque e passam a aparecer numa **lista compacta** («Histórico») no ecrã principal, com os **dados congelados**: não se lançam nem editam despesas, pagamentos, membros ou moldes recorrentes (imposto no servidor pelas políticas RLS, não é só esconder botões). É ideal para grupos de um evento único; grupos que continuam a movimentar-se ficam ativos mesmo com saldo zero. Dá para **reativar** o grupo a qualquer momento.
 - **Liquidação preferencial** — no detalhe de um membro podes indicar com quem ele **liquida preferencialmente** (opcional). Útil para convidados: se o Y é convidado do X, o Y tem a pagar e o X a receber, os acertos sugerem primeiro Y → X, antes da distribuição normal.
+- **Notificações push** — ao lançares uma despesa nova, quem foi afetado (pagou algo ou ficou a dever algo) e não foste tu recebe um aviso no telemóvel: *"António e João pagaram 30,00 € em Adega Solar Minhoto a dividir por 7 (estás incluído)"*. A app sugere ativar logo a seguir ao login (repete a cada abertura enquanto não decidires) e o botão **⚙️** na barra de topo abre a conta, onde se ativa/desativa a qualquer momento.
 - **PWA para telemóvel** — instalável no ecrã inicial (Android e iOS), abre em ecrã inteiro sem barra do browser, funciona offline para consulta e tem o zoom bloqueado.
 
 ## Configuração (uma vez)
@@ -89,7 +90,21 @@ ou publica no GitHub Pages, Netlify, Vercel, etc. (lembra-te de atualizar o *Sit
 
 > **Nota PWA:** o service worker (offline + instalação) só funciona em **HTTPS** ou em `localhost`. Em produção usa sempre HTTPS.
 
-### 6. Instalar no telemóvel
+### 6. Notificações push (opcional)
+
+Sem este passo a app funciona à mesma — o botão de ativar fica sem efeito e mais nada muda.
+
+1. Instala a [Supabase CLI](https://supabase.com/docs/guides/cli) e faz login/link ao projeto partilhado.
+2. Gera um par de chaves **VAPID** (só é preciso uma vez por projeto — se outra app deste
+   mesmo projeto partilhado já tiver notificações push, reaproveita o par dela em vez de gerar
+   outro): `npx web-push generate-vapid-keys`.
+3. Define os secrets da function (**Project Settings → Edge Functions → Secrets**, ou
+   `supabase secrets set VAPID_PUBLIC_KEY=... VAPID_PRIVATE_KEY=...`).
+4. Se geraste um par novo, cola o `VAPID_PUBLIC_KEY` na constante homónima no topo de `app.js`
+   (é pública por natureza — identifica o remetente, não autentica nada).
+5. Publica a function: `supabase functions deploy push-notificar-splitwisely`.
+
+### 7. Instalar no telemóvel
 
 - **Android (Chrome):** abre o site → menu ⋮ → **Adicionar ao ecrã principal** (ou aceita o aviso de instalação).
 - **iPhone (Safari):** abre o site → botão de partilha → **Adicionar ao ecrã principal**.
@@ -113,8 +128,10 @@ A app abre depois como qualquer outra, em ecrã inteiro e com o ícone próprio.
 > aprovação automática de quem é convidado por email, as **despesas recorrentes** (tabelas
 > `recurring_expenses` + a RPC `generate_due_recurring`), a coluna `settle_with` da
 > **liquidação preferencial** nos membros, a coluna `role` das **permissões por membro**
-> (com as políticas RLS que a impõem por despesa/pagamento) e a coluna `archived` dos
-> **grupos em histórico** (com as políticas RLS que congelam as escritas nos grupos arquivados).
+> (com as políticas RLS que a impõem por despesa/pagamento), a coluna `archived` dos
+> **grupos em histórico** (com as políticas RLS que congelam as escritas nos grupos arquivados)
+> e a tabela `push_subscriptions` das **notificações push** (ver passo 6 da configuração —
+> sem o deploy da Edge Function o botão de ativar fica sem efeito).
 
 ## Estrutura
 
@@ -128,3 +145,4 @@ A app abre depois como qualquer outra, em ecrã inteiro e com o ícone próprio.
 | `sw.js` | service worker (cache offline) |
 | `icons/` | ícones da app |
 | `supabase/schema.sql` | schema `splitwisely`: tabelas, RPCs, aprovação de contas e políticas RLS |
+| `supabase/functions/push-notificar-splitwisely/` | Edge Function que envia as notificações Web Push |
