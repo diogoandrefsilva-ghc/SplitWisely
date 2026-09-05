@@ -1727,6 +1727,9 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
   const today = new Date().toISOString().slice(0, 10);
   const close = onClose || (() => { slot.innerHTML = ""; });
   const useWeights = !!group.use_weights; // opção do grupo: divisão por proporções
+  // true enquanto doSave() está a gravar: bloqueia o formulário para um
+  // duplo-clique/duplo-toque (ou uma ligação lenta) não inserir a despesa 2x
+  let saving = false;
 
   // permissão de escrita nesta despesa (espelha a RLS do servidor):
   //  'write_all' edita qualquer uma; 'write_own' só as que criou; 'read'
@@ -1946,6 +1949,18 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
   // sítio onde se corrigem (goToSection), definido por cada desenho do
   // formulário.
   async function doSave() {
+    if (saving) return; // já há um registo em curso — ignora o clique repetido
+    saving = true;
+    draw();
+    try {
+      await doSaveInner();
+    } finally {
+      saving = false;
+      draw();
+    }
+  }
+
+  async function doSaveInner() {
     const desc = state.desc.trim();
     const date = state.date;
     const shares2 = computedShares();
@@ -2133,6 +2148,9 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     } else {
       let { data, error } = await sb.from("expenses").insert(payload).select().single();
       while (stripMissingCol(error)) ({ data, error } = await sb.from("expenses").insert(payload).select().single());
+      // rede de segurança do lado do servidor (uq_expenses_no_instant_duplicate):
+      // a mesma despesa já foi gravada há segundos — não insere outra vez
+      if (error?.code === "23505") return toast("Já registaste esta despesa há poucos segundos — não foi duplicada.", true);
       if (error) return toast(error.message, true);
       expenseId = data.id;
     }
@@ -2246,7 +2264,11 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     draw();
   }
   // sair do formulário com um pop-up aberto não pode deixar o listener solto
-  const sair = () => { document.removeEventListener("keydown", onEsc, true); close(); };
+  const sair = () => {
+    if (saving) return; // não fecha o formulário a meio de uma gravação
+    document.removeEventListener("keydown", onEsc, true);
+    close();
+  };
 
   // uma validação que falha abre o pop-up onde se corrige
   const SECTION_FOLHA = { cat: "cat", pagou: "pagou", divide: "divide" };
@@ -2351,7 +2373,7 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     const cabecalho = `
       <header class="xp-head">
         <div class="xp-head-bar">
-          <button type="button" class="xp-icon-btn" id="x-back" aria-label="${esc(opts.backLabel || "Voltar")}">${ico("back")}</button>
+          <button type="button" class="xp-icon-btn" id="x-back" aria-label="${esc(opts.backLabel || "Voltar")}" ${saving ? "disabled" : ""}>${ico("back")}</button>
           <span class="xp-head-title">${esc(titulo)}</span>
           <span class="xp-head-spacer"></span>
         </div>
@@ -2611,15 +2633,15 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     slot.innerHTML = `
     <div class="expense-detail xp">
       ${cabecalho}
-      <div class="xp-body"${readOnly ? " inert" : ""}>
+      <div class="xp-body"${readOnly || saving ? " inert" : ""}>
         ${contexto}
         ${decisoes}
         ${existing && !readOnly ? `
-          <button type="button" class="xp-del" id="x-del">${ico("trash")} Apagar despesa</button>` : ""}
+          <button type="button" class="xp-del" id="x-del" ${saving ? "disabled" : ""}>${ico("trash")} Apagar despesa</button>` : ""}
       </div>
       ${readOnly ? "" : `
       <footer class="xp-foot">
-        <button class="xp-cta" id="x-save" ${okValor ? "" : "disabled"}>${acao}</button>
+        <button class="xp-cta" id="x-save" ${okValor && !saving ? "" : "disabled"}>${saving ? "A guardar…" : acao}</button>
       </footer>`}
       ${popup}
     </div>`;
@@ -2655,7 +2677,7 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
         }
       }
       const $cta = slot.querySelector("#x-save");
-      if ($cta) $cta.disabled = !(state.desc.trim() && state.totalCents > 0);
+      if ($cta) $cta.disabled = saving || !(state.desc.trim() && state.totalCents > 0);
     };
     const $amount = slot.querySelector("#x-amount");
     if ($amount) $amount.onchange = () => {

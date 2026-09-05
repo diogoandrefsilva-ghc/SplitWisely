@@ -856,6 +856,19 @@ create unique index if not exists uq_expenses_recurring_period
   on splitwisely.expenses (recurring_id, recurring_period)
   where recurring_id is not null;
 
+-- Rede de segurança contra duplo-clique/reenvio: a mesma despesa avulsa
+-- (grupo, descrição, valor, data, autor) não pode ser inserida duas vezes
+-- dentro do mesmo minuto. A app já bloqueia o botão "Registar" enquanto
+-- grava (ver doSave em app.js); isto cobre o que escapar a essa proteção
+-- (ligação lenta com reenvio, duas abas/dispositivos ao mesmo tempo, etc.).
+-- Despesas recorrentes já têm a sua própria proteção acima.
+create unique index if not exists uq_expenses_no_instant_duplicate
+  on splitwisely.expenses (
+    group_id, description, amount, expense_date, created_by,
+    date_trunc('minute', created_at)
+  )
+  where recurring_id is null;
+
 -- grupo de um molde (evita recursão nas policies dos filhos, como expense_group)
 create or replace function splitwisely.recurring_group(rid uuid)
 returns uuid
