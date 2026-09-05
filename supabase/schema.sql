@@ -861,13 +861,15 @@ create unique index if not exists uq_expenses_recurring_period
 -- dentro do mesmo minuto. A app já bloqueia o botão "Registar" enquanto
 -- grava (ver doSave em app.js); isto cobre o que escapar a essa proteção
 -- (ligação lenta com reenvio, duas abas/dispositivos ao mesmo tempo, etc.).
--- Despesas recorrentes já têm a sua própria proteção acima.
+-- Despesas recorrentes já têm a sua própria proteção acima. Só se aplica a
+-- despesas com autor definido: despesas antigas importadas em bloco (sem
+-- created_by) partilham o instante de importação e não são o caso a evitar.
 create unique index if not exists uq_expenses_no_instant_duplicate
   on splitwisely.expenses (
     group_id, description, amount, expense_date, created_by,
     date_trunc('minute', created_at)
   )
-  where recurring_id is null;
+  where recurring_id is null and created_by is not null;
 
 -- grupo de um molde (evita recursão nas policies dos filhos, como expense_group)
 create or replace function splitwisely.recurring_group(rid uuid)
