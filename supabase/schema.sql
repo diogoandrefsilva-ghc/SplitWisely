@@ -856,6 +856,18 @@ create unique index if not exists uq_expenses_recurring_period
   on splitwisely.expenses (recurring_id, recurring_period)
   where recurring_id is not null;
 
+-- date_trunc(text, timestamptz) é STABLE (depende do TimeZone da sessão),
+-- por isso não serve num índice — precisa de ser IMMUTABLE. O epoch (segundos
+-- desde 1970-01-01 UTC) é sempre o mesmo valor absoluto, seja qual for o
+-- TimeZone da sessão, por isso este invólucro é seguro.
+create or replace function splitwisely.epoch_minute(ts timestamptz)
+returns bigint
+language sql immutable
+set search_path = ''
+as $$
+  select floor(extract(epoch from ts) / 60)::bigint;
+$$;
+
 -- Rede de segurança contra duplo-clique/reenvio: a mesma despesa avulsa
 -- (grupo, descrição, valor, data, autor) não pode ser inserida duas vezes
 -- dentro do mesmo minuto. A app já bloqueia o botão "Registar" enquanto
@@ -867,7 +879,7 @@ create unique index if not exists uq_expenses_recurring_period
 create unique index if not exists uq_expenses_no_instant_duplicate
   on splitwisely.expenses (
     group_id, description, amount, expense_date, created_by,
-    date_trunc('minute', created_at)
+    splitwisely.epoch_minute(created_at)
   )
   where recurring_id is null and created_by is not null;
 
