@@ -357,6 +357,32 @@
       .trim();
   }
 
+  // Palavras que, em português, ficam em minúscula no meio de um nome
+  // («Café da Avó», não «Café Da Avó»). No princípio da descrição levam
+  // maiúscula como qualquer outra.
+  const LIGACOES = new Set([
+    "de", "da", "do", "das", "dos", "e", "em", "no", "na", "nos", "nas",
+    "a", "o", "as", "os", "ao", "aos", "à", "às", "com", "por", "para", "que",
+    "um", "uma", "uns", "umas",
+  ]);
+
+  /* Descritivo aos berros: os extratos do banco vêm todos em maiúsculas
+     («CONTINENTE MATOSINHOS»), e na lista de despesas isso salta à vista
+     de mais. Nesse caso capitaliza-se.
+
+     Só quando é TUDO maiúsculas, e é essa a regra que interessa: uma única
+     minúscula pelo meio quer dizer que quem escreveu escolheu as maiúsculas
+     que lá estão («Jantar no SUSHI», «Prenda p/ MARIA») e não se mexe. */
+  function capitalizarBerros(s) {
+    if (!/\p{Lu}/u.test(s)) return s;   // não há maiúsculas: nada a fazer
+    if (/\p{Ll}/u.test(s)) return s;    // há minúsculas: é mistura, respeita-se
+    return s.replace(/\p{L}[\p{L}\p{M}'’]*/gu, (palavra, pos) => {
+      const min = palavra.toLowerCase();
+      if (pos > 0 && LIGACOES.has(min)) return min;
+      return min.charAt(0).toUpperCase() + min.slice(1);
+    });
+  }
+
   // linhas que são cabeçalhos de total/resumo e não movimentos
   const RE_IGNORAR = /^(total|totais|soma|subtotal|saldo|resumo)\b/i;
 
@@ -410,7 +436,8 @@
     let dataContexto = null;
     for (const l of linhas) {
       const campos = sep ? l.resto.split(RE_SEP[sep]) : [l.resto];
-      const desc = campos.map(limparDesc).filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+      const desc = capitalizarBerros(
+        campos.map(limparDesc).filter(Boolean).join(" ").replace(/\s+/g, " ").trim());
 
       const mov = {
         n: l.n, raw: l.raw, txt: l.txt,
@@ -506,6 +533,7 @@
     parseValor: parseValor,
     // expostos para os testes
     _limparLinha: limparLinha, _acharData: acharData, _acharValor: acharValor,
+    _capitalizarBerros: capitalizarBerros,
     _tokenCents: tokenCents, _SEPARADORES: SEPARADORES,
   };
 });

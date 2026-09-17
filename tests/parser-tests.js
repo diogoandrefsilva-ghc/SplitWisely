@@ -92,6 +92,22 @@
     // com um valor a seguir, volta a ser data
     { t: "25.09 Cafe 3,50", e: { data: "2026-09-25", cents: 350 } },
 
+    // --------------------------------- descritivo todo em maiúsculas
+    // extrato do banco: aos berros -> capitalizado
+    { t: "26/09 CONTINENTE MATOSINHOS 45,30", e: { desc: "Continente Matosinhos" } },
+    { t: "26/09 IKEA 45", e: { desc: "Ikea" } },
+    { t: "26/09 PINGO DOCE 2 SACOS 12,50", e: { desc: "Pingo Doce 2 Sacos" } },
+    // ligações em minúscula no meio do nome, maiúscula se abrirem
+    { t: "26/09 CAFE DA AVO 1,20", e: { desc: "Cafe da Avo" } },
+    { t: "26/09 PADARIA DA AVÓ 3,90", e: { desc: "Padaria da Avó" } },
+    { t: "26/09 DE TUDO UM POUCO 9", e: { desc: "De Tudo um Pouco" } },
+    // uma minúscula que seja: as maiúsculas foram escolha de quem escreveu
+    { t: "26/09 Jantar no SUSHI 30", e: { desc: "Jantar no SUSHI" } },
+    { t: "26/09 Sumo e AGUA 4,50", e: { desc: "Sumo e AGUA" } },
+    { t: "26/09 McDonalds 8,90", e: { desc: "McDonalds" } },
+    // sem letras nenhumas não há nada a capitalizar
+    { t: "26/09 123 45,30", e: { desc: "123" } },
+
     // ------------------------------------------------- lixo e limpeza
     { t: "- 25-09 Cafe 1,20", e: { desc: "Cafe", cents: 120 } },
     { t: "* 25-09 Cafe 1,20", e: { desc: "Cafe", cents: 120 } },
@@ -206,6 +222,17 @@
         { desc: "Cafe", cents: 120 },
         { desc: "Almoco", cents: 1250 },
         { estado: "ignorada" },
+      ],
+    },
+    {
+      nome: "extrato do banco, tudo em maiusculas",
+      t: ["25/09;CONTINENTE MATOSINHOS;45,30",
+          "26/09;MB WAY TRF;20,00",
+          "27/09;BOMBA DE GASOLINA DA AVENIDA;60,00"].join("\n"),
+      e: [
+        { desc: "Continente Matosinhos", cents: 4530 },
+        { desc: "Mb Way Trf", cents: 2000 },
+        { desc: "Bomba de Gasolina da Avenida", cents: 6000 },
       ],
     },
     {
