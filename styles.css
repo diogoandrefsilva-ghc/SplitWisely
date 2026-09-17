@@ -337,8 +337,10 @@ h2 { font-size: .98rem; font-weight: 700; letter-spacing: -.01em; margin: 0 0 .6
   justify-content: center;
   box-shadow: 0 4px 16px -2px rgba(15, 157, 118, .5), 0 2px 6px rgba(16, 24, 40, .18);
 }
-/* espaço no fim da página para o FAB não tapar a última linha da lista */
+/* espaço no fim da página para os botões flutuantes não taparem a última
+   linha da lista (dois quando também há o de colar movimentos) */
 #tab-content:has(.fab) { padding-bottom: 4.6rem; }
+#tab-content:has(.fab-sec) { padding-bottom: 8.2rem; }
 
 /* ================================================================ filtros / pesquisa */
 .filter-bar { display: flex; gap: .5rem; margin-bottom: .7rem; }
@@ -2027,3 +2029,181 @@ p.hint { margin: .5rem 0 0; font-size: .78rem; color: var(--muted); line-height:
 }
 .xp-cta:active { transform: translateY(1px) scale(.995); }
 .xp-cta:disabled { background: var(--seg-bg); color: var(--muted); box-shadow: none; }
+
+/* ================================================ importar movimentos */
+/* Mesmo ecrã do lançamento de despesa (cabeçalho da marca + corpo +
+   rodapé pegajoso), mas o corpo é uma lista de linhas lidas do texto.
+   Cada linha diz o que vai ser gravado e mostra por baixo, em cinzento,
+   o texto de onde veio — é o que deixa conferir sem reler o original. */
+
+/* segundo botão flutuante, por cima do «+»: discreto, que a ação normal
+   continua a ser lançar uma despesa de cada vez */
+.fab-sec {
+  position: fixed;
+  right: calc(1.1rem + env(safe-area-inset-right));
+  bottom: calc(1.3rem + 58px + .7rem + env(safe-area-inset-bottom));
+  z-index: 40;
+  width: 46px;
+  height: 46px;
+  padding: 0;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--card);
+  color: var(--text);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+}
+.fab-sec:hover { background: var(--card-inner); filter: none; }
+
+.im-lead { margin: 0; font-size: .86rem; line-height: 1.45; opacity: .92; }
+.im-lead strong { font-weight: 700; }
+
+/* o dialeto do bloco, à vista e trocável: um toque relê as linhas todas */
+.im-dial { display: flex; gap: .4rem; margin-top: 1.15rem; }
+.im-dial label {
+  flex: 1;
+  min-width: 0;
+  padding: .3rem .55rem .35rem;
+  border-radius: 13px;
+  background: rgba(255, 255, 255, .16);
+}
+.im-dial label > span {
+  display: block;
+  font-size: .62rem;
+  font-weight: 700;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  opacity: .86;
+}
+.im-dial select {
+  height: 26px;
+  padding: 0 1.05rem 0 0;
+  border: none;
+  color: #fff;
+  font-size: .82rem;
+  font-weight: 600;
+  /* a seta do select é cinzenta: em cima do verde tem de ser branca */
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1.5 6 6.5 11 1.5' fill='none' stroke='%23fff' stroke-width='1.8' stroke-linecap='round'/%3E%3C/svg%3E")
+    no-repeat right .05rem center;
+}
+.im-dial select:focus { outline: none; box-shadow: none; }
+.im-dial option { color: var(--text); background: var(--card); }
+
+/* o :focus global só apanha input e select — a caixa de colar precisava
+   do seu, senão ficava com o contorno preto do browser */
+.im-txt:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(15, 157, 118, .16);
+}
+.im-txt {
+  min-height: 200px;
+  overflow: auto;
+  border-radius: 14px;
+  padding: .85rem .9rem;
+  line-height: 1.55;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------ lista de linhas */
+.im { --im-dup: #8b5cf6; }
+@media (prefers-color-scheme: dark) { .im { --im-dup: #a78bfa; } }
+
+.im-lista { display: flex; flex-direction: column; gap: .5rem; margin-top: 1rem; }
+.im-mov {
+  display: flex;
+  gap: .6rem;
+  padding: .7rem .8rem .6rem;
+  border: 1px solid var(--border-soft);
+  border-left: 3px solid transparent;
+  border-radius: 14px;
+  background: var(--card);
+}
+.im-mov.aviso { border-left-color: var(--gold-accent); }
+.im-mov.dup { border-left-color: var(--im-dup); }
+.im-mov.erro { border-left-color: var(--danger); }
+.im-mov.off { opacity: .55; background: var(--card-inner); }
+
+.im-chk {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  margin-top: .55rem;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1.6px solid var(--border);
+  background: var(--card-inner);
+  color: #fff;
+  box-shadow: none;
+}
+.im-mov.on .im-chk { background: var(--primary); border-color: var(--primary); }
+.im-chk:hover { filter: none; }
+.im-chk .xp-ico { width: 15px; height: 15px; }
+
+.im-corpo { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: .4rem; }
+.im-l1 { display: flex; gap: .4rem; }
+.im-data { flex: 1; min-width: 0; height: 38px; border-radius: 11px; font-size: .88rem; }
+.im-valor { position: relative; flex: none; width: 108px; }
+.im-valor input {
+  height: 38px;
+  border-radius: 11px;
+  padding-right: 1.5rem;
+  text-align: right;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.im-valor > span {
+  position: absolute;
+  right: .6rem;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--muted);
+  font-size: .85rem;
+  pointer-events: none;
+}
+.im-desc { height: 38px; border-radius: 11px; font-size: .92rem; }
+
+.im-l3 { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem; }
+.im-cat {
+  padding: .2rem .55rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--card-inner);
+  color: var(--text);
+  font-size: .78rem;
+  font-weight: 500;
+  box-shadow: none;
+}
+.im-cat:hover { background: var(--card); filter: none; }
+
+.im-flag {
+  padding: .18rem .5rem;
+  border-radius: 999px;
+  font-size: .72rem;
+  font-weight: 600;
+  background: var(--chip-zero-bg);
+  color: var(--muted);
+}
+.im-flag.aviso { background: var(--gold-bg); color: var(--gold-text); }
+.im-flag.dup { background: rgba(139, 92, 246, .14); color: var(--im-dup); }
+.im-flag.erro { background: var(--chip-neg-bg); color: var(--negative); }
+
+.im-raw {
+  margin: .1rem 0 0;
+  font-size: .73rem;
+  line-height: 1.35;
+  color: var(--muted);
+  opacity: .8;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 380px) {
+  .im-valor { width: 92px; }
+  .im-dial label { padding: .3rem .4rem .35rem; }
+}
+.im-mov.ign { border-left-color: var(--border); }

@@ -59,6 +59,12 @@ function openRecurringModal(ctx, rec) {
 function openExpenseModal(ctx, x) {
   renderExpenseForm(openModal(), ctx, x, closeModal, { backLabel: "Fechar" });
 }
+function openImportModal(ctx) {
+  // o parser vive num ficheiro à parte: sem ele (versão em cache a meio de
+  // uma atualização) não se abre o ecrã em vez de rebentar a meio
+  if (typeof SWImport === "undefined") return toast("Recarrega a app para importar movimentos", true);
+  renderImportForm(openModal(), ctx, closeModal);
+}
 
 // ---------------------------------------------------------------- helpers
 function esc(s) {
@@ -1571,8 +1577,17 @@ function renderExpensesTab($c, ctx) {
     <div class="card">
       <div id="expense-list"></div>
     </div>`}
-    ${ctx.canWrite ? `<button class="fab" id="btn-add-expense" title="Nova despesa"
-      ${members.length === 0 ? "disabled" : ""}>+</button>` : ""}`;
+    ${ctx.canWrite ? `
+      <button class="fab fab-sec" id="btn-import" title="Colar vários movimentos"
+        ${members.length === 0 ? "disabled" : ""} aria-label="Colar vários movimentos">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+          stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" width="22" height="22">
+          <path d="M9 4h6v3H9z"/><path d="M15 5.5h2.5A1.5 1.5 0 0 1 19 7v12a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 5 19V7a1.5 1.5 0 0 1 1.5-1.5H9"/>
+          <path d="M8.5 12h7"/><path d="M8.5 15.5h4.5"/>
+        </svg>
+      </button>
+      <button class="fab" id="btn-add-expense" title="Nova despesa"
+        ${members.length === 0 ? "disabled" : ""}>+</button>` : ""}`;
 
   const $list = $c.querySelector("#expense-list");
   const $result = $c.querySelector("#f-result");
@@ -1677,6 +1692,8 @@ function renderExpensesTab($c, ctx) {
 
   const $addBtn = $c.querySelector("#btn-add-expense");
   if ($addBtn) $addBtn.onclick = () => openExpenseModal(ctx, null);
+  const $impBtn = $c.querySelector("#btn-import");
+  if ($impBtn) $impBtn.onclick = () => openImportModal(ctx);
 
   // pesquisa por descrição e intervalo de datas (o cartão dos filtros só
   // existe quando há despesas)
@@ -2819,6 +2836,674 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
   slot.parentElement?.classList.add("modal-full");
 
   draw();
+}
+
+// ------------------------------------- importar movimentos (texto colado)
+// Cola-se o que estava escrito no bloco de notas e a app faz o resto: o
+// parser (import-parser.js) tira de cada linha a data, a descrição e o
+// valor, e este ecrã mostra o que percebeu — linha a linha, tudo editável
+// — antes de gravar seja o que for. Por baixo de cada movimento fica o
+// texto original, que é o que deixa conferir sem reler o bloco de notas.
+//
+// Os defaults são os de sempre: a despesa fica em nome de quem importa e
+// divide-se pelo normal do grupo. Quem pagou e como se divide escolhe-se
+// uma vez, em cima, e vale para o lote todo — os ajustes que sobram são
+// por linha (data, descrição, valor, categoria).
+function renderImportForm(slot, ctx, onClose) {
+  const { group, members, expenses } = ctx;
+  const cur = group.currency;
+  const hoje = new Date().toISOString().slice(0, 10);
+  const close = onClose || (() => { slot.innerHTML = ""; });
+  const useWeights = !!group.use_weights;
+  const myMember = members.find(m => m.user_id === session.user.id);
+  const catsDoGrupo = groupCategories(group);
+  const catsPermitidas = new Set(catsDoGrupo.map(c => c.id));
+
+  const ICONS_IM = {
+    back: '<path d="M15 19 8 12l7-7"/>',
+    chev: '<path d="m9 6 6 6-6 6"/>',
+    user: '<circle cx="12" cy="8" r="3.6"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/>',
+    users: '<circle cx="9.2" cy="8" r="3.4"/><path d="M2.6 19.5a6.6 6.6 0 0 1 13.2 0"/><path d="M16.2 5.3a3.4 3.4 0 0 1 0 5.4"/><path d="M17.6 13.9a6.6 6.6 0 0 1 3.8 5.6"/>',
+    check: '<path d="m5 12.5 4.5 4.5L19 7"/>',
+  };
+  const ico = (n, cls = "") =>
+    `<svg class="xp-ico ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS_IM[n]}</svg>`;
+  const SIMBOLO_IM = { EUR: "€", USD: "$", GBP: "£", BRL: "R$" };
+  const primeiroNome = n => String(n || "?").trim().split(/\s+/)[0];
+  const quantos = {};
+  for (const m of members) {
+    const k = primeiroNome(m.name).toLowerCase();
+    quantos[k] = (quantos[k] || 0) + 1;
+  }
+  const curto = n => quantos[primeiroNome(n).toLowerCase()] > 1 ? shortName(n) : primeiroNome(n);
+  const nomeDe = id => members.find(m => m.id === id)?.name || "?";
+
+  const state = {
+    fase: "colar",          // colar | confirmar
+    texto: "",
+    // dialeto: null = deteção automática; um valor = escolha à mão
+    sep: null, decimal: null, ordem: null,
+    dialeto: null,
+    movs: [],
+    payers: new Set([myMember ? myMember.id : members[0].id]),
+    mode: useWeights ? "weights" : "equal",
+    participants: new Set(useWeights
+      ? members.filter(m => Number(m.default_weight) > 0).map(m => m.id)
+      : members.map(m => m.id)),
+    weights: Object.fromEntries(members.map(m => [m.id, Number(m.default_weight) || 0])),
+    folha: null,            // pagou | divide | cat
+    folhaIdx: -1,           // linha a que pertence o pop-up da categoria
+    importando: false,
+    feitos: 0,
+    falhas: [],
+  };
+
+  // ------------------------------------------------------- ler o texto
+
+  // chave de comparação de movimentos: é o que define "a mesma despesa"
+  // para efeitos de duplicados (data + descrição + valor)
+  const chave = (data, desc, cents) => `${data}|${catNorm(desc).trim()}|${cents}`;
+  const jaNoGrupo = new Set(expenses.map(x =>
+    chave(x.expense_date, x.description, toCents(x.amount))));
+
+  function analisar() {
+    const r = SWImport.parseMovimentos(state.texto, {
+      hoje,
+      sep: state.sep,
+      decimal: state.decimal || undefined,
+      ordem: state.ordem || undefined,
+    });
+    state.dialeto = r.dialeto;
+    state.movs = r.linhas
+      // os cabeçalhos de data já fizeram o seu trabalho (passaram a data às
+      // linhas de baixo): não são movimentos e não vão para a lista
+      .filter(l => l.estado !== "contexto")
+      .map(l => ({
+        raw: l.txt, data: l.data || hoje, desc: l.desc, cents: l.cents,
+        estado: l.estado, avisos: l.avisos, notas: l.notas, erro: l.erro,
+        cat: guessCategory(l.desc, expenses, catsPermitidas),
+        catManual: false, tocado: false, incluir: false,
+      }));
+    reavaliar();
+  }
+
+  // Passa a lista toda a pente fino: duplicados e o que entra por omissão.
+  // Duplicados contam-se contra o que já está no grupo (esses ficam de fora,
+  // porque o caso normal é ter-se colado duas vezes) e contra a própria
+  // lista (dois cafés iguais no mesmo dia são legítimos — fica só o aviso).
+  // Corre outra vez a cada correção: preencher o valor que faltava faz a
+  // linha entrar sozinha, e uma linha que passe a bater numa já existente
+  // sai. Quem mexeu à mão no visto (tocado) manda sempre.
+  function reavaliar() {
+    const vistos = new Set();
+    for (const m of state.movs) {
+      const k = chave(m.data, m.desc, m.cents);
+      m.dup = jaNoGrupo.has(k);
+      m.repetida = vistos.has(k);
+      vistos.add(k);
+      if (!m.tocado) m.incluir = !m.dup && m.estado !== "ignorada" && valido(m);
+    }
+  }
+
+  const valido = m => !!(m.data && m.desc.trim() && m.cents > 0);
+  const escolhidos = () => state.movs.filter(m => m.incluir && valido(m));
+  const totalCents = () => escolhidos().reduce((a, m) => a + m.cents, 0);
+
+  // ------------------------------------------------- quotas de cada linha
+
+  const participantes = () => members.filter(m => state.participants.has(m.id));
+  const pesoDe = m => state.mode === "weights" ? (Number(state.weights[m.id]) || 0) : 1;
+
+  function quotasDe(cents) {
+    const ps = participantes();
+    const partes = splitByWeights(cents, ps.map(pesoDe));
+    const out = {};
+    ps.forEach((m, i) => { if (partes[i] > 0) out[m.id] = partes[i]; });
+    return out;
+  }
+  function pagosDe(cents) {
+    const ids = [...state.payers];
+    const partes = splitByWeights(cents, ids.map(() => 1));
+    const out = {};
+    ids.forEach((id, i) => { if (partes[i] > 0) out[id] = partes[i]; });
+    return out;
+  }
+  const okPagou = () => state.payers.size > 0;
+  const okDivide = () => participantes().length > 0
+    && participantes().reduce((a, m) => a + pesoDe(m), 0) > 0;
+
+  // ------------------------------------------------------------ gravar
+
+  async function gravar(m, createdAt) {
+    const payload = {
+      group_id: group.id,
+      description: m.desc.trim(),
+      amount: (m.cents / 100).toFixed(2),
+      expense_date: m.data,
+      split_mode: state.mode,
+      category: m.cat,
+    };
+    // repetição exata dentro do mesmo lote: afasta-se o carimbo de criação
+    // para não bater no índice anti-duplicado do servidor (ver gravarTudo)
+    if (createdAt) payload.created_at = createdAt;
+
+    // schema antigo sem split_mode/category: grava sem esses campos
+    const semColuna = (error) => {
+      if (!error) return false;
+      if (/split_mode/i.test(error.message) && "split_mode" in payload) { delete payload.split_mode; return true; }
+      if (/category/i.test(error.message) && "category" in payload) { delete payload.category; return true; }
+      return false;
+    };
+
+    let { data, error } = await sb.from("expenses").insert(payload).select().single();
+    while (semColuna(error)) ({ data, error } = await sb.from("expenses").insert(payload).select().single());
+    if (error) return error.code === "23505"
+      ? "já existe uma despesa igual no grupo"
+      : error.message;
+
+    const pagos = pagosDe(m.cents);
+    const quotas = quotasDe(m.cents);
+    const payerRows = Object.entries(pagos).map(([id, c]) =>
+      ({ expense_id: data.id, member_id: id, amount: (c / 100).toFixed(2) }));
+    const shareRows = Object.entries(quotas).map(([id, c]) =>
+      ({ expense_id: data.id, member_id: id, amount: (c / 100).toFixed(2) }));
+    const i1 = await sb.from("expense_payers").insert(payerRows);
+    const i2 = await sb.from("expense_shares").insert(shareRows);
+    if (i1.error || i2.error) {
+      // o PostgREST não dá transação: uma despesa sem quotas estragava os
+      // saldos, por isso desfaz-se esta linha e segue-se para a seguinte
+      await sb.from("expenses").delete().eq("id", data.id);
+      return (i1.error || i2.error).message;
+    }
+    if (m.cat) learnCategory(m.desc, m.cat);
+    return null;
+  }
+
+  async function gravarTudo() {
+    const lista = escolhidos();
+    if (!lista.length || state.importando) return;
+    if (!okPagou()) { abrirFolha("pagou"); return toast("Escolhe quem pagou", true); }
+    if (!okDivide()) { abrirFolha("divide"); return toast("Escolhe por quem se divide", true); }
+
+    state.importando = true;
+    state.feitos = 0;
+    state.falhas = [];
+    desenhar();
+
+    // O servidor tem um índice que impede a mesma despesa (grupo, descrição,
+    // valor, data, autor) de entrar duas vezes no mesmo minuto — a rede de
+    // segurança contra o duplo-clique. Num lote, duas linhas rigorosamente
+    // iguais são deliberadas (foram confirmadas neste ecrã), por isso o
+    // carimbo de criação de cada repetição recua um minuto: o índice deixa
+    // passar e o instante da importação continua a ser o de agora.
+    const repetidas = new Map();
+    const agora = Date.now();
+
+    for (const m of lista) {
+      const k = chave(m.data, m.desc, m.cents);
+      const n = repetidas.get(k) || 0;
+      repetidas.set(k, n + 1);
+      const erro = await gravar(m, n ? new Date(agora - n * 61000).toISOString() : null);
+      if (erro) { m.falhou = erro; state.falhas.push(m); } else { m.gravado = true; }
+      state.feitos++;
+      const $cta = slot.querySelector("#i-cta");
+      if ($cta) $cta.textContent = `A importar… ${state.feitos}/${lista.length}`;
+    }
+
+    const gravados = lista.filter(m => m.gravado);
+    if (gravados.length) {
+      // um aviso só para o lote todo: doze notificações seguidas seriam
+      // ruído (quem pagou e a divisão são os mesmos em todas as linhas)
+      const total = gravados.reduce((a, m) => a + m.cents, 0);
+      const desc = gravados.length === 1
+        ? gravados[0].desc
+        : `${gravados.length} movimentos importados`;
+      notifyExpenseAdded(group, members, desc, total,
+        Object.entries(pagosDe(total)).map(([id, c]) => ({ member_id: id, amount: (c / 100).toFixed(2) })),
+        Object.entries(quotasDe(total)).map(([id, c]) => ({ member_id: id, amount: (c / 100).toFixed(2) })));
+    }
+
+    state.importando = false;
+    if (!state.falhas.length) {
+      toast(gravados.length === 1 ? "Movimento importado" : `${gravados.length} movimentos importados`);
+      return refresh();
+    }
+    // alguma linha ficou por gravar: o ecrã fica aberto com o que falta
+    state.movs = state.movs.filter(m => !m.gravado);
+    reavaliar();
+    toast(`${gravados.length} importados, ${state.falhas.length} por gravar`, true);
+    invalidateGroupCache();
+    desenhar();
+  }
+
+  // ------------------------------------------------------------ pop-ups
+
+  function abrirFolha(id, idx) {
+    state.folha = id;
+    state.folhaIdx = idx == null ? -1 : idx;
+    document.addEventListener("keydown", onEsc, true);
+    desenhar();
+  }
+  function fecharFolha() {
+    document.removeEventListener("keydown", onEsc, true);
+    state.folha = null;
+    state.folhaIdx = -1;
+    desenhar();
+  }
+  function onEsc(e) {
+    if (e.key !== "Escape") return;
+    e.stopPropagation();
+    fecharFolha();
+  }
+  const sair = () => {
+    if (state.importando) return;
+    document.removeEventListener("keydown", onEsc, true);
+    close();
+  };
+
+  // ------------------------------------------------------------ desenho
+
+  const badge = (cls, txt, titulo) =>
+    `<span class="im-flag ${cls}"${titulo ? ` title="${esc(titulo)}"` : ""}>${esc(txt)}</span>`;
+
+  function cardHtml(m, i) {
+    const c = m.cat ? catOf(m.cat) : null;
+    const ignorada = m.estado === "ignorada";
+    const flags = [];
+    if (m.falhou) flags.push(badge("erro", "não gravou", m.falhou));
+    if (m.erro) flags.push(badge(ignorada ? "" : "erro", m.erro));
+    if (m.dup) flags.push(badge("dup", "já existe no grupo"));
+    else if (m.repetida) flags.push(badge("dup", "repetida nesta lista"));
+    for (const a of m.avisos) flags.push(badge("aviso", a));
+    for (const n of m.notas) flags.push(badge("nota", n));
+
+    const estado = m.falhou || !valido(m) ? "erro" : ignorada ? "ign"
+      : m.dup ? "dup" : m.avisos.length ? "aviso" : "ok";
+
+    return `
+      <div class="im-mov ${m.incluir ? "on" : "off"} ${estado}" data-i="${i}">
+        <button type="button" class="im-chk" data-tog="${i}" aria-pressed="${m.incluir}"
+          aria-label="${m.incluir ? "Não importar esta linha" : "Importar esta linha"}">${m.incluir ? ico("check") : ""}</button>
+        <div class="im-corpo">
+          <div class="im-l1">
+            <input type="date" class="im-data" data-data="${i}" value="${esc(m.data)}" aria-label="Data" />
+            <span class="im-valor">
+              <input type="text" inputmode="decimal" data-val="${i}" aria-label="Valor"
+                value="${m.cents ? (m.cents / 100).toFixed(2).replace(".", ",") : ""}" placeholder="0,00" />
+              <span>${esc(SIMBOLO_IM[cur] || cur)}</span>
+            </span>
+          </div>
+          <input type="text" class="im-desc" data-desc="${i}" value="${esc(m.desc)}"
+            placeholder="Em que foi?" aria-label="Descrição" />
+          <div class="im-l3">
+            <button type="button" class="im-cat" data-cat="${i}">
+              ${c ? `${c.icon} ${esc(c.label)}` : "🏷️ Sem categoria"}
+            </button>
+            ${flags.join("")}
+          </div>
+          <p class="im-raw" title="Texto original">${esc(m.raw)}</p>
+        </div>
+      </div>`;
+  }
+
+  function listaHtml() {
+    if (!state.movs.length) {
+      return `<p class="empty">Não encontrei movimentos neste texto. Volta atrás e confere
+        se cada linha tem pelo menos uma descrição e um valor.</p>`;
+    }
+    return state.movs.map(cardHtml).join("");
+  }
+
+  function corpoPagou() {
+    return `
+      <p class="xp-folha-sub">Vale para os ${state.movs.length} movimentos. Com mais do que
+        uma pessoa, cada despesa fica dividida em partes iguais entre elas.</p>
+      <div class="xp-people">
+        ${members.map(m => {
+          const on = state.payers.has(m.id);
+          return `
+            <div class="xp-p ${on ? "on" : ""}">
+              <button type="button" class="xp-p-hit" data-payer="${m.id}" aria-pressed="${on}">
+                ${avatarHtml(m.name)}
+                <span class="xp-p-n">${esc(m.name)}</span>
+                <span class="xp-p-c">${on ? ico("check") : ""}</span>
+              </button>
+            </div>`;
+        }).join("")}
+      </div>`;
+  }
+
+  function corpoDivide() {
+    const quotas = quotasDe(10000); // prévia sobre 100 € — dá a proporção
+    return `
+      ${okDivide() ? "" : `<p class="xp-aviso">Escolhe por quem se divide</p>`}
+      ${useWeights ? `
+        <div class="xp-seg sm" role="group" aria-label="Modo de divisão">
+          <button type="button" class="${state.mode === "equal" ? "on" : ""}" data-mode="equal">Partes iguais</button>
+          <button type="button" class="${state.mode === "weights" ? "on" : ""}" data-mode="weights">Proporção</button>
+        </div>` : ""}
+      <div class="xp-folha-act">
+        <span class="xp-folha-sub">Quem entra nestes movimentos</span>
+        <span>
+          <button type="button" class="xp-link sm" id="i-part-all">Todos</button>
+          <button type="button" class="xp-link sm" id="i-part-none">Nenhum</button>
+        </span>
+      </div>
+      <div class="xp-people">
+        ${members.map(m => {
+          const on = state.participants.has(m.id);
+          const input = on && state.mode === "weights"
+            ? `<input class="xp-p-in" type="number" inputmode="decimal" step="0.1" min="0"
+                data-weight="${m.id}" value="${state.weights[m.id] ?? 0}" />` : "";
+          const val = on ? `${((quotas[m.id] || 0) / 100).toFixed(0)}%` : "";
+          return `
+            <div class="xp-p ${on ? "on" : ""}">
+              <button type="button" class="xp-p-hit" data-part="${m.id}" aria-pressed="${on}">
+                ${avatarHtml(m.name)}
+                <span class="xp-p-n">${esc(m.name)}${input && val ? `<small>${val}</small>` : ""}</span>
+                ${val && !input ? `<span class="xp-p-v">${val}</span>` : ""}
+                <span class="xp-p-c">${on ? ico("check") : ""}</span>
+              </button>
+              ${input}
+            </div>`;
+        }).join("")}
+      </div>`;
+  }
+
+  function corpoCat() {
+    const m = state.movs[state.folhaIdx];
+    if (!m) return "";
+    return `
+      <p class="xp-folha-sub">${esc(m.desc || "Esta linha")} — sugerida a partir da descrição.</p>
+      <div class="xp-cats">
+        ${catsDoGrupo.map(c => `
+          <button type="button" class="xp-cat ${m.cat === c.id ? "on" : ""}" data-pick="${c.id}">
+            <span class="xp-cat-ico">${c.icon}</span>
+            <span class="xp-cat-lb">${esc(c.label)}</span>
+          </button>`).join("")}
+      </div>
+      <button type="button" class="xp-link" id="i-cat-none">Sem categoria</button>`;
+  }
+
+  const TITULO_FOLHA = { pagou: "Quem pagou", divide: "Como se divide", cat: "Categoria" };
+  const CORPOS = { pagou: corpoPagou, divide: corpoDivide, cat: corpoCat };
+
+  function dialetoHtml() {
+    const d = state.dialeto || {};
+    const opcoesSep = [
+      ["auto", "automático"], [";", "ponto e vírgula"], ["/", "barra"], ["|", "barra vertical"],
+      ["\t", "tabulação"], [",", "vírgula"], ["  ", "espaços"], ["", "nenhum"],
+    ];
+    const nomeSep = (v) => (opcoesSep.find(o => o[0] === v) || ["", "nenhum"])[1];
+    const valorSep = state.sep === null ? "auto" : state.sep;
+    return `
+      <div class="im-dial">
+        <label><span>Datas</span>
+          <select data-dial="ordem">
+            <option value="dmy" ${d.ordem === "dmy" ? "selected" : ""}>dia/mês</option>
+            <option value="mdy" ${d.ordem === "mdy" ? "selected" : ""}>mês/dia</option>
+          </select>
+        </label>
+        <label><span>Decimal</span>
+          <select data-dial="decimal">
+            <option value="," ${d.decimal === "," ? "selected" : ""}>vírgula</option>
+            <option value="." ${d.decimal === "." ? "selected" : ""}>ponto</option>
+          </select>
+        </label>
+        <label><span>Separador</span>
+          <select data-dial="sep">
+            ${opcoesSep.map(([v, n]) => `<option value="${esc(v)}" ${valorSep === v ? "selected" : ""}>
+              ${esc(v === "auto" ? `automático (${nomeSep(d.sep === null ? "" : d.sep)})` : n)}</option>`).join("")}
+          </select>
+        </label>
+      </div>`;
+  }
+
+  function desenhar() {
+    const n = escolhidos().length;
+    const total = totalCents();
+    const comProblema = state.movs.filter(m => m.incluir && !valido(m)).length;
+
+    const cabecalho = `
+      <header class="xp-head">
+        <div class="xp-head-bar">
+          <button type="button" class="xp-icon-btn" id="i-back" aria-label="Voltar"
+            ${state.importando ? "disabled" : ""}>${ico("back")}</button>
+          <span class="xp-head-title">Importar movimentos</span>
+          <span class="xp-head-spacer"></span>
+        </div>
+        ${state.fase === "colar" ? `
+          <p class="im-lead">Cola o que tens escrito — uma linha por movimento, com a data,
+            o que foi e quanto custou. Confirmas tudo no ecrã a seguir.</p>`
+        : `
+          <p class="im-lead"><strong>${state.movs.length}</strong> linha${state.movs.length === 1 ? "" : "s"} lida${state.movs.length === 1 ? "" : "s"}.
+            Confere o que ficou e corrige o que for preciso.</p>
+          ${dialetoHtml()}`}
+      </header>`;
+
+    const corpo = state.fase === "colar" ? `
+      <div class="xp-body">
+        <textarea id="i-txt" class="im-txt" rows="9" spellcheck="false"
+          placeholder="25/09; Continente; 45,30&#10;26-09 Jantar 12,50&#10;ontem Café 1,20">${esc(state.texto)}</textarea>
+        <div class="xp-note">
+          <span>Aceita <strong>;</strong> <strong>/</strong> <strong>|</strong>, tabulações ou só espaços;
+            cêntimos com vírgula ou ponto; datas como <strong>26/09</strong>, <strong>25-set</strong>,
+            <strong>2026-09-26</strong>, <strong>hoje</strong> ou <strong>ontem</strong>.
+            Uma linha só com a data (ex.: «25/09») passa a valer para as de baixo.</span>
+        </div>
+      </div>`
+    : `
+      <div class="xp-body"${state.importando ? " inert" : ""}>
+        <div class="xp-rows">
+          <button type="button" class="xp-row ${okPagou() ? "" : "warn"}" data-folha="pagou">
+            ${ico("user", "xp-row-ico")}
+            <span class="xp-row-k">Quem pagou</span>
+            <span class="xp-row-v">${esc(state.payers.size === 0 ? "Por escolher"
+              : [...state.payers].map(id => curto(nomeDe(id))).join(", "))}</span>
+            ${ico("chev", "xp-row-chev")}
+          </button>
+          <button type="button" class="xp-row ${okDivide() ? "" : "warn"}" data-folha="divide">
+            ${ico("users", "xp-row-ico")}
+            <span class="xp-row-k">Divisão</span>
+            <span class="xp-row-v">${esc(!okDivide() ? "Por escolher"
+              : state.mode === "weights" ? `Proporção, entre ${participantes().length}`
+              : participantes().length === members.length ? "Igual, entre todos"
+              : `Igual, entre ${participantes().length}`)}</span>
+            ${ico("chev", "xp-row-chev")}
+          </button>
+        </div>
+        <div class="im-lista" id="i-lista">${listaHtml()}</div>
+        ${comProblema ? `<p class="xp-aviso">${comProblema} linha${comProblema === 1 ? "" : "s"}
+          por completar — falta a descrição ou o valor.</p>` : ""}
+      </div>`;
+
+    const cta = state.fase === "colar"
+      ? `<button class="xp-cta" id="i-cta" ${state.texto.trim() ? "" : "disabled"}>Analisar</button>`
+      : `<button class="xp-cta" id="i-cta" ${n && !state.importando ? "" : "disabled"}>${state.importando
+          ? `A importar… ${state.feitos}/${escolhidos().length}`
+          : n ? `Importar ${n} movimento${n === 1 ? "" : "s"} · ${fmtMoney(total, cur)}`
+              : "Nada por importar"}</button>`;
+
+    const popup = state.folha ? `
+      <div class="xp-scrim" id="i-scrim">
+        <div class="xp-folha entra" role="dialog" aria-modal="true" aria-label="${TITULO_FOLHA[state.folha]}">
+          <div class="xp-folha-h">
+            <span class="xp-grab"></span>
+            <div class="xp-folha-t">
+              <h3>${TITULO_FOLHA[state.folha]}</h3>
+              <button type="button" class="xp-folha-ok" id="i-folha-ok">Concluir</button>
+            </div>
+          </div>
+          <div class="xp-folha-b">${CORPOS[state.folha]()}</div>
+        </div>
+      </div>` : "";
+
+    slot.innerHTML = `
+      <div class="expense-detail xp im">
+        ${cabecalho}
+        ${corpo}
+        <footer class="xp-foot">${cta}</footer>
+        ${popup}
+      </div>`;
+    slot.parentElement?.classList.toggle("folha-aberta", !!state.folha);
+    ligar();
+  }
+
+  // Só a lista e o botão: usado quando se mexe numa linha, para não perder
+  // o scroll nem o foco de quem está a corrigir o ecrã todo.
+  function repintarLista() {
+    const $l = slot.querySelector("#i-lista");
+    if (!$l) return desenhar();
+    $l.innerHTML = listaHtml();
+    const n = escolhidos().length;
+    const $cta = slot.querySelector("#i-cta");
+    if ($cta) {
+      $cta.disabled = !n || state.importando;
+      $cta.textContent = n
+        ? `Importar ${n} movimento${n === 1 ? "" : "s"} · ${fmtMoney(totalCents(), cur)}`
+        : "Nada por importar";
+    }
+    ligarLista();
+  }
+
+  function ligarLista() {
+    slot.querySelectorAll("[data-tog]").forEach(b => {
+      b.onclick = () => {
+        const m = state.movs[+b.dataset.tog];
+        m.incluir = !m.incluir;
+        m.tocado = true;
+        repintarLista();
+      };
+    });
+    slot.querySelectorAll("[data-data]").forEach(inp => {
+      inp.onchange = () => {
+        const m = state.movs[+inp.dataset.data];
+        if (inp.value) m.data = inp.value;
+        reavaliar();
+        repintarLista();
+      };
+    });
+    slot.querySelectorAll("[data-val]").forEach(inp => {
+      inp.onchange = () => {
+        const m = state.movs[+inp.dataset.val];
+        m.cents = SWImport.parseValor(inp.value, (state.dialeto || {}).decimal);
+        if (m.cents > 0 && m.erro === "não encontrei o valor") m.erro = null;
+        reavaliar();
+        repintarLista();
+      };
+    });
+    slot.querySelectorAll("[data-desc]").forEach(inp => {
+      // a sugestão de categoria acompanha a escrita, mas o ecrã não se
+      // redesenha enquanto se escreve (perdia-se o foco a cada tecla)
+      inp.oninput = () => {
+        const m = state.movs[+inp.dataset.desc];
+        m.desc = inp.value;
+        if (!m.catManual) {
+          m.cat = guessCategory(m.desc, expenses, catsPermitidas);
+          const c = m.cat ? catOf(m.cat) : null;
+          const $b = slot.querySelector(`[data-cat="${inp.dataset.desc}"]`);
+          if ($b) $b.innerHTML = c ? `${c.icon} ${esc(c.label)}` : "🏷️ Sem categoria";
+        }
+      };
+      inp.onchange = () => { reavaliar(); repintarLista(); };
+    });
+    slot.querySelectorAll("[data-cat]").forEach(b => {
+      b.onclick = () => abrirFolha("cat", +b.dataset.cat);
+    });
+  }
+
+  function ligar() {
+    slot.querySelector("#i-back").onclick = () => {
+      if (state.fase === "confirmar") { state.fase = "colar"; return desenhar(); }
+      sair();
+    };
+    slot.querySelector("#i-cta").onclick = () => {
+      if (state.fase === "colar") {
+        analisar();
+        state.fase = "confirmar";
+        return desenhar();
+      }
+      gravarTudo();
+    };
+
+    const $txt = slot.querySelector("#i-txt");
+    if ($txt) {
+      $txt.oninput = () => {
+        state.texto = $txt.value;
+        const $cta = slot.querySelector("#i-cta");
+        if ($cta) $cta.disabled = !state.texto.trim();
+      };
+      $txt.focus();
+    }
+
+    slot.querySelectorAll("[data-dial]").forEach(sel => {
+      sel.onchange = () => {
+        const v = sel.value;
+        if (sel.dataset.dial === "sep") state.sep = v === "auto" ? null : v;
+        else state[sel.dataset.dial] = v;
+        // reler tudo com o dialeto novo: as correções à mão perdem-se, mas
+        // é isso mesmo que se quer — mudou a leitura do bloco inteiro
+        analisar();
+        desenhar();
+      };
+    });
+
+    slot.querySelectorAll("[data-folha]").forEach(b => { b.onclick = () => abrirFolha(b.dataset.folha); });
+    slot.querySelector("#i-folha-ok")?.addEventListener("click", fecharFolha);
+    slot.querySelector("#i-scrim")?.addEventListener("click", (e) => {
+      if (e.target.id === "i-scrim") fecharFolha();
+    });
+
+    slot.querySelectorAll("[data-payer]").forEach(b => {
+      b.onclick = () => {
+        const id = b.dataset.payer;
+        state.payers.has(id) ? state.payers.delete(id) : state.payers.add(id);
+        desenhar();
+      };
+    });
+    slot.querySelectorAll("[data-mode]").forEach(b => {
+      b.onclick = () => { state.mode = b.dataset.mode; desenhar(); };
+    });
+    slot.querySelectorAll("[data-part]").forEach(b => {
+      b.onclick = () => {
+        const id = b.dataset.part;
+        state.participants.has(id) ? state.participants.delete(id) : state.participants.add(id);
+        desenhar();
+      };
+    });
+    slot.querySelector("#i-part-all")?.addEventListener("click", () => {
+      members.forEach(m => state.participants.add(m.id));
+      desenhar();
+    });
+    slot.querySelector("#i-part-none")?.addEventListener("click", () => {
+      state.participants.clear();
+      desenhar();
+    });
+    slot.querySelectorAll("[data-weight]").forEach(inp => {
+      inp.onchange = () => { state.weights[inp.dataset.weight] = parseFloat(inp.value) || 0; desenhar(); };
+    });
+    slot.querySelectorAll("[data-pick]").forEach(b => {
+      b.onclick = () => {
+        const m = state.movs[state.folhaIdx];
+        if (!m) return;
+        m.cat = m.cat === b.dataset.pick ? null : b.dataset.pick;
+        m.catManual = true;
+        desenhar();
+      };
+    });
+    slot.querySelector("#i-cat-none")?.addEventListener("click", () => {
+      const m = state.movs[state.folhaIdx];
+      if (m) { m.cat = null; m.catManual = true; }
+      fecharFolha();
+    });
+
+    if (state.fase === "confirmar") ligarLista();
+  }
+
+  slot.classList.add("modal-card-flush");
+  slot.parentElement?.classList.add("modal-full");
+  desenhar();
 }
 
 // ------------------------------------------------ tab: saldos

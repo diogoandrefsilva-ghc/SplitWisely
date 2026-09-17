@@ -8,11 +8,12 @@
    Pedidos a outras origens (API do Supabase) passam direto, sem cache. */
 "use strict";
 
-const CACHE = "splitwisely-v20";
+const CACHE = "splitwisely-v21";
 const SHELL = [
   "./",
   "./index.html",
   "./app.js",
+  "./import-parser.js",
   "./styles.css",
   "./manifest.webmanifest",
   "./vendor/supabase.js",
@@ -23,7 +24,7 @@ const SHELL = [
 
 // Ficheiros cuja mudança justifica recarregar a página aberta (o resto —
 // ícones, manifest — entra em silêncio no arranque seguinte).
-const CODE = ["./index.html", "./app.js", "./styles.css", "./vendor/supabase.js"];
+const CODE = ["./index.html", "./app.js", "./import-parser.js", "./styles.css", "./vendor/supabase.js"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(
