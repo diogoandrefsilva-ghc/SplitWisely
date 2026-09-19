@@ -363,12 +363,97 @@
   const LIGACOES = new Set([
     "de", "da", "do", "das", "dos", "e", "em", "no", "na", "nos", "nas",
     "a", "o", "as", "os", "ao", "aos", "à", "às", "com", "por", "para", "que",
-    "um", "uma", "uns", "umas",
+    "um", "uma", "uns", "umas", "pelo", "pela", "pelos", "pelas",
   ]);
 
+  // Marcas conhecidas: o extrato do banco não tem acentos («INTERMARCHE»),
+  // e o InitCap sozinho nunca vai inventar o «é» de «Intermarché». A chave
+  // é a marca sem acentos/maiúsculas; compara-se por PREFIXO da descrição
+  // (é sempre aí que aparece o estabelecimento) — as de mais palavras
+  // primeiro, para «Continente Bom Dia» não parar em «Continente». Lista
+  // fácil de esticar; não pretende ser exaustiva.
+  const MARCAS = [
+    ["continente bom dia", "Continente Bom Dia"],
+    ["continente modelo", "Continente Modelo"],
+    ["continente", "Continente"],
+    ["pingo doce", "Pingo Doce"],
+    ["intermarche", "Intermarché"],
+    ["el corte ingles", "El Corte Inglés"],
+    ["leroy merlin", "Leroy Merlin"],
+    ["media markt", "Media Markt"],
+    ["sport zone", "Sport Zone"],
+    ["meu super", "Meu Super"],
+    ["minipreco", "Minipreço"],
+    ["aldi", "Aldi"],
+    ["lidl", "Lidl"],
+    ["auchan", "Auchan"],
+    ["mercadona", "Mercadona"],
+    ["spar", "Spar"],
+    ["froiz", "Froiz"],
+    ["ikea", "Ikea"],
+    ["worten", "Worten"],
+    ["fnac", "Fnac"],
+    ["decathlon", "Decathlon"],
+    ["staples", "Staples"],
+    ["primark", "Primark"],
+    ["wells", "Wells"],
+    ["galp", "Galp"],
+    ["repsol", "Repsol"],
+    ["cepsa", "Cepsa"],
+  ].sort((a, b) => b[0].split(" ").length - a[0].split(" ").length);
+
+  // Palavras de propaganda que alguns terminais colam logo a seguir ao
+  // nome da marca («LIDL AGRADECE ALCOCHETE» — o "agradece [a preferência]"
+  // não traz informação nenhuma, e o que sobra depois é só a localidade do
+  // terminal). Só corta quando vem mesmo a seguir a uma marca reconhecida:
+  // sozinha, no meio de texto escrito à mão, a palavra não se mexe.
+  const RUIDO_MARCA = new Set(["agradece", "obrigado"]);
+
+  // Reconhece a marca no início da descrição (a mais comprida que bater) e
+  // devolve a grafia certa + o que sobra, já sem o ruído de propaganda.
+  // Sem marca reconhecida, devolve null — segue tudo para o InitCap normal.
+  function aplicarMarca(palavras) {
+    const norm = palavras.map(semAcentos);
+    for (const [chave, nome] of MARCAS) {
+      const partes = chave.split(" ");
+      if (partes.length > norm.length) continue;
+      if (!partes.every((parte, i) => norm[i] === parte)) continue;
+      let resto = palavras.slice(partes.length);
+      if (resto.length && RUIDO_MARCA.has(semAcentos(resto[0]))) resto = [];
+      return { prontas: [nome], resto };
+    }
+    return null;
+  }
+
+  // Uma palavra colada duas vezes seguidas, sem espaço — bug comum destes
+  // extratos: a localidade do terminal sai duplicada («ALCOCHETALCOCHETE»
+  // = «ALCOCHETE» + «ALCOCHETE»). Tenta um corte perto do meio (±1 letra,
+  // para aguentar o caso em que uma das metades ficou truncada num
+  // carácter, como neste exemplo real) e aceita quando uma metade é
+  // prefixo da outra. Exige pelo menos 4 letras de cada lado — para não
+  // apanhar coincidências em palavras curtas — e fica com a metade mais
+  // comprida (a informação completa).
+  function desdobrarRepetida(palavra) {
+    if (!/^[\p{L}\p{M}]+$/u.test(palavra)) return palavra;  // só letras
+    const norm = semAcentos(palavra);
+    const n = norm.length;
+    if (n < 8) return palavra;
+    const meio = Math.floor(n / 2);
+    for (const corte of [meio, meio + 1, meio - 1]) {
+      if (corte < 4 || n - corte < 4) continue;
+      const a = norm.slice(0, corte), b = norm.slice(corte);
+      if (a === b || a.startsWith(b) || b.startsWith(a))
+        return a.length >= b.length ? palavra.slice(0, corte) : palavra.slice(corte);
+    }
+    return palavra;
+  }
+
   /* Descritivo aos berros: os extratos do banco vêm todos em maiúsculas
-     («CONTINENTE MATOSINHOS»), e na lista de despesas isso salta à vista
-     de mais. Nesse caso capitaliza-se.
+     («CONTINENTE MATOSINHOS»), às vezes com uma localidade duplicada e
+     colada («ALCOCHETALCOCHETE») ou com propaganda do terminal a seguir
+     ao nome («LIDL AGRADECE …») — e na lista de despesas isso salta à
+     vista de mais. Nesse caso: desfaz a repetição, reconhece a marca (com
+     a grafia certa) e capitaliza o resto.
 
      Só quando é TUDO maiúsculas, e é essa a regra que interessa: uma única
      minúscula pelo meio quer dizer que quem escreveu escolheu as maiúsculas
@@ -376,11 +461,29 @@
   function capitalizarBerros(s) {
     if (!/\p{Lu}/u.test(s)) return s;   // não há maiúsculas: nada a fazer
     if (/\p{Ll}/u.test(s)) return s;    // há minúsculas: é mistura, respeita-se
-    return s.replace(/\p{L}[\p{L}\p{M}'’]*/gu, (palavra, pos) => {
-      const min = palavra.toLowerCase();
-      if (pos > 0 && LIGACOES.has(min)) return min;
-      return min.charAt(0).toUpperCase() + min.slice(1);
+
+    let palavras = s.split(/\s+/).filter(Boolean).map(desdobrarRepetida);
+    // duas palavras iguais seguidas (o mesmo bug da localidade duplicada,
+    // desta vez COM espaço entre as duas)
+    palavras = palavras.filter((p, i, arr) => i === 0 || semAcentos(p) !== semAcentos(arr[i - 1]));
+
+    const marca = aplicarMarca(palavras);
+    const prontas = marca ? marca.prontas : [];
+    const porFazer = marca ? marca.resto : palavras;
+
+    // com marca reconhecida, ela já ocupou o lugar de abertura — todas as
+    // palavras que sobram podem ser ligações («de», «da»…); sem marca, só
+    // a primeira da frase escapa a essa regra
+    const capitalizadas = porFazer.map((palavra, i) => {
+      const podeSerLigacao = prontas.length > 0 || i > 0;
+      return palavra.replace(/\p{L}[\p{L}\p{M}'’]*/gu, (letra) => {
+        const min = letra.toLowerCase();
+        if (podeSerLigacao && LIGACOES.has(min)) return min;
+        return min.charAt(0).toUpperCase() + min.slice(1);
+      });
     });
+
+    return [...prontas, ...capitalizadas].join(" ");
   }
 
   // linhas que são cabeçalhos de total/resumo e não movimentos
@@ -533,7 +636,7 @@
     parseValor: parseValor,
     // expostos para os testes
     _limparLinha: limparLinha, _acharData: acharData, _acharValor: acharValor,
-    _capitalizarBerros: capitalizarBerros,
+    _capitalizarBerros: capitalizarBerros, _desdobrarRepetida: desdobrarRepetida,
     _tokenCents: tokenCents, _SEPARADORES: SEPARADORES,
   };
 });

@@ -108,6 +108,28 @@
     // sem letras nenhumas não há nada a capitalizar
     { t: "26/09 123 45,30", e: { desc: "123" } },
 
+    // --------------------------------- marcas e ruído de extrato bancário
+    // marca reconhecida: grafia certa (com o acento que o extrato não tem)
+    { t: "26/09 INTERMARCHE 13,29", e: { desc: "Intermarché" } },
+    { t: "26/09 ALDI ALCOCHETE 3,30", e: { desc: "Aldi Alcochete" } },
+    { t: "26/09 PINGO DOCE MATOSINHOS 12,50", e: { desc: "Pingo Doce Matosinhos" } },
+    // marca de várias palavras: a mais comprida ganha (não para em "Continente")
+    { t: "26/09 CONTINENTE BOM DIA ALCOCHETE 25,86", e: { desc: "Continente Bom Dia Alcochete" } },
+    // localidade duplicada e colada sem espaço (bug do extrato) -> só uma vez
+    { t: "26/09 INTERMARCHE ALCOCHETALCOCHETE 13,29", e: { desc: "Intermarché Alcochete" } },
+    // a mesma duplicação, mas COM espaço entre as duas
+    { t: "26/09 ALDI ALCOCHETE ALCOCHETE 3,30", e: { desc: "Aldi Alcochete" } },
+    // propaganda do terminal a seguir à marca: some, e o que ficava depois
+    // (só a localidade) sai com ela
+    { t: "26/09 LIDL AGRADECE ALCOCHETE 14,86", e: { desc: "Lidl" } },
+    // sem marca reconhecida a seguir, "agradece" não é ruído — é só uma
+    // palavra qualquer, e não se mexe
+    { t: "26/09 MUITO AGRADECE PELA AJUDA 10", e: { desc: "Muito Agradece pela Ajuda" } },
+    // sem marca nenhuma no início, o resto capitaliza-se na mesma
+    { t: "26/09 H3 LISBOA 1250-133 LISBOA 10,95", e: { desc: "H3 Lisboa 1250-133 Lisboa" } },
+    // palavra comprida sem repetição nenhuma não se mexe
+    { t: "26/09 SUPERMERCADO 20", e: { desc: "Supermercado" } },
+
     // ------------------------------------------------- lixo e limpeza
     { t: "- 25-09 Cafe 1,20", e: { desc: "Cafe", cents: 120 } },
     { t: "* 25-09 Cafe 1,20", e: { desc: "Cafe", cents: 120 } },
