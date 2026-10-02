@@ -621,6 +621,37 @@ label { font-size: .8rem; font-weight: 600; display: block; margin-bottom: .2rem
 .row { display: flex; gap: .7rem; flex-wrap: wrap; }
 .row .field { flex: 1 1 0; min-width: 130px; }
 
+/* sugestões de pessoas que já estão na app, por baixo dos campos de nome e
+   email dos membros. Fica no fluxo da página (não flutua): o .card tem
+   overflow e cortava uma lista posta por cima. */
+.people-suggest {
+  margin: -.35rem 0 .7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  background: var(--card);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.people-suggest[hidden] { display: none; }
+.ps-item {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  width: 100%;
+  padding: .5rem .7rem;
+  background: none;
+  border-radius: 0;
+  border-bottom: 1px solid var(--border-soft);
+  box-shadow: none;
+  color: var(--text);
+  font-weight: 400;
+  text-align: left;
+  white-space: normal;
+}
+.ps-item:last-child { border-bottom: none; }
+.ps-item:hover, .ps-item.active { background: var(--card-inner); filter: none; }
+.ps-item:active { transform: none; background: var(--seg-bg); }
+
 /* linha de checkbox com texto (e nota opcional por baixo) */
 .check-line {
   display: flex;
