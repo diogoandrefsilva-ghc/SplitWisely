@@ -4245,21 +4245,38 @@ async function fetchPeopleBook() {
     }
   }
   return [...byKey.values()]
-    .map(x => ({ ...x, normName: catNorm(x.name) }))
+    .map(x => ({ ...x, normName: catNorm(x.name).trim().replace(/\s+/g, " ") }))
     .sort((a, b) => b.groups - a.groups || a.normName.localeCompare(b.normName));
 }
 
 // Até 6 pessoas que batem com o que se escreveu: início de qualquer palavra
 // do nome (sem acentos) ou qualquer pedaço do email. Fica de fora quem já
 // está no grupo (exclude = emails em minúsculas) e o email escrito por
-// inteiro — já está escolhido, não há nada a sugerir.
-function matchPeople(book, q, exclude) {
+// inteiro — já está escolhido, não há nada a sugerir. Com hint (o nome do
+// membro que se está a editar), quem tem um nome parecido vem primeiro.
+function matchPeople(book, q, exclude, hint) {
   const nq = catNorm(q).trim();
-  return book.filter(p => !exclude.has(p.key) && p.key !== nq && (!nq
+  const found = book.filter(p => !exclude.has(p.key) && p.key !== nq && (!nq
       || p.normName.startsWith(nq)
-      || p.normName.split(/\s+/).some(w => w.startsWith(nq))
-      || p.key.includes(nq)))
-    .slice(0, 6);
+      || p.normName.split(" ").some(w => w.startsWith(nq))
+      || p.key.includes(nq)));
+  // sort estável: entre parecidos (e entre os outros) mantém-se a ordem do livro
+  if (hint) found.sort((a, b) => nameLikeness(b, hint) - nameLikeness(a, hint));
+  return found.slice(0, 6);
+}
+
+// Quanto uma pessoa do livro se parece com o nome de um membro: 2 = o mesmo
+// nome (sem acentos nem maiúsculas), 1 = partilham uma palavra do nome
+// («Maria» e «Maria Costa») ou o email começa por ela, 0 = nada a ver.
+const NAME_LINKS = new Set(["das", "dos", "del"]);
+function nameLikeness(p, name) {
+  const n = catNorm(name).trim().replace(/\s+/g, " ");
+  if (!n) return 0;
+  if (p.normName === n) return 2;
+  const words = new Set(p.normName.split(" "));
+  const local = p.key.split("@")[0];
+  return n.split(" ").some(t => t.length >= 3 && !NAME_LINKS.has(t)
+    && (words.has(t) || local.startsWith(t))) ? 1 : 0;
 }
 
 // Liga a lista de sugestões $box a um ou mais campos. A lista vive no fluxo
@@ -4267,7 +4284,10 @@ function matchPeople(book, q, exclude) {
 // overflow e cortavam um menu flutuante.
 // fields: [{ el, minChars }] — minChars 0 abre a lista logo ao focar.
 // onPick(pessoa, campo) preenche o formulário.
-function attachPeopleSuggest($box, fields, exclude, onPick) {
+// hint: nome do membro que se está a editar. Com o campo ainda vazio, quem
+// tem esse nome aparece logo, sem tocar no campo — o membro criado só com
+// nome num grupo encontra o email que já se lhe deu noutro.
+function attachPeopleSuggest($box, fields, exclude, onPick, { hint } = {}) {
   let items = [], active = -1, $cur = null;
 
   const close = () => {
@@ -4283,16 +4303,10 @@ function attachPeopleSuggest($box, fields, exclude, onPick) {
     close();
     if (p) onPick(p, $in);
   };
-  const show = async (f) => {
-    $cur = f.el;
-    const book = await loadPeopleBook();
-    if (document.activeElement !== f.el) return;  // saiu do campo entretanto
-    const q = f.el.value;
-    if (q.trim().length < f.minChars) return close();
-    items = matchPeople(book, q, exclude);
-    if (!items.length) return close();
-    active = -1;
-    $box.innerHTML = items.map((p, i) => `
+  const render = (list, caption = "") => {
+    items = list; active = -1;
+    $box.innerHTML = (caption ? `<div class="ps-caption">${esc(caption)}</div>` : "")
+      + list.map((p, i) => `
       <button type="button" class="ps-item" role="option" data-i="${i}">
         ${avatarHtml(p.name, "small")}
         <span class="item-main">
@@ -4301,6 +4315,16 @@ function attachPeopleSuggest($box, fields, exclude, onPick) {
         </span>
       </button>`).join("");
     $box.hidden = false;
+  };
+  const show = async (f) => {
+    $cur = f.el;
+    const book = await loadPeopleBook();
+    if (document.activeElement !== f.el) return;  // saiu do campo entretanto
+    const q = f.el.value;
+    if (q.trim().length < f.minChars) return close();
+    const list = matchPeople(book, q, exclude, hint);
+    if (!list.length) return close();
+    render(list);
     f.el.setAttribute("aria-expanded", "true");
   };
 
@@ -4337,6 +4361,19 @@ function attachPeopleSuggest($box, fields, exclude, onPick) {
       }
     });
   }
+
+  // pré-preenchimento: campo vazio e alguém com este nome já tem email
+  if (hint) loadPeopleBook().then(book => {
+    const f = fields[0];
+    if (!f.el.isConnected || f.el.value.trim() || document.activeElement === f.el) return;
+    const list = book.filter(p => !exclude.has(p.key) && nameLikeness(p, hint) > 0)
+      .sort((a, b) => nameLikeness(b, hint) - nameLikeness(a, hint))
+      .slice(0, 3);
+    if (!list.length) return;
+    $cur = f.el;
+    render(list, list.length > 1 ? "É uma destas pessoas? Toca para usar o email."
+                                 : "É esta pessoa? Toca para usar o email.");
+  });
 }
 
 // ------------------------------------------------ secção: membros (dentro das definições)
@@ -4483,11 +4520,12 @@ function renderMembersSection($c, ctx) {
     const close = () => { $slot.innerHTML = ""; $wrap.style.display = ""; };
     $slot.querySelector("#m-back").onclick = close;
 
-    // email ainda editável (sem conta ligada): sugere quem já está na app
+    // email ainda editável (sem conta ligada): sugere quem já está na app,
+    // a começar por quem tem o mesmo nome que este membro
     const $mEmail = $slot.querySelector("#m-email");
     if (!$mEmail.disabled) {
       attachPeopleSuggest($slot.querySelector("#m-suggest"), [{ el: $mEmail, minChars: 0 }],
-        inGroup, (p) => { $mEmail.value = p.email; });
+        inGroup, (p) => { $mEmail.value = p.email; }, { hint: m.name });
     }
 
     const $mSave = $slot.querySelector("#m-save");

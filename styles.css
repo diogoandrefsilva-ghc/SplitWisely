@@ -633,6 +633,14 @@ label { font-size: .8rem; font-weight: 600; display: block; margin-bottom: .2rem
   overflow: hidden;
 }
 .people-suggest[hidden] { display: none; }
+/* pergunta por cima das sugestões que aparecem sem tocar no campo */
+.ps-caption {
+  padding: .45rem .7rem;
+  font-size: .8rem;
+  color: var(--muted);
+  background: var(--card-inner);
+  border-bottom: 1px solid var(--border-soft);
+}
 .ps-item {
   display: flex;
   align-items: center;
