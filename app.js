@@ -4194,10 +4194,195 @@ async function inheritExistingExpenses(newMemberId, ctx) {
   return { expenses: changedEx, recurring: changedRec, error: firstError };
 }
 
+// ------------------------------------------------ sugestões de pessoas (membros)
+// Pessoas que já estão na base de dados, para as pôr num grupo sem voltar a
+// escrever o email. Vem só do que a RLS deixa ver: os membros com email dos
+// grupos a que tens acesso — e, para o admin, também as contas registadas
+// (profiles). Ninguém fica a conhecer emails de grupos que não são seus.
+// Carrega-se à primeira vez que se foca um campo e serve a secção dos membros
+// enquanto estiver aberta — cada vez que se desenha, volta a ir buscar, para
+// apanhar quem entretanto foi adicionado (aqui ou noutro grupo).
+let peopleBook = null;
+function invalidatePeopleBook() { peopleBook = null; }
+function loadPeopleBook() {
+  if (!peopleBook) peopleBook = fetchPeopleBook().catch(err => {
+    console.error(err);
+    peopleBook = null;  // sem sugestões desta vez; tenta de novo no próximo foco
+    return [];
+  });
+  return peopleBook;
+}
+async function fetchPeopleBook() {
+  const [m, p] = await Promise.all([
+    fetchAllRows((from, to) =>
+      sb.from("group_members").select("name, email, created_at")
+        .not("email", "is", null).order("id").range(from, to)),
+    profile?.is_admin
+      ? sb.from("profiles").select("full_name, email").not("email", "is", null)
+      : { data: [] },
+  ]);
+  if (m.error) throw m.error;
+
+  // um registo por email (sem olhar a maiúsculas). O nome é o da vez mais
+  // recente em que a pessoa entrou num grupo — é o nome que tu lhe dás —, e
+  // só na falta disso o da conta Google. Ordena-se pelos grupos em comum.
+  const byKey = new Map();
+  for (const r of m.data) {
+    const email = r.email.trim();
+    const key = email.toLowerCase();
+    if (!key) continue;
+    const cur = byKey.get(key);
+    if (!cur) byKey.set(key, { key, email, name: r.name, at: r.created_at, groups: 1 });
+    else {
+      cur.groups++;
+      if (r.created_at > cur.at) Object.assign(cur, { email, name: r.name, at: r.created_at });
+    }
+  }
+  for (const u of p.data || []) {
+    const key = u.email.trim().toLowerCase();
+    if (key && !byKey.has(key)) {
+      byKey.set(key, { key, email: u.email.trim(), name: u.full_name || u.email.split("@")[0], groups: 0 });
+    }
+  }
+  return [...byKey.values()]
+    .map(x => ({ ...x, normName: catNorm(x.name).trim().replace(/\s+/g, " ") }))
+    .sort((a, b) => b.groups - a.groups || a.normName.localeCompare(b.normName));
+}
+
+// Até 6 pessoas que batem com o que se escreveu: início de qualquer palavra
+// do nome (sem acentos) ou qualquer pedaço do email. Fica de fora quem já
+// está no grupo (exclude = emails em minúsculas) e o email escrito por
+// inteiro — já está escolhido, não há nada a sugerir. Com hint (o nome do
+// membro que se está a editar), quem tem um nome parecido vem primeiro.
+function matchPeople(book, q, exclude, hint) {
+  const nq = catNorm(q).trim();
+  const found = book.filter(p => !exclude.has(p.key) && p.key !== nq && (!nq
+      || p.normName.startsWith(nq)
+      || p.normName.split(" ").some(w => w.startsWith(nq))
+      || p.key.includes(nq)));
+  // sort estável: entre parecidos (e entre os outros) mantém-se a ordem do livro
+  if (hint) found.sort((a, b) => nameLikeness(b, hint) - nameLikeness(a, hint));
+  return found.slice(0, 6);
+}
+
+// Quanto uma pessoa do livro se parece com o nome de um membro: 2 = o mesmo
+// nome (sem acentos nem maiúsculas), 1 = partilham uma palavra do nome
+// («Maria» e «Maria Costa») ou o email começa por ela, 0 = nada a ver.
+const NAME_LINKS = new Set(["das", "dos", "del"]);
+function nameLikeness(p, name) {
+  const n = catNorm(name).trim().replace(/\s+/g, " ");
+  if (!n) return 0;
+  if (p.normName === n) return 2;
+  const words = new Set(p.normName.split(" "));
+  const local = p.key.split("@")[0];
+  return n.split(" ").some(t => t.length >= 3 && !NAME_LINKS.has(t)
+    && (words.has(t) || local.startsWith(t))) ? 1 : 0;
+}
+
+// Liga a lista de sugestões $box a um ou mais campos. A lista vive no fluxo
+// da página, logo por baixo dos campos, e não por cima deles: os cartões têm
+// overflow e cortavam um menu flutuante.
+// fields: [{ el, minChars }] — minChars 0 abre a lista logo ao focar.
+// onPick(pessoa, campo) preenche o formulário.
+// hint: nome do membro que se está a editar. Com o campo ainda vazio, quem
+// tem esse nome aparece logo, sem tocar no campo — o membro criado só com
+// nome num grupo encontra o email que já se lhe deu noutro.
+function attachPeopleSuggest($box, fields, exclude, onPick, { hint } = {}) {
+  let items = [], active = -1, $cur = null;
+
+  const close = () => {
+    $box.hidden = true;
+    $box.innerHTML = "";
+    items = []; active = -1;
+    fields.forEach(f => f.el.setAttribute("aria-expanded", "false"));
+  };
+  const paint = () => $box.querySelectorAll("[data-i]")
+    .forEach((b, i) => b.classList.toggle("active", i === active));
+  const pick = (i) => {
+    const p = items[i], $in = $cur;
+    close();
+    if (p) onPick(p, $in);
+  };
+  const render = (list, caption = "") => {
+    items = list; active = -1;
+    $box.innerHTML = (caption ? `<div class="ps-caption">${esc(caption)}</div>` : "")
+      + list.map((p, i) => `
+      <button type="button" class="ps-item" role="option" data-i="${i}">
+        ${avatarHtml(p.name, "small")}
+        <span class="item-main">
+          <span class="item-title">${esc(p.name)}</span>
+          <span class="item-sub">${esc(p.email)}</span>
+        </span>
+      </button>`).join("");
+    $box.hidden = false;
+  };
+  const show = async (f) => {
+    $cur = f.el;
+    const book = await loadPeopleBook();
+    if (document.activeElement !== f.el) return;  // saiu do campo entretanto
+    const q = f.el.value;
+    if (q.trim().length < f.minChars) return close();
+    const list = matchPeople(book, q, exclude, hint);
+    if (!list.length) return close();
+    render(list);
+    f.el.setAttribute("aria-expanded", "true");
+  };
+
+  // mousedown sem default: tocar numa sugestão não tira o foco ao campo
+  // (senão o blur fechava a lista antes de o clique chegar)
+  $box.addEventListener("mousedown", e => e.preventDefault());
+  $box.addEventListener("click", e => {
+    const b = e.target.closest("[data-i]");
+    if (b) pick(+b.dataset.i);
+  });
+
+  for (const f of fields) {
+    f.el.setAttribute("autocomplete", "off");  // a lista do browser tapava esta
+    f.el.setAttribute("role", "combobox");
+    f.el.setAttribute("aria-autocomplete", "list");
+    f.el.setAttribute("aria-controls", $box.id);
+    f.el.setAttribute("aria-expanded", "false");
+    f.el.addEventListener("focus", () => show(f));
+    f.el.addEventListener("input", () => show(f));
+    f.el.addEventListener("blur", close);
+    f.el.addEventListener("keydown", e => {
+      if ($box.hidden || $cur !== f.el) return;
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        const n = items.length;
+        active = e.key === "ArrowDown" ? (active + 1) % n : (active - 1 + n) % n;
+        paint();
+      } else if (e.key === "Enter" && active >= 0) {
+        e.preventDefault();  // escolhe a sugestão em vez de submeter o formulário
+        pick(active);
+      } else if (e.key === "Escape") {
+        e.stopPropagation();  // num pop-up, o Escape fecha só a lista
+        close();
+      }
+    });
+  }
+
+  // pré-preenchimento: campo vazio e alguém com este nome já tem email
+  if (hint) loadPeopleBook().then(book => {
+    const f = fields[0];
+    if (!f.el.isConnected || f.el.value.trim() || document.activeElement === f.el) return;
+    const list = book.filter(p => !exclude.has(p.key) && nameLikeness(p, hint) > 0)
+      .sort((a, b) => nameLikeness(b, hint) - nameLikeness(a, hint))
+      .slice(0, 3);
+    if (!list.length) return;
+    $cur = f.el;
+    render(list, list.length > 1 ? "É uma destas pessoas? Toca para usar o email."
+                                 : "É esta pessoa? Toca para usar o email.");
+  });
+}
+
 // ------------------------------------------------ secção: membros (dentro das definições)
 function renderMembersSection($c, ctx) {
   const { members } = ctx;
   const useWeights = !!ctx.group.use_weights;
+  invalidatePeopleBook();  // sugestões frescas a cada vez que a secção se desenha
+  // emails de quem já está no grupo: esses não se sugerem outra vez
+  const inGroup = new Set(members.map(m => (m.email || "").trim().toLowerCase()).filter(Boolean));
 
   // permissões de cada membro no grupo (o que a conta ligada pode fazer).
   // 'write_all' é o default (edita tudo) e não mostra badge — só se destacam
@@ -4260,6 +4445,7 @@ function renderMembersSection($c, ctx) {
           ${useWeights ? `<div class="field" style="max-width:90px;"><label>Peso</label>
             <input name="weight" type="number" step="0.1" min="0" value="1" /></div>` : ""}
         </div>
+        <div class="people-suggest" id="nm-suggest" role="listbox" aria-label="Pessoas que já estão na app" hidden></div>
         ${(ctx.expenses?.length || ctx.recurring?.length) ? `
         <label class="check-line" style="align-items:flex-start;">
           <input type="checkbox" name="inherit" style="margin-top:.15rem;" />
@@ -4295,6 +4481,7 @@ function renderMembersSection($c, ctx) {
         <div class="field"><label>Email</label>
           <input id="m-email" type="email" value="${esc(m.email || "")}"
             placeholder="liga a pessoa à conta Google dela" ${m.user_id || !ctx.canWrite ? "disabled" : ""} /></div>
+        <div class="people-suggest" id="m-suggest" role="listbox" aria-label="Pessoas que já estão na app" hidden></div>
         ${m.user_id ? `<p class="muted" style="margin:-.3rem 0 .7rem;">Esta pessoa já entrou com a
           conta Google dela <span class="badge linked">conta ligada</span> — o email já não se altera.</p>` : ""}
         ${inviteBlockHtml(m, ctx.group)}
@@ -4332,6 +4519,14 @@ function renderMembersSection($c, ctx) {
 
     const close = () => { $slot.innerHTML = ""; $wrap.style.display = ""; };
     $slot.querySelector("#m-back").onclick = close;
+
+    // email ainda editável (sem conta ligada): sugere quem já está na app,
+    // a começar por quem tem o mesmo nome que este membro
+    const $mEmail = $slot.querySelector("#m-email");
+    if (!$mEmail.disabled) {
+      attachPeopleSuggest($slot.querySelector("#m-suggest"), [{ el: $mEmail, minChars: 0 }],
+        inGroup, (p) => { $mEmail.value = p.email; }, { hint: m.name });
+    }
 
     const $mSave = $slot.querySelector("#m-save");
     if ($mSave) $mSave.onclick = async () => {
@@ -4408,6 +4603,19 @@ function renderMembersSection($c, ctx) {
   });
 
   const $newMember = $c.querySelector("#new-member");
+  if ($newMember) {
+    // nome ou email de alguém que já está noutro grupo: um toque preenche os dois
+    const $name = $newMember.querySelector('[name="name"]');
+    const $email = $newMember.querySelector('[name="email"]');
+    attachPeopleSuggest($c.querySelector("#nm-suggest"),
+      [{ el: $name, minChars: 1 }, { el: $email, minChars: 0 }], inGroup,
+      (p, $from) => {
+        $email.value = p.email;
+        // escolhida a partir do nome, fica o nome da sugestão; a partir do
+        // email, manda o nome que já lá estava (só se preenche se vazio)
+        if ($from === $name || !$name.value.trim()) $name.value = p.name;
+      });
+  }
   if ($newMember) $newMember.onsubmit = async (e) => {
     e.preventDefault();
     const f = new FormData(e.target);
