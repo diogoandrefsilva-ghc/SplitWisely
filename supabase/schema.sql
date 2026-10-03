@@ -1303,6 +1303,182 @@ $$;
 revoke all on function splitwisely.admin_known_people() from public, anon;
 grant execute on function splitwisely.admin_known_people() to authenticated;
 
+-- ============================================================
+-- LINK PÚBLICO DE CONSULTA (sem login)
+-- O criador de um grupo pode gerar um link que mostra as despesas e os
+-- saldos desse grupo a quem não tem conta — ex.: a malta de uma despedida
+-- de solteiro que não quer entrar com Google só para ver quanto deve. É só
+-- de leitura, tem validade obrigatória e pode ser revogado a qualquer hora.
+--
+-- Um link por grupo (group_id é a chave). O token é o segredo do link:
+-- gerado SEMPRE no servidor (trigger share_links_guard — a app não o pode
+-- escolher), com os 122 bits aleatórios de um gen_random_uuid() escritos em
+-- base64url (22 caracteres). Mudar a validade mantém o token, para quem já
+-- tem o link o continuar a usar; revogar apaga a linha, e o link seguinte
+-- nasce com outro token.
+--
+-- QUEM VÊ O QUÊ:
+--   • a tabela só é visível ao CRIADOR do grupo (RLS), que é quem gere o
+--     link — tal como as restantes definições do grupo;
+--   • quem abre o link (role anon, sem sessão) não toca em tabela nenhuma:
+--     chama a RPC public_group_view(token), que confirma o token e a
+--     validade e devolve só o que a consulta precisa. Ficam DE FORA os
+--     emails, as contas ligadas (user_id), os roles e quem lançou cada
+--     despesa.
+-- Um grupo em histórico continua a poder ter link: é só consulta, e o
+-- histórico de um evento é precisamente o que se quer mostrar.
+-- (Re-correr este ficheiro é seguro.)
+-- ============================================================
+create table if not exists splitwisely.group_share_links (
+  group_id uuid primary key references splitwisely.groups (id) on delete cascade,
+  token text not null unique,
+  expires_at timestamptz not null,
+  created_at timestamptz not null default now()
+);
+
+create or replace function splitwisely.new_share_token()
+returns text
+language sql volatile
+set search_path = ''
+as $$
+  select rtrim(translate(encode(uuid_send(gen_random_uuid()), 'base64'), '+/', '-_'), '=');
+$$;
+
+-- O token nasce no servidor e nunca muda: no INSERT é gerado aqui (o que a
+-- app mandar é ignorado — um token fraco escolhido à mão abria o grupo a
+-- quem o adivinhasse); no UPDATE só a validade mexe.
+create or replace function splitwisely.share_links_guard()
+returns trigger
+language plpgsql
+set search_path = splitwisely
+as $$
+begin
+  if tg_op = 'INSERT' then
+    new.token := splitwisely.new_share_token();
+    new.created_at := now();
+  else
+    new.token := old.token;
+    new.group_id := old.group_id;
+    new.created_at := old.created_at;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_share_links_guard on splitwisely.group_share_links;
+create trigger trg_share_links_guard before insert or update on splitwisely.group_share_links
+  for each row execute function splitwisely.share_links_guard();
+
+-- É o criador do grupo? (o my_role() não serve: devolve 'write_all' também
+-- a membros com escrita total, e o link é só do dono)
+create or replace function splitwisely.is_group_owner(gid uuid)
+returns boolean
+language sql stable security definer
+set search_path = splitwisely
+as $$
+  select exists (select 1 from groups where id = gid and created_by = auth.uid());
+$$;
+-- só as policies (role authenticated) precisam dela; anon não tem porque a ver
+revoke all on function splitwisely.is_group_owner(uuid) from public, anon;
+grant execute on function splitwisely.is_group_owner(uuid) to authenticated;
+
+alter table splitwisely.group_share_links enable row level security;
+
+-- escrita separada por comando (ver regra 1 na secção de RLS lá em cima)
+drop policy if exists "share_links_select" on splitwisely.group_share_links;
+create policy "share_links_select" on splitwisely.group_share_links
+  for select to authenticated
+  using ((select splitwisely.can_use()) and splitwisely.is_group_owner(group_id));
+
+drop policy if exists "share_links_insert" on splitwisely.group_share_links;
+create policy "share_links_insert" on splitwisely.group_share_links
+  for insert to authenticated
+  with check (splitwisely.can_use() and splitwisely.is_group_owner(group_id));
+
+drop policy if exists "share_links_update" on splitwisely.group_share_links;
+create policy "share_links_update" on splitwisely.group_share_links
+  for update to authenticated
+  using (splitwisely.can_use() and splitwisely.is_group_owner(group_id))
+  with check (splitwisely.can_use() and splitwisely.is_group_owner(group_id));
+
+drop policy if exists "share_links_delete" on splitwisely.group_share_links;
+create policy "share_links_delete" on splitwisely.group_share_links
+  for delete to authenticated
+  using (splitwisely.can_use() and splitwisely.is_group_owner(group_id));
+
+grant select, insert, update, delete on splitwisely.group_share_links to authenticated;
+
+-- A consulta pelo link. Devolve { status: 'ok' | 'expired' | 'invalid' };
+-- com 'ok' vem o grupo, os membros, as despesas (com pagadores, quotas e a
+-- repartição por categoria — tudo o que o cálculo dos saldos precisa, no
+-- mesmo formato que a app lê das tabelas) e os pagamentos. Um link revogado
+-- é indistinguível de um que nunca existiu ('invalid'); um expirado diz
+-- quando expirou, para quem o abre saber que tem de pedir outro.
+create or replace function splitwisely.public_group_view(p_token text)
+returns jsonb
+language plpgsql stable security definer
+set search_path = splitwisely
+as $$
+declare
+  v_link group_share_links;
+begin
+  select * into v_link from group_share_links where token = p_token;
+  if not found then
+    return jsonb_build_object('status', 'invalid');
+  end if;
+  if v_link.expires_at <= now() then
+    return jsonb_build_object('status', 'expired', 'expires_at', v_link.expires_at);
+  end if;
+
+  return jsonb_build_object(
+    'status', 'ok',
+    'expires_at', v_link.expires_at,
+    'group', (
+      select jsonb_build_object(
+               'id', g.id, 'name', g.name, 'description', g.description,
+               'currency', g.currency, 'use_weights', g.use_weights,
+               'categories', g.categories, 'archived', g.archived)
+      from groups g where g.id = v_link.group_id),
+    'members', coalesce((
+      select jsonb_agg(jsonb_build_object(
+               'id', m.id, 'name', m.name,
+               'default_weight', m.default_weight, 'settle_with', m.settle_with)
+             order by m.created_at, m.id)
+      from group_members m where m.group_id = v_link.group_id), '[]'::jsonb),
+    'expenses', coalesce((
+      select jsonb_agg(jsonb_build_object(
+               'id', e.id, 'description', e.description, 'amount', e.amount,
+               'expense_date', e.expense_date, 'split_mode', e.split_mode,
+               'category', e.category, 'recurring_id', e.recurring_id,
+               'created_at', e.created_at,
+               'expense_payers', coalesce((
+                 select jsonb_agg(jsonb_build_object('member_id', p.member_id, 'amount', p.amount))
+                 from expense_payers p where p.expense_id = e.id), '[]'::jsonb),
+               'expense_shares', coalesce((
+                 select jsonb_agg(jsonb_build_object('member_id', s.member_id, 'amount', s.amount))
+                 from expense_shares s where s.expense_id = e.id), '[]'::jsonb),
+               'expense_categories', coalesce((
+                 select jsonb_agg(jsonb_build_object('category', c.category, 'amount', c.amount))
+                 from expense_categories c where c.expense_id = e.id), '[]'::jsonb),
+               'expense_category_shares', coalesce((
+                 select jsonb_agg(jsonb_build_object(
+                          'category', cs.category, 'member_id', cs.member_id, 'amount', cs.amount))
+                 from expense_category_shares cs where cs.expense_id = e.id), '[]'::jsonb))
+             order by e.expense_date desc, e.created_at desc, e.id)
+      from expenses e where e.group_id = v_link.group_id), '[]'::jsonb),
+    'payments', coalesce((
+      select jsonb_agg(jsonb_build_object(
+               'id', p.id, 'from_member', p.from_member, 'to_member', p.to_member,
+               'amount', p.amount, 'payment_date', p.payment_date, 'note', p.note)
+             order by p.payment_date desc, p.created_at desc, p.id)
+      from payments p where p.group_id = v_link.group_id), '[]'::jsonb)
+  );
+end;
+$$;
+-- aberta a anon de propósito: é ela a porta do link (e só lê pelo token)
+revoke all on function splitwisely.public_group_view(text) from public;
+grant execute on function splitwisely.public_group_view(text) to anon, authenticated;
+
 notify pgrst, 'reload schema';
 
 -- ============================================================

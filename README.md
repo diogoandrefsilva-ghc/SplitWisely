@@ -22,6 +22,7 @@ App web estilo Splitwise para gerir despesas partilhadas, feita em HTML/JS puro 
 - **Movimentos por ver** — ao entrar num grupo, a lista assinala com **novo** o que foi lançado e com **alterado** o que foi mexido desde a **tua última visita àquele grupo** (com um filete de cor na linha e uma contagem por cima da lista, para não passar despercebido o que tem data antiga e ficou lá em baixo). Só se assinala o que os **outros** fizeram — o que tu lanças ou editas não conta. O carimbo da visita fica na base de dados (uma linha por pessoa e grupo), por isso vale em todos os dispositivos onde entras com a mesma conta.
 - **Saldos e acerto de contas** — quem deve a quem (com o detalhe de *a quem* por baixo do saldo), sugestões de pagamentos mínimos e **registo de pagamentos**: um clique em «Pagar» numa sugestão pré-preenche o pagamento; os pagamentos registados abatem nos saldos e podem ser apagados.
 - **Grupos em histórico** — quando um evento termina e as **contas ficam saldadas** (saldos a zero), o criador pode **passar o grupo a histórico** nas **Definições**. Os grupos em histórico saem dos cards em destaque e passam a aparecer numa **lista compacta** («Histórico») no ecrã principal, com os **dados congelados**: não se lançam nem editam despesas, pagamentos, membros ou moldes recorrentes (imposto no servidor pelas políticas RLS, não é só esconder botões). É ideal para grupos de um evento único; grupos que continuam a movimentar-se ficam ativos mesmo com saldo zero. Dá para **reativar** o grupo a qualquer momento.
+- **Link público só de consulta** — para quem não quer criar conta (a malta de uma despedida de solteiro, por exemplo), o criador do grupo gera nas **Definições** um link que abre as **despesas e os saldos** daquele grupo **sem login** e sem poder alterar nada. O link tem **validade obrigatória** (24 horas, 7 dias, 30 dias, 3 meses ou até um dia à escolha), pode ser **copiado ou partilhado** num toque, **prolongado** sem mudar de endereço e **desligado** a qualquer momento (o seguinte nasce com outro endereço). Quem o abre pode dizer **«Quem és tu?»** para ver o seu saldo e a sua quota em destaque (fica guardado só nesse browser). O token é gerado no servidor (122 bits aleatórios) e a consulta passa por uma RPC (`public_group_view`) que confirma o token e a validade e **não devolve emails nem contas** — o role `anon` não toca nas tabelas. Um link expirado mostra só um aviso.
 - **Liquidação preferencial** — no detalhe de um membro podes indicar com quem ele **liquida preferencialmente** (opcional). Útil para convidados: se o Y é convidado do X, o Y tem a pagar e o X a receber, os acertos sugerem primeiro Y → X, antes da distribuição normal.
 - **Notificações push** — ao lançares uma despesa nova, quem foi afetado (pagou algo ou ficou a dever algo) e não foste tu recebe um aviso no telemóvel: *"António e João pagaram 30,00 € em Adega Solar Minhoto a dividir por 7 (estás incluído)"*. A app sugere ativar logo a seguir ao login (repete a cada abertura enquanto não decidires) e o botão **⚙️** na barra de topo abre a conta, onde se ativa/desativa a qualquer momento.
 - **PWA para telemóvel** — instalável no ecrã inicial (Android e iOS), abre em ecrã inteiro sem barra do browser, funciona offline para consulta e tem o zoom bloqueado.
@@ -124,6 +125,9 @@ A app abre depois como qualquer outra, em ecrã inteiro e com o ícone próprio.
 6. A aba **Saldos** mostra quem recebe, quem deve (e a quem) e a forma mais simples de acertar contas.
 7. Quando alguém pagar a dívida, regista o pagamento na aba **Saldos** — o botão «Pagar» em cada
    sugestão pré-preenche tudo (ou usa «Registar pagamento» para valores/pessoas à escolha).
+8. Há quem não queira criar conta? Nas **Definições** do grupo, em **🔗 Link público**, escolhe a
+   validade e carrega em **Criar link** — copia-o ou partilha-o, e quem o abrir vê as despesas e os
+   saldos sem login.
 
 > **Já tinhas uma versão anterior do schema?** Volta a correr `supabase/schema.sql` no SQL
 > Editor (é idempotente) para apanhar as novidades — a tabela `payments` dos pagamentos, a
@@ -131,9 +135,11 @@ A app abre depois como qualquer outra, em ecrã inteiro e com o ícone próprio.
 > `recurring_expenses` + a RPC `generate_due_recurring`), a coluna `settle_with` da
 > **liquidação preferencial** nos membros, a coluna `role` das **permissões por membro**
 > (com as políticas RLS que a impõem por despesa/pagamento), a coluna `archived` dos
-> **grupos em histórico** (com as políticas RLS que congelam as escritas nos grupos arquivados)
-> e a tabela `push_subscriptions` das **notificações push** (ver passo 6 da configuração —
-> sem o deploy da Edge Function o botão de ativar fica sem efeito).
+> **grupos em histórico** (com as políticas RLS que congelam as escritas nos grupos arquivados),
+> a tabela `push_subscriptions` das **notificações push** (ver passo 6 da configuração —
+> sem o deploy da Edge Function o botão de ativar fica sem efeito) e a tabela
+> `group_share_links` + a RPC `public_group_view` do **link público de consulta** (sem elas, o
+> cartão do link nas Definições diz que está indisponível e um link aberto dá «Link inválido»).
 
 ## Estrutura
 
