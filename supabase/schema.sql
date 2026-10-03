@@ -1378,6 +1378,9 @@ set search_path = splitwisely
 as $$
   select exists (select 1 from groups where id = gid and created_by = auth.uid());
 $$;
+-- só as policies (role authenticated) precisam dela; anon não tem porque a ver
+revoke all on function splitwisely.is_group_owner(uuid) from public, anon;
+grant execute on function splitwisely.is_group_owner(uuid) to authenticated;
 
 alter table splitwisely.group_share_links enable row level security;
 
