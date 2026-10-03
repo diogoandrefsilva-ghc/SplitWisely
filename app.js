@@ -470,6 +470,9 @@ function groupBalancesCents(members, expenses, payments) {
   const bal = new Map(members.map(m => [m.id, 0]));
   const add = (id, v) => { if (bal.has(id)) bal.set(id, bal.get(id) + v); };
   for (const x of expenses) {
+    // «cada um pagou o seu» é só registo: ninguém fica a dever a ninguém.
+    // (Gravam-se pagos = quotas, que já dava zero; saltar é a garantia.)
+    if (x.split_mode === "own") continue;
     for (const p of x.expense_payers) add(p.member_id, toCents(p.amount));
     for (const [id, v] of exactShareCents(x)) add(id, -v);
   }
@@ -1645,7 +1648,7 @@ function renderExpensesTab($c, ctx) {
 
   // efeito líquido da despesa no utilizador: o que pagou menos a sua parte
   const myImpact = (x) => {
-    if (!myMember) return "";
+    if (!myMember || x.split_mode === "own") return ""; // só registo, não mexe no saldo
     const paid = x.expense_payers.filter(p => p.member_id === myMember.id)
       .reduce((a, p) => a + toCents(p.amount), 0);
     const share = x.expense_shares.filter(s => s.member_id === myMember.id)
@@ -1811,7 +1814,7 @@ function renderExpensesTab($c, ctx) {
           ${expenseCatIconHtml(x)}
           <div class="item-main">
             <span class="item-title">${esc(x.description)}${freshBadge}${x.recurring_id ? ` <span class="badge linked" title="Despesa recorrente">🔁</span>` : ""}</span>
-            <span class="item-sub">pago por ${esc(payers)} · ${nShares} pessoa${nShares === 1 ? "" : "s"}</span>
+            <span class="item-sub">${x.split_mode === "own" ? "cada um pagou o seu" : `pago por ${esc(payers)}`} · ${nShares} pessoa${nShares === 1 ? "" : "s"}</span>
             ${catLine}
           </div>
           <div class="item-end">
@@ -1912,14 +1915,19 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
   const exPayers = existing ? (isRecurringRecord ? existing.recurring_expense_payers : existing.expense_payers) : [];
   const exShares = existing ? (isRecurringRecord ? existing.recurring_expense_shares : existing.expense_shares) : [];
 
+  // «cada um pagou o seu» grava como pagadores os próprios participantes —
+  // ao reabrir, não servem de pagadores se se mudar para outro modo: aí
+  // volta-se ao default (quem lança a despesa)
+  const exOwn = !!existing && existing.split_mode === "own";
+
   // estado inicial: quem insere a despesa é o pagador pré-selecionado
   const { myMember } = ctx;
-  const initPayers = existing
+  const initPayers = existing && !exOwn
     ? exPayers.map(p => p.member_id)
     : [myMember ? myMember.id : members[0].id];
 
   const initPayerAmounts = {};
-  if (existing) exPayers.forEach(p => { initPayerAmounts[p.member_id] = toCents(p.amount); });
+  if (existing && !exOwn) exPayers.forEach(p => { initPayerAmounts[p.member_id] = toCents(p.amount); });
 
   const initShares = {};
   if (existing) exShares.forEach(s => { initShares[s.member_id] = toCents(s.amount); });
@@ -1930,6 +1938,8 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
   const initMode = existing
     ? (existing.split_mode === "weights" && !useWeights ? "exact" : (existing.split_mode || "exact"))
     : (useWeights ? "weights" : "equal");
+  // o modo a que se volta ao desligar «cada um pagou o seu»
+  const initDivMode = initMode !== "own" ? initMode : (useWeights ? "weights" : "equal");
 
   // fatura repartida por categorias: linhas gravadas em expense_categories
   // (só nas despesas normais; os moldes recorrentes têm uma categoria só)
@@ -1972,7 +1982,10 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     // da descrição) pode ir atualizando a categoria à medida que se escreve
     catManual: !!(existing && (existing.category || exCats.length)),
     catAuto: false,
-    mode: initMode, // equal | weights | exact
+    // equal | weights | exact | own («cada um pagou o seu»: só se escolhe
+    // quem entra, cada um pagou a sua parte e ninguém fica a dever nada)
+    mode: initMode,
+    divMode: initDivMode,
     totalCents: existing ? toCents(existing.amount) : 0,
     payers: new Set(initPayers),
     payerAmounts: { ...initPayerAmounts },
@@ -2001,8 +2014,9 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     return e.length ? e[0][0] : null;
   };
 
-  // dividir por categoria está ativo? (fatura repartida + opção ligada)
-  const catDividing = () => !!(state.catSplit && state.catDivide);
+  // dividir por categoria está ativo? (fatura repartida + opção ligada;
+  // em «cada um pagou o seu» não há divisão nenhuma)
+  const catDividing = () => !!(state.catSplit && state.catDivide && state.mode !== "own");
 
   // divisão do custo de cada categoria por quem participa (partes iguais):
   // devolve { catId: { memberId: cêntimos } }. A soma de cada categoria é
@@ -2032,9 +2046,17 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     if (state.mode === "exact") {
       return Object.fromEntries(ids.map(id => [id, state.exact[id] || 0]));
     }
-    const ws = state.mode === "equal" ? ids.map(() => 1) : ids.map(id => state.weights[id] || 0);
+    // «cada um pagou o seu» grava partes iguais: é só a quota de referência
+    const ws = state.mode === "weights" ? ids.map(id => state.weights[id] || 0) : ids.map(() => 1);
     const parts = splitByWeights(state.totalCents, ws);
     return Object.fromEntries(ids.map((id, i) => [id, parts[i]]));
+  }
+
+  // o que cada um pagou ({ memberId: cêntimos }). Em «cada um pagou o seu»
+  // cada participante pagou exatamente a sua parte — e o saldo fica a zero
+  function paidCents() {
+    if (state.mode === "own") return computedShares();
+    return Object.fromEntries([...state.payers].map(id => [id, state.payerAmounts[id] || 0]));
   }
 
   function distributePayersEqually() {
@@ -2042,7 +2064,7 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     const parts = splitByWeights(state.totalCents, ids.map(() => 1));
     state.payerAmounts = Object.fromEntries(ids.map((id, i) => [id, parts[i]]));
   }
-  if (!existing) distributePayersEqually();
+  if (!existing || exOwn) distributePayersEqually();
 
   // Uma ocorrência de série abre primeiro num ecrã de escolha — o utilizador
   // toma consciência de que é recorrente e decide: gerir a série (pop-up) ou
@@ -2131,15 +2153,25 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     const desc = state.desc.trim();
     const date = state.date;
     const shares2 = computedShares();
-    const paidSum2 = [...state.payers].reduce((a, id) => a + (state.payerAmounts[id] || 0), 0);
+    const paid2 = paidCents();
+    const paidSum2 = Object.values(paid2).reduce((a, b) => a + b, 0);
     const shareSum2 = Object.values(shares2).reduce((a, b) => a + b, 0);
+    const own = state.mode === "own";
 
     const fail = (section, msg) => { goToSection(section); toast(msg, true); };
+    // schema por atualizar: o check de split_mode ainda não conhece 'own'
+    const errTxt = (error) => own && /split_mode/i.test(error.message)
+      ? "«Cada um pagou o seu» precisa do schema.sql mais recente no Supabase" : error.message;
     if (!desc) return fail("dados", "Falta a descrição");
     if (state.totalCents <= 0) return fail("dados", "O valor tem de ser maior que zero");
-    if (state.payers.size === 0) return fail("pagou", "Escolhe quem pagou");
-    if (paidSum2 !== state.totalCents) return fail("pagou", "Os valores pagos não somam o total");
-    if (Object.keys(shares2).length === 0) return fail("divide", "Escolhe por quem se divide");
+    if (own) {
+      // só se escolhe quem entra, e é no pop-up «Quem pagou»
+      if (Object.keys(shares2).length === 0) return fail("pagou", "Escolhe quem entra nesta despesa");
+    } else {
+      if (state.payers.size === 0) return fail("pagou", "Escolhe quem pagou");
+      if (paidSum2 !== state.totalCents) return fail("pagou", "Os valores pagos não somam o total");
+      if (Object.keys(shares2).length === 0) return fail("divide", "Escolhe por quem se divide");
+    }
     // dividir por categoria: cada categoria com valor precisa de alguém
     if (catDividing()) {
       const semGente = catEntries()
@@ -2196,9 +2228,9 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
         start_date: period, end_date: state.endDate || null, active: state.active,
       };
       const { data: rec, error: rErr } = await sb.from("recurring_expenses").insert(rpayload).select().single();
-      if (rErr) return toast(rErr.message, true);
-      const rPayerRows = [...state.payers].filter(id => (state.payerAmounts[id] || 0) > 0)
-        .map(id => ({ recurring_id: rec.id, member_id: id, amount: (state.payerAmounts[id] / 100).toFixed(2) }));
+      if (rErr) return toast(errTxt(rErr), true);
+      const rPayerRows = Object.entries(paid2).filter(([, c]) => c > 0)
+        .map(([id, c]) => ({ recurring_id: rec.id, member_id: id, amount: (c / 100).toFixed(2) }));
       const rShareRows = Object.entries(shares2).filter(([, c]) => c > 0)
         .map(([id, c]) => ({ recurring_id: rec.id, member_id: id, amount: (c / 100).toFixed(2) }));
       const re1 = await sb.from("recurring_expense_payers").insert(rPayerRows);
@@ -2218,8 +2250,8 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
       // eventual repartição/divisão antiga (erros ignorados: schema sem a tabela)
       await sb.from("expense_categories").delete().eq("expense_id", existing.id);
       await sb.from("expense_category_shares").delete().eq("expense_id", existing.id);
-      const pRows = [...state.payers].filter(id => (state.payerAmounts[id] || 0) > 0)
-        .map(id => ({ expense_id: existing.id, member_id: id, amount: (state.payerAmounts[id] / 100).toFixed(2) }));
+      const pRows = Object.entries(paid2).filter(([, c]) => c > 0)
+        .map(([id, c]) => ({ expense_id: existing.id, member_id: id, amount: (c / 100).toFixed(2) }));
       const sRows = Object.entries(shares2).filter(([, c]) => c > 0)
         .map(([id, c]) => ({ expense_id: existing.id, member_id: id, amount: (c / 100).toFixed(2) }));
       const pi1 = await sb.from("expense_payers").insert(pRows);
@@ -2251,17 +2283,17 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
       let recId = existing?.id;
       if (existing) {
         const { error } = await sb.from("recurring_expenses").update(rpayload).eq("id", existing.id);
-        if (error) return toast(error.message, true);
+        if (error) return toast(errTxt(error), true);
         await sb.from("recurring_expense_payers").delete().eq("recurring_id", existing.id);
         await sb.from("recurring_expense_shares").delete().eq("recurring_id", existing.id);
       } else {
         const { data, error } = await sb.from("recurring_expenses").insert(rpayload).select().single();
-        if (error) return toast(error.message, true);
+        if (error) return toast(errTxt(error), true);
         recId = data.id;
       }
-      const rPayerRows = [...state.payers]
-        .filter(id => (state.payerAmounts[id] || 0) > 0)
-        .map(id => ({ recurring_id: recId, member_id: id, amount: (state.payerAmounts[id] / 100).toFixed(2) }));
+      const rPayerRows = Object.entries(paid2)
+        .filter(([, c]) => c > 0)
+        .map(([id, c]) => ({ recurring_id: recId, member_id: id, amount: (c / 100).toFixed(2) }));
       const rShareRows = Object.entries(shares2)
         .filter(([, c]) => c > 0)
         .map(([id, c]) => ({ recurring_id: recId, member_id: id, amount: (c / 100).toFixed(2) }));
@@ -2358,9 +2390,9 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
       toast("Divisão por categoria não gravada — corre o schema.sql mais recente no Supabase", true);
     }
 
-    const payerRows = [...state.payers]
-      .filter(id => (state.payerAmounts[id] || 0) > 0)
-      .map(id => ({ expense_id: expenseId, member_id: id, amount: (state.payerAmounts[id] / 100).toFixed(2) }));
+    const payerRows = Object.entries(paid2)
+      .filter(([, c]) => c > 0)
+      .map(([id, c]) => ({ expense_id: expenseId, member_id: id, amount: (c / 100).toFixed(2) }));
     const shareRows = Object.entries(shares2)
       .filter(([, c]) => c > 0)
       .map(([id, c]) => ({ expense_id: expenseId, member_id: id, amount: (c / 100).toFixed(2) }));
@@ -2369,7 +2401,8 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     const i2 = await sb.from("expense_shares").insert(shareRows);
     if (i1.error || i2.error) return toast((i1.error || i2.error).message, true);
 
-    if (!existing) notifyExpenseAdded(group, members, desc, state.totalCents, payerRows, shareRows);
+    // «cada um pagou o seu» não deixa ninguém a dever nada: não há de que avisar
+    if (!existing && !own) notifyExpenseAdded(group, members, desc, state.totalCents, payerRows, shareRows);
 
     toast(existing ? "Despesa atualizada" : "Despesa adicionada");
     refresh();
@@ -2490,8 +2523,9 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     if (isOccurrence && !occChoiceDone) return drawOccChoice();
     const cur = group.currency;
     const shares = computedShares();
-    const paidSum = [...state.payers].reduce((a, id) => a + (state.payerAmounts[id] || 0), 0);
+    const paidSum = Object.values(paidCents()).reduce((a, b) => a + b, 0);
     const shareSum = Object.values(shares).reduce((a, b) => a + b, 0);
+    const own = state.mode === "own";
     const catUsed = Object.values(state.catSplit || {}).reduce((a, c) => a + c, 0);
     const catsChosen = Object.keys(state.catSplit || {}).length;
 
@@ -2557,14 +2591,16 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
       </header>`;
 
     // ------------------------------------------------- as quatro decisões
-    const paidTxt = state.payers.size === 0 ? "Por escolher"
+    const paidTxt = own ? "Cada um o seu"
+      : state.payers.size === 0 ? "Por escolher"
       : state.payers.size === 1 ? curto(nameOf([...state.payers][0]))
       : joinNames([...state.payers].map(id => curto(nameOf(id))));
 
     const idsDiv = Object.keys(shares);
     const dois = idsDiv.length === 2;
     let divTxt;
-    if (catDividing()) divTxt = "Por categoria";
+    if (own) divTxt = "Não se divide";
+    else if (catDividing()) divTxt = "Por categoria";
     else if (idsDiv.length === 0) divTxt = "Por escolher";
     else if (state.mode === "weights") {
       const r = dois ? proporcao(state.weights[idsDiv[0]] || 0, state.weights[idsDiv[1]] || 0) : null;
@@ -2591,7 +2627,10 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     const vals = idsDiv.map(id => shares[id] || 0);
     const iguais = vals.length > 0 && vals.every(v => Math.abs(v - vals[0]) <= 1);
     let previaTxt = "";
-    if (idsDiv.length && state.totalCents > 0) {
+    if (own) {
+      // quanto pagou cada um não se sabe nem interessa: fica só o registo
+      if (idsDiv.length) previaTxt = "Fica só o registo — <strong>não mexe nos saldos</strong>";
+    } else if (idsDiv.length && state.totalCents > 0) {
       previaTxt = iguais ? `<strong>${fmtMoney(vals[0], cur)}</strong> cada`
         : idsDiv.length <= 3
           // com duas ou três pessoas cabe dizer quanto fica a cada uma
@@ -2610,7 +2649,7 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     const decisoes = `
       <div class="xp-rows">
         ${linha("pagou", "user", "Quem pagou", esc(paidTxt), okPaid)}
-        ${linha("divide", "users", "Divisão", esc(divTxt), okDivide)}
+        ${linha("divide", "users", "Divisão", esc(divTxt), own || okDivide, own)}
         ${linha("cat", "tag", "Categoria", esc(catTxt), okCat)}
         ${linha("repetir", "repeat", "Repete-se", esc(repTxt), true, isOccurrence)}
       </div>
@@ -2631,8 +2670,29 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
       </div>`;
 
     const multiPayers = state.payers.size > 1;
-    const corpoPagou = () => `
+    // «cada um pagou o seu» decide-se aqui, porque responde a «quem pagou?»:
+    // nesse modo só se escolhe quem entra e a linha da divisão fica inerte
+    const segPagou = `
+      <div class="xp-seg sm" role="group" aria-label="Como se pagou">
+        <button type="button" class="${own ? "" : "on"}" data-own="0">Alguém pagou</button>
+        <button type="button" class="${own ? "on" : ""}" data-own="1">Cada um o seu</button>
+      </div>`;
+    const corpoPagou = () => own ? `
+      ${aviso(idsDiv.length > 0, "Escolhe quem entra nesta despesa")}
+      ${segPagou}
+      <p class="xp-folha-sub">Cada um pagou a sua parte: a despesa fica registada e ninguém fica a dever nada.</p>
+      <div class="xp-folha-act">
+        <span class="xp-folha-sub">Quem entra nesta despesa</span>
+        <span>
+          <button type="button" class="xp-link sm" id="x-part-all">Todos</button>
+          <button type="button" class="xp-link sm" id="x-part-none">Nenhum</button>
+        </span>
+      </div>
+      <div class="xp-people">
+        ${members.map(m => pessoa(m, { on: state.participants.has(m.id), attr: `data-part="${m.id}"` })).join("")}
+      </div>` : `
       ${aviso(okPaid || state.totalCents === 0, `${fmtMoney(paidSum, cur)} de ${fmtMoney(state.totalCents, cur)} atribuídos`)}
+      ${segPagou}
       <p class="xp-folha-sub">Toca em quem pôs o dinheiro. Podem ser várias pessoas.</p>
       <div class="xp-people">
         ${members.map(m => pessoa(m, {
@@ -2960,7 +3020,15 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     slot.querySelector("#x-dist-payers")?.addEventListener("click", () => { distributePayersEqually(); draw(); });
 
     slot.querySelectorAll("[data-mode]").forEach(b => {
-      b.onclick = () => { state.mode = b.dataset.mode; draw(); };
+      b.onclick = () => { state.mode = b.dataset.mode; state.divMode = state.mode; draw(); };
+    });
+    // ligar/desligar «cada um pagou o seu»: os pagadores e o modo de divisão
+    // ficam guardados e voltam tal como estavam ao desligar
+    slot.querySelectorAll("[data-own]").forEach(b => {
+      b.onclick = () => {
+        state.mode = b.dataset.own === "1" ? "own" : state.divMode;
+        draw();
+      };
     });
     slot.querySelectorAll("[data-part]").forEach(b => {
       b.onclick = () => {
@@ -4246,7 +4314,8 @@ function gerarRelatorioGrupo(ctx) {
       // categoria(s) numa coluna à parte: ícone(s) da(s) parte(s) da despesa
       // (uma fatura repartida por categorias mostra vários)
       const cats = expenseCatSplits(x).filter(s => s.cat !== "none").map(s => catOf(s.cat).icon).join(" ");
-      const quem = x.expense_payers.map(p => memberName(p.member_id)).join(", ") || "—";
+      const nomes = x.expense_payers.map(p => memberName(p.member_id)).join(", ");
+      const quem = x.split_mode === "own" ? `Cada um o seu (${nomes})` : (nomes || "—");
       return `<tr style="background:${zebra(i)}">
         <td style="${td}color:#66788a;white-space:nowrap;">${shortDate(x.expense_date)}</td>
         <td style="${td}font-weight:600;">${esc(x.description || "—")}</td>
@@ -4300,7 +4369,9 @@ function gerarRelatorioGrupo(ctx) {
 // partes dos restantes mantêm a proporção relativa — por isso uma divisão em
 // partes iguais continua igual (todos, incluindo o novo, ficam com a mesma
 // fatia) e uma divisão por proporção/exata mantém-se proporcional. Não mexe
-// em despesas onde o membro já participe, nem em despesas sem valor.
+// em despesas onde o membro já participe, nem em despesas sem valor, nem nas
+// de «cada um pagou o seu» — aí entra quem lá esteve, e meter o novo membro
+// só nas quotas deixava-o a dever o que não gastou.
 // Devolve { expenses, recurring, error } com o que foi alterado.
 async function inheritExistingExpenses(newMemberId, ctx) {
   const { expenses = [], recurring = [] } = ctx;
@@ -4321,6 +4392,7 @@ async function inheritExistingExpenses(newMemberId, ctx) {
   };
 
   for (const x of expenses) {
+    if (x.split_mode === "own") continue;
     const rows = rebuild(x.expense_shares || [], x.amount);
     if (!rows) continue;
     const del = await sb.from("expense_shares").delete().eq("expense_id", x.id);
@@ -4333,6 +4405,7 @@ async function inheritExistingExpenses(newMemberId, ctx) {
 
   // moldes recorrentes: as próximas ocorrências passam a incluir o membro
   for (const r of recurring) {
+    if (r.split_mode === "own") continue;
     const rows = rebuild(r.recurring_expense_shares || [], r.amount);
     if (!rows) continue;
     const del = await sb.from("recurring_expense_shares").delete().eq("recurring_id", r.id);
@@ -4848,6 +4921,9 @@ function renderRecurringSection($c, ctx) {
   function draw() {
     const rows = (recurring || []).map(r => {
       const payers = (r.recurring_expense_payers || []).map(p => shortName(memberName(p.member_id))).join(", ");
+      const quem = r.split_mode === "own"
+        ? `cada um pagou o seu (${esc(payers)})`
+        : `pago por ${esc(payers || "?")} · ${modeTxt(r.split_mode)}`;
       const next = nextRecurringDate(r);
       const sub = r.active
         ? (next ? `próxima: ${fmtDate(next.toISOString().slice(0, 10))}` : "sem próximas ocorrências")
@@ -4857,7 +4933,7 @@ function renderRecurringSection($c, ctx) {
           ${catIconHtml(r.category)}
           <div class="item-main">
             <span class="item-title">${esc(r.description)}${r.active ? "" : ' <span class="badge">pausada</span>'}</span>
-            <span class="item-sub">pago por ${esc(payers || "?")} · ${modeTxt(r.split_mode)} · ${esc(sub)}</span>
+            <span class="item-sub">${quem} · ${esc(sub)}</span>
           </div>
           <div class="item-end"><span class="amount">${fmtMoney(toCents(r.amount), cur)}</span></div>
           <span class="chevron">›</span>
