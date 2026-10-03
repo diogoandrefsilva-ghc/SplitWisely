@@ -1879,6 +1879,8 @@ p.hint { margin: .5rem 0 0; font-size: .78rem; color: var(--muted); line-height:
 .xp-folha-sub { margin: 0 0 .8rem; font-size: .85rem; color: var(--muted); line-height: 1.4; }
 .xp-folha-act { display: flex; align-items: baseline; justify-content: space-between; gap: .6rem; margin: 1.1rem 0 .1rem; }
 .xp-folha-act .xp-folha-sub { margin: 0; }
+/* «Alguém pagou | Cada um o seu» no topo de «Quem pagou»: afasta a legenda */
+.xp-folha-b > .xp-seg + .xp-folha-sub { margin-top: 1rem; }
 .xp-folha-act > span { display: flex; gap: .9rem; flex: none; }
 .xp-folha-b > .xp-link { margin-top: .6rem; }
 .xp-aviso { margin: .1rem 0 .8rem; font-size: .85rem; font-weight: 600; color: var(--danger); }

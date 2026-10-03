@@ -285,9 +285,11 @@ $$;
 
 -- ---------- DESPESAS ----------
 -- split_mode -> como a despesa foi dividida ('equal' partes iguais,
--- 'weights' proporção por pesos, 'exact' valores exatos). Serve para a
--- app reabrir a despesa no modo em que foi criada; os valores finais
--- por pessoa vivem sempre em expense_shares.
+-- 'weights' proporção por pesos, 'exact' valores exatos, 'own' cada um
+-- pagou o seu). Serve para a app reabrir a despesa no modo em que foi
+-- criada; os valores finais por pessoa vivem sempre em expense_shares.
+-- 'own' é só registo: quem entra fica como pagador E com quota do mesmo
+-- valor, e a app salta estas despesas no cálculo dos saldos.
 create table if not exists splitwisely.expenses (
   id uuid primary key default gen_random_uuid(),
   group_id uuid not null references splitwisely.groups (id) on delete cascade,
@@ -295,7 +297,7 @@ create table if not exists splitwisely.expenses (
   amount numeric(12,2) not null check (amount > 0),
   expense_date date not null default current_date,
   split_mode text not null default 'exact'
-    check (split_mode in ('equal', 'weights', 'exact')),
+    check (split_mode in ('equal', 'weights', 'exact', 'own')),
   created_by uuid references auth.users (id) default auth.uid(),
   created_at timestamptz not null default now()
 );
@@ -303,7 +305,23 @@ create table if not exists splitwisely.expenses (
 -- migração para instalações antigas (re-executar este ficheiro é seguro)
 alter table splitwisely.expenses
   add column if not exists split_mode text not null default 'exact'
-    check (split_mode in ('equal', 'weights', 'exact'));
+    check (split_mode in ('equal', 'weights', 'exact', 'own'));
+
+-- 'own' entrou depois: nas instalações antigas o check ainda não o deixa
+-- passar. Troca-se qualquer check sobre split_mode (seja qual for o nome
+-- que o Postgres lhe deu) pelo atual — idempotente.
+do $$
+declare c record;
+begin
+  for c in select conname from pg_constraint
+            where conrelid = 'splitwisely.expenses'::regclass and contype = 'c'
+              and pg_get_constraintdef(oid) ilike '%split_mode%'
+  loop
+    execute format('alter table splitwisely.expenses drop constraint %I', c.conname);
+  end loop;
+end $$;
+alter table splitwisely.expenses add constraint expenses_split_mode_check
+  check (split_mode in ('equal', 'weights', 'exact', 'own'));
 
 -- category -> categoria da despesa (talho, mercearia, restaurante, …).
 -- A lista de categorias (e o ícone de cada uma) vive na app (CATEGORIES,
@@ -823,7 +841,7 @@ create table if not exists splitwisely.recurring_expenses (
   amount numeric(12,2) not null check (amount > 0),
   category text,
   split_mode text not null default 'exact'
-    check (split_mode in ('equal', 'weights', 'exact')),
+    check (split_mode in ('equal', 'weights', 'exact', 'own')),
   day_of_month int not null check (day_of_month between 1 and 31),
   start_date date not null default current_date,
   end_date date,
@@ -846,6 +864,21 @@ create table if not exists splitwisely.recurring_expense_shares (
   amount numeric(12,2) not null check (amount >= 0),
   primary key (recurring_id, member_id)
 );
+
+-- o mesmo acerto do check de split_mode que nas despesas, para os moldes
+-- poderem ser de «cada um pagou o seu» ('own') — idempotente
+do $$
+declare c record;
+begin
+  for c in select conname from pg_constraint
+            where conrelid = 'splitwisely.recurring_expenses'::regclass and contype = 'c'
+              and pg_get_constraintdef(oid) ilike '%split_mode%'
+  loop
+    execute format('alter table splitwisely.recurring_expenses drop constraint %I', c.conname);
+  end loop;
+end $$;
+alter table splitwisely.recurring_expenses add constraint recurring_expenses_split_mode_check
+  check (split_mode in ('equal', 'weights', 'exact', 'own'));
 
 -- Liga a despesa gerada ao molde e ao mês (período) que representa.
 alter table splitwisely.expenses
