@@ -999,6 +999,7 @@ input.saved {
 .my-impact { font-size: .74rem; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .my-impact.positive { color: var(--positive); }
 .my-impact.negative { color: var(--negative); }
+.my-impact.neutral { color: var(--muted); } /* «cada um pagou o seu»: a parte do próprio, sem sinal */
 
 /* ================================================================ tabs */
 .tabs {

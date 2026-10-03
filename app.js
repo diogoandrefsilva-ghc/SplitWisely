@@ -1648,11 +1648,16 @@ function renderExpensesTab($c, ctx) {
 
   // efeito líquido da despesa no utilizador: o que pagou menos a sua parte
   const myImpact = (x) => {
-    if (!myMember || x.split_mode === "own") return ""; // só registo, não mexe no saldo
-    const paid = x.expense_payers.filter(p => p.member_id === myMember.id)
-      .reduce((a, p) => a + toCents(p.amount), 0);
+    if (!myMember) return "";
     const share = x.expense_shares.filter(s => s.member_id === myMember.id)
       .reduce((a, s) => a + toCents(s.amount), 0);
+    // «cada um pagou o seu» não mexe no saldo: mostra-se só o que coube ao
+    // próprio, a cinzento e sem sinal — é o que gastou, não o que deve
+    if (x.split_mode === "own") return share > 0
+      ? `<span class="my-impact neutral" title="A tua parte (só registo, não mexe no saldo)">${fmtMoney(share, cur)}</span>`
+      : "";
+    const paid = x.expense_payers.filter(p => p.member_id === myMember.id)
+      .reduce((a, p) => a + toCents(p.amount), 0);
     const net = paid - share;
     if (net === 0 && paid === 0) return "";
     return `<span class="my-impact ${net >= 0 ? "positive" : "negative"}">
