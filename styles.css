@@ -1472,6 +1472,48 @@ table.split-table input[type="checkbox"] { width: 1.1rem; }
 /* nota de ajuda por baixo de um botão (ex.: contas por saldar) */
 p.hint { margin: .5rem 0 0; font-size: .78rem; color: var(--muted); line-height: 1.4; }
 
+/* ================================================================ link público */
+/* vista por link: aviso de «só consulta» com a validade, por baixo do título */
+.public-note {
+  display: flex;
+  align-items: flex-start;
+  gap: .45rem;
+  margin: .5rem 0 0;
+  padding: .55rem .75rem;
+  border: 1px solid var(--gold-border);
+  background: var(--gold-bg);
+  color: var(--gold-text);
+  border-radius: var(--radius-s);
+  font-size: .82rem;
+  line-height: 1.4;
+}
+.public-note strong { font-weight: 650; }
+/* «Quem és tu?» — só destaca o saldo de quem escolhe, não abre nada */
+.public-me {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  margin: .6rem 0 0;
+}
+.public-me label { flex: none; margin: 0; }
+.public-me select { flex: 1 1 auto; max-width: 280px; }
+/* link inválido, expirado ou sem rede */
+.public-dead { max-width: 460px; margin: 2rem auto; text-align: center; }
+.public-dead-ico { font-size: 2.2rem; }
+.public-dead h1 { margin: .3rem 0 .5rem; }
+
+/* cartão do criador, nas Definições do grupo */
+.share-url { display: flex; gap: .45rem; align-items: center; margin: .3rem 0 .35rem; }
+.share-url input { flex: 1 1 auto; color: var(--text); }
+.share-url.dead input { color: var(--muted); text-decoration: line-through; }
+.share-state { margin: 0 0 .7rem; font-size: .82rem; color: var(--muted); line-height: 1.4; }
+.share-state strong { color: var(--text); font-weight: 600; }
+.share-state.dead { color: var(--negative); }
+.share-state.dead strong { color: inherit; }
+.share-btn { margin: 0 0 .9rem; }
+.share-validity { margin-top: .2rem; }
+.share-actions { display: flex; gap: .5rem; flex-wrap: wrap; }
+
 /* ================================================================ saldos / acertos */
 .settle-line {
   display: flex;

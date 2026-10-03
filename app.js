@@ -972,6 +972,24 @@ function hideSplash() { document.getElementById("splash")?.classList.add("splash
 async function route() {
   closeModal();
   try {
+    // link público de consulta (#/p/<token>): abre com ou sem sessão — quem
+    // o recebe não precisa de conta (ver renderPublicGroup)
+    const mPub = (location.hash || "").match(/^#\/p\/([\w-]+)(?:\/(\w+))?/);
+    if (mPub) {
+      groupSeen = { id: null, ts: null };
+      renderTopbar();
+      try {
+        await renderPublicGroup(mPub[1], mPub[2]);
+      } catch (err) {
+        console.error(err);
+        $app.innerHTML = `<div class="card public-dead">
+          <div class="public-dead-ico">📡</div>
+          <h1>Não deu para abrir o link</h1>
+          <p class="muted">${esc(err.message || err)}</p>
+          <button class="secondary" onclick="location.reload()">Tentar novamente</button></div>`;
+      }
+      return;
+    }
     if (!session) { renderLogin(); return; }
     renderTopbar();
     if (!profile) await initProfile();
@@ -1406,6 +1424,21 @@ async function renderGroups() {
 }
 
 // ---------------------------------------------------------------- vista: grupo
+// Saldo de «quem está a ver», no canto do cabeçalho do grupo (vazio quando
+// não é membro — ex.: criador que não participa, ou link público sem nome
+// escolhido).
+function headBalanceHtml(myMember, { group, members, expenses, payments }) {
+  if (!myMember) return "";
+  const myBal = groupBalancesCents(members, expenses, payments).get(myMember.id) ?? 0;
+  return `
+        <div class="head-balance">
+          <span class="head-balance-label">O teu saldo</span>
+          <span class="chip ${myBal > 0 ? "positive" : myBal < 0 ? "negative" : "zero"}">
+            ${myBal === 0 ? "✓ em dia" : (myBal > 0 ? "+" : "−") + fmtMoney(Math.abs(myBal), group.currency)}
+          </span>
+        </div>`;
+}
+
 async function renderGroup(groupId, tab) {
   if (tab === "membros") tab = "definicoes"; // aba antiga: os membros vivem agora nas definições
 
@@ -1432,14 +1465,7 @@ async function renderGroup(groupId, tab) {
 
   // o saldo atual do utilizador vive aqui, alinhado com o título do grupo
   const myMember = members.find(m => m.user_id === session.user.id);
-  const myBal = myMember ? (groupBalancesCents(members, expenses, payments).get(myMember.id) ?? 0) : null;
-  const headBalance = myBal === null ? "" : `
-        <div class="head-balance">
-          <span class="head-balance-label">O teu saldo</span>
-          <span class="chip ${myBal > 0 ? "positive" : myBal < 0 ? "negative" : "zero"}">
-            ${myBal === 0 ? "✓ em dia" : (myBal > 0 ? "+" : "−") + fmtMoney(Math.abs(myBal), group.currency)}
-          </span>
-        </div>`;
+  const headBalance = headBalanceHtml(myMember, bundle);
 
   const tabs = [
     ["despesas", "Despesas"],
@@ -1489,11 +1515,132 @@ async function renderGroup(groupId, tab) {
   else renderSettingsTab($c, ctx);
 }
 
+// ---------------------------------------------------------------- vista: link público
+// Consulta de um grupo por link, sem login (#/p/<token>) — para quem não
+// quer criar conta (a malta de uma despedida de solteiro, por exemplo). O
+// criador gera o link nas Definições (renderShareLinkSection). Os dados vêm
+// todos da RPC public_group_view, que valida o token e a validade no
+// servidor e não devolve emails nem contas. A vista reaproveita os
+// separadores Despesas e Saldos (e a consulta da despesa) do grupo normal,
+// com um contexto só de leitura.
+let publicCache = { token: null, data: null };
+
+// «Quem és tu?» — escolha opcional de quem abre o link, só para a vista
+// destacar o seu saldo e a sua parte. Fica neste browser, por link, e não
+// abre nada a mais: os dados são os mesmos para toda a gente.
+function publicMeKey(token) { return `splitwisely_pub_me_${token}`; }
+function getPublicMe(token) {
+  try { return localStorage.getItem(publicMeKey(token)); } catch (_) { return null; }
+}
+function setPublicMe(token, memberId) {
+  try {
+    if (memberId) localStorage.setItem(publicMeKey(token), memberId);
+    else localStorage.removeItem(publicMeKey(token));
+  } catch (_) { /* modo privado: fica só para esta visita */ }
+}
+
+// "2026-10-10T17:32:00+00:00" -> "10 out 2026, 18:32" (hora local; como o
+// fmtDiaMes, o mês curto escreve-se à mão — o pt-PT dava "10/10/2026")
+function fmtDateTime(ts) {
+  const d = new Date(ts);
+  const mes = d.toLocaleDateString("pt-PT", { month: "short" }).replace(/\.$/, "");
+  const hora = d.toLocaleTimeString("pt-PT", { hour: "2-digit", minute: "2-digit" });
+  return `${d.getDate()} ${mes} ${d.getFullYear()}, ${hora}`;
+}
+
+async function renderPublicGroup(token, tab) {
+  if (tab !== "saldos") tab = "despesas";
+
+  let bundle = publicCache.token === token ? publicCache.data : null;
+  if (!bundle) {
+    if (!$app.querySelector(`[data-public-shell="${token}"]`)) {
+      showSplash();
+      $app.innerHTML = `<div class="loading">A carregar grupo…</div>`;
+    }
+    const { data, error } = await sb.rpc("public_group_view", { p_token: token });
+    // schema sem a função: para quem abre, é como um link que não existe
+    if (error && /public_group_view/i.test(error.message)) bundle = { status: "invalid" };
+    else if (error) throw error;
+    else bundle = data;
+    if (bundle?.status === "ok") publicCache = { token, data: bundle };
+  }
+
+  // sem sessão, a barra de topo fica só com um «Entrar» para quem tem conta
+  if (!session) {
+    $topbarUser.innerHTML = `<button class="secondary small" id="btn-pub-login">Entrar</button>`;
+    document.getElementById("btn-pub-login").onclick = () => { location.hash = "#/"; };
+  }
+
+  if (bundle?.status !== "ok") {
+    const expired = bundle?.status === "expired";
+    $app.innerHTML = `
+      <div class="card public-dead">
+        <div class="public-dead-ico">${expired ? "⌛" : "🔗"}</div>
+        <h1>${expired ? "Este link expirou" : "Link inválido"}</h1>
+        <p class="muted">${expired
+          ? `Deixou de valer a ${esc(fmtDateTime(bundle.expires_at))}.`
+          : "Este link não existe ou foi desligado por quem o criou."}
+          Pede um link novo a quem to enviou.</p>
+      </div>`;
+    return;
+  }
+
+  const { group, members, expenses, payments } = bundle;
+  const meId = getPublicMe(token);
+  const myMember = members.find(m => m.id === meId) || null;
+
+  $app.innerHTML = `
+    <div class="page-head" data-public-shell="${token}">
+      ${session ? `<a class="back-pill" href="#/"><span class="arr">←</span> Grupos</a>` : ""}
+      <div class="header-row">
+        <div class="title-line">
+          <h1>${esc(group.name)}</h1>
+          <span class="badge">${esc(group.currency)}</span>
+          ${group.archived ? `<span class="badge archived-badge" title="Grupo em histórico">📕 Histórico</span>` : ""}
+        </div>
+        ${headBalanceHtml(myMember, bundle)}
+      </div>
+      ${group.description ? `<p class="page-desc">${esc(group.description)}</p>` : ""}
+      <p class="public-note"><span aria-hidden="true">👁️</span>
+        <span>Link público, só de consulta — válido até <strong>${esc(fmtDateTime(bundle.expires_at))}</strong>.</span></p>
+      ${members.length ? `
+      <div class="public-me">
+        <label for="pub-me">Quem és tu?</label>
+        <select id="pub-me">
+          <option value="">Escolhe o teu nome</option>
+          ${members.map(m =>
+            `<option value="${m.id}" ${m.id === myMember?.id ? "selected" : ""}>${esc(m.name)}</option>`).join("")}
+        </select>
+      </div>` : ""}
+    </div>
+    <div class="tabs page-tabs">
+      ${[["despesas", "Despesas"], ["saldos", "Saldos"]].map(([id, label]) =>
+        `<button data-tab="${id}" class="${id === tab ? "active" : ""}">${label}</button>`).join("")}
+    </div>
+    <div id="tab-content"></div>`;
+
+  $app.querySelectorAll(".tabs button").forEach(b => {
+    b.onclick = () => { location.hash = `#/p/${token}/${b.dataset.tab}`; };
+  });
+  const $me = document.getElementById("pub-me");
+  if ($me) $me.onchange = () => { setPublicMe(token, $me.value); route(); };
+
+  // contexto só de leitura: sem escrita, sem carimbo de «visto», sem moldes
+  const ctx = {
+    group, members, expenses, payments, paymentsReady: true,
+    recurring: [], recurringReady: false,
+    isOwner: false, myMember, myRole: "read", canWrite: false,
+    archived: !!group.archived, lastSeen: null, publicView: true,
+  };
+  const $c = document.getElementById("tab-content");
+  if (tab === "saldos") renderBalancesTab($c, ctx);
+  else renderExpensesTab($c, ctx);
+}
+
 // ------------------------------------------------ tab: despesas
 function renderExpensesTab($c, ctx) {
-  const { group, members, expenses } = ctx;
+  const { group, members, expenses, myMember } = ctx;
   const memberName = id => members.find(m => m.id === id)?.name || "?";
-  const myMember = members.find(m => m.user_id === session.user.id);
   const cur = group.currency;
 
   // efeito líquido da despesa no utilizador: o que pagou menos a sua parte
@@ -1514,8 +1661,9 @@ function renderExpensesTab($c, ctx) {
   // a criação ganha. As alterações do próprio não se assinalam — a lista
   // serve para dar por aquilo que os OUTROS mexeram —, e sem carimbo
   // (primeira consulta, ou schema por atualizar) não se assinala nada, para
-  // a lista não acender de uma ponta à outra.
-  const uid = session.user.id;
+  // a lista não acender de uma ponta à outra. (No link público não há sessão
+  // nem carimbo: nunca se chega a comparar com o uid.)
+  const uid = session?.user.id;
   const freshOf = (x) => {
     if (!ctx.lastSeen) return "";
     if ((Date.parse(x.created_at) || 0) > ctx.lastSeen)
@@ -1554,7 +1702,9 @@ function renderExpensesTab($c, ctx) {
   // próprio; a lista noutro; a despesa nova/consulta abre em pop-up (FAB).
   $c.innerHTML = `
     ${members.length === 0
-      ? `<div class="card"><p class="empty">Adiciona primeiro membros no separador «Definições».</p></div>` : ""}
+      ? `<div class="card"><p class="empty">${ctx.publicView
+          ? "Este grupo ainda não tem membros."
+          : "Adiciona primeiro membros no separador «Definições»."}</p></div>` : ""}
     ${expenses.length === 0 ? "" : `
     <div class="card" id="expense-filters">
       <div class="filter-bar">
@@ -1751,7 +1901,7 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
   // permissão de escrita nesta despesa (espelha a RLS do servidor):
   //  'write_all' edita qualquer uma; 'write_own' só as que criou; 'read'
   //  nenhuma. Sem permissão, o formulário abre em modo consulta (inerte).
-  const myUid = session.user.id;
+  const myUid = session?.user.id; // sem sessão (link público) o myRole é 'read'
   const canEdit = !ctx.group.archived
     && (ctx.myRole === "write_all"
         || (ctx.myRole === "write_own" && (!existing || existing.created_by === myUid)));
@@ -1763,7 +1913,7 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
   const exShares = existing ? (isRecurringRecord ? existing.recurring_expense_shares : existing.expense_shares) : [];
 
   // estado inicial: quem insere a despesa é o pagador pré-selecionado
-  const myMember = members.find(m => m.user_id === session.user.id);
+  const { myMember } = ctx;
   const initPayers = existing
     ? exPayers.map(p => p.member_id)
     : [myMember ? myMember.id : members[0].id];
@@ -2630,7 +2780,9 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     // ------------------------------------------------- avisos de contexto
     const contexto = readOnly ? `
       <div class="xp-note gold">${ico("eye")}
-        <span>${ctx.myRole === "read"
+        <span>${ctx.publicView
+          ? "Estás a ver por um link público — só consulta."
+          : ctx.myRole === "read"
           ? "Tens acesso de leitura a este grupo — podes consultar mas não alterar."
           : "Só podes editar as despesas que criaste. Esta é de outra pessoa."}</span>
       </div>` : isRecurringRecord ? `
@@ -3535,7 +3687,7 @@ function renderBalancesTab($c, ctx) {
   };
 
   const totalPaid = payments.reduce((a, p) => a + toCents(p.amount), 0);
-  const myMember = members.find(m => m.user_id === session.user.id);
+  const { myMember } = ctx;
 
   // intervalo de datas do resumo: recorta o total, as quotas e o gráfico.
   // Os saldos e os acertos ficam sempre sobre tudo — dívida é dívida.
@@ -4735,6 +4887,138 @@ function renderRecurringSection($c, ctx) {
   draw();
 }
 
+// ------------------------------------------------ link público (só o criador)
+// Um link de consulta do grupo, sem login, com validade — ver
+// group_share_links no schema.sql e renderPublicGroup. Um link por grupo:
+// mudar a validade mantém o endereço (quem já o tem continua a usá-lo);
+// desligar apaga-o, e o seguinte nasce com outro endereço.
+const SHARE_VALIDITY = [
+  ["1", "24 horas"], ["7", "7 dias"], ["30", "30 dias"], ["90", "3 meses"], ["date", "Até ao dia…"],
+];
+
+async function renderShareLinkSection($el, ctx) {
+  const { group } = ctx;
+  const head = `<h2>🔗 Link público</h2>
+    <p class="muted">Para quem não tem conta: quem abrir o link vê as despesas e os saldos
+      do grupo, sem login e sem poder alterar nada. Os emails não aparecem.</p>`;
+  $el.innerHTML = `<div class="card">${head}<p class="muted">A carregar…</p></div>`;
+
+  const { data, error } = await sb.from("group_share_links")
+    .select("token, expires_at").eq("group_id", group.id).maybeSingle();
+  if (error) {
+    console.warn("group_share_links:", error.message);
+    $el.innerHTML = `<div class="card">${head}<p class="hint">Indisponível — corre o
+      <code>supabase/schema.sql</code> mais recente no Supabase.</p></div>`;
+    return;
+  }
+  let link = data;
+  let busy = false;
+
+  // validade escolhida -> instante em que expira (null = escolha inválida).
+  // «Até ao dia…» vale até ao fim desse dia, na hora deste dispositivo.
+  const expiryOf = (choice, day) => {
+    if (choice !== "date") return new Date(Date.now() + Number(choice) * 86400000);
+    if (!day) return null;
+    const d = new Date(day + "T23:59:59");
+    return d > new Date() ? d : null;
+  };
+
+  const draw = () => {
+    const live = !!link && Date.parse(link.expires_at) > Date.now();
+    const url = link ? `${appBaseUrl()}#/p/${link.token}` : "";
+    const today = new Date().toISOString().slice(0, 10);
+    $el.innerHTML = `
+      <div class="card share-card">
+        ${head}
+        ${link ? `
+          <div class="share-url ${live ? "" : "dead"}">
+            <input id="sl-url" readonly value="${esc(url)}" aria-label="Link público" />
+            ${live ? `<button type="button" class="secondary small" id="sl-copy">Copiar</button>` : ""}
+          </div>
+          <p class="share-state ${live ? "" : "dead"}">${live
+            ? `Válido até <strong>${esc(fmtDateTime(link.expires_at))}</strong>.`
+            : `Expirou a <strong>${esc(fmtDateTime(link.expires_at))}</strong> — quem o abre só vê um aviso.`}</p>
+          ${live && navigator.share ? `<button type="button" class="share-btn" id="sl-share">Partilhar link</button>` : ""}` : ""}
+        <div class="row share-validity">
+          <div class="field">
+            <label for="sl-valid">${!link ? "Validade" : live ? "Nova validade, a contar de agora" : "Reativar por"}</label>
+            <select id="sl-valid">${SHARE_VALIDITY.map(([v, l]) =>
+              `<option value="${v}" ${v === "30" ? "selected" : ""}>${l}</option>`).join("")}</select>
+          </div>
+          <div class="field hidden" id="sl-day-field">
+            <label for="sl-day">Dia</label>
+            <input type="date" id="sl-day" min="${today}" />
+          </div>
+        </div>
+        <div class="share-actions">
+          <button type="button" id="sl-save" ${live ? `class="secondary"` : ""}>${
+            !link ? "Criar link" : live ? "Mudar validade" : "Reativar link"}</button>
+          ${link ? `<button type="button" class="danger" id="sl-del">Desligar link</button>` : ""}
+        </div>
+      </div>`;
+
+    const $valid = $el.querySelector("#sl-valid");
+    const $dayField = $el.querySelector("#sl-day-field");
+    $valid.onchange = () => $dayField.classList.toggle("hidden", $valid.value !== "date");
+
+    const $url = $el.querySelector("#sl-url");
+    if ($url) $url.onfocus = () => $url.select();
+
+    $el.querySelector("#sl-copy")?.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(url);
+        toast("Link copiado 📋");
+      } catch (_) {
+        // sem acesso à área de transferência (http, browser antigo): fica
+        // selecionado para copiar à mão
+        $url.focus();
+        $url.select();
+        toast("Copia o link selecionado");
+      }
+    });
+    $el.querySelector("#sl-share")?.addEventListener("click", () => {
+      navigator.share({
+        title: group.name,
+        text: `Despesas e saldos do grupo «${group.name}» no SplitWisely (só consulta, sem login).`,
+        url,
+      }).catch(() => { /* partilha cancelada */ });
+    });
+
+    $el.querySelector("#sl-save").onclick = async () => {
+      if (busy) return;
+      const when = expiryOf($valid.value, $el.querySelector("#sl-day").value);
+      if (!when) return toast("Escolhe um dia a partir de hoje", true);
+      busy = true;
+      const expires_at = when.toISOString();
+      // o token nasce no servidor (trigger share_links_guard) e não muda
+      // quando se mexe na validade
+      const q = link
+        ? sb.from("group_share_links").update({ expires_at }).eq("group_id", group.id)
+        : sb.from("group_share_links").insert({ group_id: group.id, expires_at });
+      const { data: saved, error: err } = await q.select("token, expires_at").single();
+      busy = false;
+      if (err) return toast(err.message, true);
+      const created = !link;
+      link = saved;
+      draw();
+      toast(created ? "Link criado — copia-o e partilha 🔗" : "Validade atualizada");
+    };
+
+    $el.querySelector("#sl-del")?.addEventListener("click", async () => {
+      if (busy) return;
+      if (!confirm("Desligar o link? Quem o tiver deixa de conseguir abrir o grupo. Se criares outro, o endereço muda.")) return;
+      busy = true;
+      const { error: err } = await sb.from("group_share_links").delete().eq("group_id", group.id);
+      busy = false;
+      if (err) return toast(err.message, true);
+      link = null;
+      draw();
+      toast("Link desligado");
+    });
+  };
+  draw();
+}
+
 function renderSettingsTab($c, ctx) {
   const { group, isOwner } = ctx;
   const archived = !!group.archived;
@@ -4810,6 +5094,7 @@ function renderSettingsTab($c, ctx) {
       </form>
     </div>
     <div id="members-section"></div>
+    ${isOwner ? `<div id="share-link-section"></div>` : ""}
     <div id="recurring-section"></div>
     ${isOwner ? `
     <div class="card">
@@ -4835,6 +5120,9 @@ function renderSettingsTab($c, ctx) {
     $c.querySelector("#members-section"),
     { ...ctx, group: { ...ctx.group, use_weights: useWeights } });
   drawMembers(!!group.use_weights);
+
+  // link público de consulta — só o criador (vale também em histórico: é só leitura)
+  if (isOwner) renderShareLinkSection($c.querySelector("#share-link-section"), ctx);
 
   // despesas recorrentes — geríveis por qualquer membro, como as despesas
   renderRecurringSection($c.querySelector("#recurring-section"), ctx);
