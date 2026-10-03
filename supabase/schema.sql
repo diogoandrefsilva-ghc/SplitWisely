@@ -1279,6 +1279,30 @@ grant all on all sequences in schema splitwisely to service_role;
 alter default privileges in schema splitwisely grant all on tables    to service_role;
 alter default privileges in schema splitwisely grant all on sequences to service_role;
 
+-- ---------- SUGESTÕES DE PESSOAS (só admin) ----------
+-- Ao pôr emails nos membros de um grupo, a app sugere quem já conhece. Os
+-- profiles só têm quem já entrou na SplitWisely, mas o projeto é partilhado:
+-- auth.users tem as contas de todas as apps (Bet4Fun, FestasBV…), e é aí que
+-- está quase toda a gente. A Data API não expõe o schema auth, daí a função.
+-- SÓ PARA O ADMIN: para qualquer outra conta devolve vazio. O role
+-- authenticated é o mesmo em todas as apps do projeto — sem este filtro,
+-- quem entrasse em qualquer uma delas ficava a ler os emails de toda a gente.
+create or replace function splitwisely.admin_known_people()
+returns table (name text, email text)
+language sql stable security definer
+set search_path = splitwisely
+as $$
+  select coalesce(nullif(trim(u.raw_user_meta_data->>'full_name'), ''),
+                  nullif(trim(u.raw_user_meta_data->>'name'), ''),
+                  split_part(u.email, '@', 1))::text,
+         u.email::text
+  from auth.users u
+  where splitwisely.is_admin()
+    and u.email is not null and u.email <> '';
+$$;
+revoke all on function splitwisely.admin_known_people() from public, anon;
+grant execute on function splitwisely.admin_known_people() to authenticated;
+
 notify pgrst, 'reload schema';
 
 -- ============================================================

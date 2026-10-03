@@ -4197,8 +4197,10 @@ async function inheritExistingExpenses(newMemberId, ctx) {
 // ------------------------------------------------ sugestões de pessoas (membros)
 // Pessoas que já estão na base de dados, para as pôr num grupo sem voltar a
 // escrever o email. Vem só do que a RLS deixa ver: os membros com email dos
-// grupos a que tens acesso — e, para o admin, também as contas registadas
-// (profiles). Ninguém fica a conhecer emails de grupos que não são seus.
+// grupos a que tens acesso — e, para o admin, também as contas registadas:
+// as da SplitWisely (profiles) e as das outras apps do projeto partilhado
+// (RPC admin_known_people, que lê auth.users e só responde ao admin).
+// Ninguém fica a conhecer emails de grupos que não são seus.
 // Carrega-se à primeira vez que se foca um campo e serve a secção dos membros
 // enquanto estiver aberta — cada vez que se desenha, volta a ir buscar, para
 // apanhar quem entretanto foi adicionado (aqui ou noutro grupo).
@@ -4213,13 +4215,16 @@ function loadPeopleBook() {
   return peopleBook;
 }
 async function fetchPeopleBook() {
-  const [m, p] = await Promise.all([
+  const none = { data: [] };
+  const [m, p, a] = await Promise.all([
     fetchAllRows((from, to) =>
       sb.from("group_members").select("name, email, created_at")
         .not("email", "is", null).order("id").range(from, to)),
     profile?.is_admin
       ? sb.from("profiles").select("full_name, email").not("email", "is", null)
-      : { data: [] },
+      : none,
+    // schema antigo sem a RPC: o erro ignora-se e ficam só os profiles
+    profile?.is_admin ? sb.rpc("admin_known_people") : none,
   ]);
   if (m.error) throw m.error;
 
@@ -4238,10 +4243,14 @@ async function fetchPeopleBook() {
       if (r.created_at > cur.at) Object.assign(cur, { email, name: r.name, at: r.created_at });
     }
   }
-  for (const u of p.data || []) {
-    const key = u.email.trim().toLowerCase();
+  const accounts = [
+    ...(p.data || []).map(u => ({ name: u.full_name, email: u.email })),
+    ...(a.error ? [] : a.data || []),
+  ];
+  for (const u of accounts) {
+    const key = (u.email || "").trim().toLowerCase();
     if (key && !byKey.has(key)) {
-      byKey.set(key, { key, email: u.email.trim(), name: u.full_name || u.email.split("@")[0], groups: 0 });
+      byKey.set(key, { key, email: u.email.trim(), name: u.name || key.split("@")[0], groups: 0 });
     }
   }
   return [...byKey.values()]
