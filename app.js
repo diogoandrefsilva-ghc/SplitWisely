@@ -4363,43 +4363,109 @@ function renderBalancesTab($c, ctx) {
 
 // ------------------------------------------------ relatório do grupo (imprimível / PDF)
 // Abre uma janela sobreposta com o relatório num iframe e um botão para
-// imprimir / guardar como PDF (mesmo padrão do SplitBill).
+// imprimir / guardar como PDF (mesmo padrão do SplitBill). O aspeto segue o
+// da app (Azulejo): cobalto, cartões brancos sobre fundo claro, as mesmas
+// fontes e os mesmos quadrados coloridos das categorias.
 function abrirRelatorio(html, titulo) {
+  // o iframe é srcdoc: as fontes vão por URL absoluto, para não depender da
+  // base que o browser lhe atribui
+  const font = f => new URL(`fonts/${f}`, location.href).href;
+  const azulejo = getComputedStyle(document.documentElement).getPropertyValue("--azulejo").trim() || "none";
   const docHtml = `<!DOCTYPE html><html lang="pt"><head><meta charset="UTF-8"><title>${esc(titulo)}</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
+      @font-face { font-family: "Bricolage Grotesque"; font-weight: 500 800; font-display: swap;
+        src: url("${font("bricolage-grotesque.woff2")}") format("woff2"); }
+      @font-face { font-family: "Figtree"; font-weight: 400 800; font-display: swap;
+        src: url("${font("figtree.woff2")}") format("woff2"); }
       * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; box-sizing: border-box; }
-      @media print { body { margin: 0; } }
-      body { margin: 0; background: #fff; color: #14212b;
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
-      table { border-collapse: collapse; width: 100%; }
-      /* não partir uma linha entre páginas e repetir o cabeçalho da tabela
-         no topo de cada página quando ela se estende por várias */
-      tr { page-break-inside: avoid; break-inside: avoid; }
-      thead { display: table-header-group; }
-      /* manter o título colado à tabela e, nos quadros curtos, não deixar o
-         título/cabeçalho numa página e o conteúdo noutra. Num quadro maior
-         que uma página (ex.: Despesas) o browser ignora o "avoid" e parte-o
-         na mesma, mas o cabeçalho da tabela repete-se por causa do acima. */
-      h2.rpt-sec { font-size: 12px; font-weight: 800; color: #0b5f47;
-        text-transform: uppercase; letter-spacing: 1px; margin: 26px 0 8px;
+      @page { margin: 12mm; }
+      @media print { body { margin: 0; background: #fff !important; } .r-wrap { padding: 0 !important; } }
+      body { margin: 0; background: #f4f6fb; color: #0e1a3a;
+        font-family: "Figtree", system-ui, -apple-system, "Segoe UI", sans-serif; font-size: 13px; }
+      .r-wrap { max-width: 720px; margin: 0 auto; padding: 20px 16px 48px; }
+      .num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+      .pos { color: #2140c8; } .neg { color: #c2410c; } .muted { color: #5b6785; }
+
+      /* cabeçalho cobalto com o padrão de azulejo, como o da app */
+      .r-hero { position: relative; background: #2140c8; color: #fff; border-radius: 22px;
+        padding: 20px 20px 18px; overflow: hidden; }
+      .r-hero::before { content: ""; position: absolute; inset: 0; background: ${azulejo} 0 0 / 44px 44px; opacity: .55; }
+      .r-hero > * { position: relative; }
+      .r-brand { font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; opacity: .75; }
+      .r-name { font-family: "Bricolage Grotesque", "Figtree", sans-serif; font-size: 24px; font-weight: 700;
+        letter-spacing: -.02em; line-height: 1.15; margin-top: 4px; }
+      .r-desc { font-size: 13px; opacity: .88; margin-top: 3px; }
+      .r-total-label { font-size: 12px; font-weight: 600; opacity: .85; margin-top: 16px; }
+      .r-total { font-family: "Bricolage Grotesque", "Figtree", sans-serif; font-size: 38px; font-weight: 700;
+        letter-spacing: -.035em; line-height: 1.05; }
+      .r-stats { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 2fr); gap: 8px; margin-top: 14px; }
+      .r-stat { background: rgba(255,255,255,.14); border-radius: 14px; padding: 8px 11px; min-width: 0; }
+      .r-stat span { display: block; font-size: 11px; font-weight: 600; opacity: .85; }
+      .r-stat strong { display: block; font-size: 15px; font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+      h2.r-sec { font-size: 11px; font-weight: 700; color: #5b6785; text-transform: uppercase;
+        letter-spacing: .07em; margin: 24px 4px 8px; page-break-after: avoid; break-after: avoid; }
+      .r-card { background: #fff; border-radius: 18px; padding: 4px 14px;
+        box-shadow: 0 1px 2px rgba(14,26,58,.06), 0 8px 20px -12px rgba(14,26,58,.22); }
+      @media print { .r-card { box-shadow: none; border: 1px solid #dde2ee; } }
+      .r-block { page-break-inside: avoid; break-inside: avoid; }
+
+      /* linhas ao estilo das listas da app */
+      .r-row { display: flex; align-items: center; gap: 11px; padding: 9px 0;
+        page-break-inside: avoid; break-inside: avoid; }
+      .r-row + .r-row { border-top: 1px solid #e9ecf4; }
+      .r-main { flex: 1; min-width: 0; }
+      .r-title { font-weight: 650; font-size: 13.5px; line-height: 1.3; }
+      .r-sub { font-size: 11.5px; color: #5b6785; line-height: 1.35; margin-top: 1px; }
+      .r-sub b { color: #0e1a3a; font-weight: 650; }
+      .r-sub .nw { white-space: nowrap; }
+      .r-cats { font-size: 11px; color: #5b6785; margin-top: 1px; }
+      .r-end { flex: none; text-align: right; font-weight: 750; font-size: 13.5px; }
+      .r-end small { display: block; font-size: 11px; font-weight: 600; color: #5b6785; }
+      .r-day { display: flex; justify-content: space-between; gap: 8px; padding: 12px 0 4px;
+        font-size: 11px; font-weight: 700; color: #5b6785; text-transform: uppercase; letter-spacing: .05em;
         page-break-after: avoid; break-after: avoid; }
-      .rpt-block { page-break-inside: avoid; break-inside: avoid; }
+      .r-day + .r-row { border-top: none; }
+      .r-row + .r-day { border-top: 1px solid #e9ecf4; margin-top: 2px; }
+
+      .cat-ico { flex: none; width: 36px; height: 36px; display: inline-flex; align-items: center; justify-content: center;
+        background: var(--ct, #f3f5fa); border-radius: 11px; font-size: 18px; line-height: 1; position: relative; }
+      .cat-ico.none { opacity: .4; background: none; border: 1.5px dashed #dde2ee; filter: grayscale(1); }
+      .cat-multi-badge { position: absolute; right: -4px; bottom: -4px; background: #2140c8; color: #fff;
+        border-radius: 999px; font-size: 9px; line-height: 1; padding: 2px 4px; font-weight: 700; }
+      .ct-rose { --ct: #fbe9e4; } .ct-teal { --ct: #e3f3ef; } .ct-cobalt { --ct: #e8ecfb; }
+      .ct-violet { --ct: #f0eafb; } .ct-sand { --ct: #f8eedc; } .ct-sky { --ct: #e3f1f8; }
+      .ct-berry { --ct: #fbe7ee; } .ct-ochre { --ct: #fff1cc; } .ct-slate { --ct: #eceff5; }
+
+      .r-av { flex: none; width: 32px; height: 32px; border-radius: 50%; background: #e8ecfb; color: #2140c8;
+        display: inline-flex; align-items: center; justify-content: center; font-weight: 800; font-size: 13px; }
+      .r-chip { display: inline-block; border-radius: 999px; padding: 3px 10px; font-size: 12px; font-weight: 700; }
+      .r-chip.pos { background: rgba(33,64,200,.09); } .r-chip.neg { background: rgba(194,65,12,.09); }
+      .r-chip.zero { background: rgba(91,103,133,.10); color: #5b6785; }
+      .r-bar { height: 5px; border-radius: 99px; background: #e9ecf4; margin-top: 5px; overflow: hidden; }
+      .r-bar i { display: block; height: 100%; background: #2140c8; border-radius: 99px; }
+      .r-arrow { color: #5b6785; font-weight: 600; }
+      .r-foot { display: flex; justify-content: space-between; padding: 10px 0; border-top: 1px solid #dde2ee;
+        font-weight: 800; }
+      .r-ok { color: #2140c8; font-weight: 650; padding: 12px 0; }
+      .r-footer { text-align: center; font-size: 11px; color: #5b6785; margin-top: 28px; }
     </style>
   </head><body>${html}</body></html>`;
 
   document.getElementById("rptOverlay")?.remove();
   const ov = document.createElement("div");
   ov.id = "rptOverlay";
-  ov.style.cssText = "position:fixed;inset:0;z-index:99999;background:#3a4a44;display:flex;flex-direction:column";
+  ov.style.cssText = "position:fixed;inset:0;z-index:99999;background:#f4f6fb;display:flex;flex-direction:column";
   // barra de topo: «voltar» à esquerda, nome do ficheiro no meio (truncado) e
   // «guardar PDF» à direita — os botões nunca encolhem, o nome cede o espaço.
   ov.innerHTML = `
-    <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:#0b5f47;color:#fff;flex:0 0 auto">
-      <button id="rptClose" title="Voltar" style="flex:0 0 auto;background:rgba(255,255,255,.16);border:none;color:#fff;font-size:18px;line-height:1;padding:9px 14px;border-radius:8px;cursor:pointer">←</button>
-      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:700;font-size:13px">${esc(titulo)}</span>
-      <button id="rptPrint" style="flex:0 0 auto;background:#0f9d76;border:none;color:#fff;font-size:14px;padding:9px 14px;border-radius:8px;cursor:pointer;white-space:nowrap">🖨 Guardar PDF</button>
+    <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;padding-top:max(10px, env(safe-area-inset-top));background:#2140c8;color:#fff;flex:0 0 auto;font-family:var(--font-body)">
+      <button id="rptClose" title="Voltar" aria-label="Voltar" style="flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;width:40px;height:40px;background:rgba(255,255,255,.14);border:none;color:#fff;border-radius:50%;cursor:pointer;box-shadow:none;padding:0">${uiIco("back")}</button>
+      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;font-size:14px">${esc(titulo)}</span>
+      <button id="rptPrint" style="flex:0 0 auto;background:#f2b33d;border:none;color:#0e1a3a;font-weight:700;font-size:14px;padding:10px 16px;border-radius:999px;cursor:pointer;white-space:nowrap;box-shadow:none">Guardar PDF</button>
     </div>
-    <iframe id="rptFrame" style="flex:1 1 auto;border:0;width:100%;background:#fff"></iframe>`;
+    <iframe id="rptFrame" style="flex:1 1 auto;border:0;width:100%;background:#f4f6fb"></iframe>`;
   document.body.appendChild(ov);
 
   // Fechar também com o botão «voltar» do telemóvel / gesto de retroceder:
@@ -4417,12 +4483,64 @@ function abrirRelatorio(html, titulo) {
   };
 }
 
-// Constrói e mostra o relatório completo de um grupo: resumo, quota por
-// pessoa, saldos, acertos, total por categoria, despesas e pagamentos.
+// «Quem pagou» de uma despesa, resumido para o relatório (HTML já escapado).
+// - cada um pagou o seu: só a nota e, se as partes forem iguais (±1 cêntimo),
+//   quanto coube a cada um;
+// - um pagador: o nome;
+// - vários: até três, cada um com o seu valor; mais do que isso, os que
+//   pagaram valores diferentes e os «restantes» que pagaram todos o mesmo
+//   (ou, sem valor comum, os dois maiores e o total dos restantes).
+function quemPagouRelatorio(x, memberName, cur) {
+  const money = c => `<span class="num">${fmtMoney(c, cur)}</span>`;
+  const quase = (a, b) => Math.abs(a - b) <= 1;
+  const pessoas = n => `<span class="nw">${n} pessoa${n === 1 ? "" : "s"}</span>`;
+
+  if (x.split_mode === "own") {
+    const vals = x.expense_shares.map(s => toCents(s.amount));
+    const n = vals.length;
+    const iguais = n > 1 && vals.every(v => quase(v, vals[0]));
+    const cada = iguais ? ` · <span class="nw"><b>${money(Math.round(toCents(x.amount) / n))}</b> cada</span>` : "";
+    return `Cada um pagou a sua parte · ${pessoas(n)}${cada}`;
+  }
+
+  const divide = ` · ${pessoas(x.expense_shares.length)}`;
+  const payers = x.expense_payers
+    .map(p => ({ nome: esc(memberName(p.member_id)), c: toCents(p.amount) }))
+    .sort((a, b) => b.c - a.c);
+  if (payers.length === 0) return "—";
+  if (payers.length === 1) return `<b>${payers[0].nome}</b> pagou${divide}`;
+
+  const item = p => `<span class="nw"><b>${p.nome}</b> ${money(p.c)}</span>`;
+  if (payers.every(p => quase(p.c, payers[0].c))) {
+    const quem = payers.length <= 3
+      ? payers.map(p => `<b>${p.nome}</b>`).join(", ").replace(/, (?!.*, )/, " e ")
+      : `${payers.length} pessoas`;
+    return `${quem} pagaram ${money(payers[0].c)} cada${divide}`;
+  }
+  if (payers.length <= 3) return `${payers.map(item).join(" · ")}${divide}`;
+
+  // o valor que mais gente pagou (±1 cêntimo) fica como «restantes»
+  let comum = null;
+  for (const p of payers) {
+    const n = payers.filter(q => quase(q.c, p.c)).length;
+    if (n >= 2 && (!comum || n > comum.n)) comum = { c: p.c, n };
+  }
+  if (comum) {
+    const aParte = payers.filter(p => !quase(p.c, comum.c));
+    return `${aParte.map(item).join(" · ")} · <span class="nw"><b>Restantes (${comum.n})</b> ${money(comum.c)} cada</span>${divide}`;
+  }
+  const resto = payers.slice(2);
+  return `${payers.slice(0, 2).map(item).join(" · ")} · <span class="nw"><b>Restantes (${resto.length})</b> ${money(resto.reduce((a, p) => a + p.c, 0))}</span>${divide}`;
+}
+
+// Constrói e mostra o relatório completo de um grupo: resumo, despesas,
+// total por categoria, quota por pessoa, saldos, acertos e pagamentos.
 function gerarRelatorioGrupo(ctx) {
   const { group, members, expenses, payments } = ctx;
   const cur = group.currency;
   const memberName = id => members.find(m => m.id === id)?.name || "?";
+  const money = c => `<span class="num">${fmtMoney(c, cur)}</span>`;
+  const inicial = nome => esc((nome || "?").trim().charAt(0).toUpperCase());
 
   const total = expenses.reduce((a, x) => a + toCents(x.amount), 0);
   const balance = Object.fromEntries(groupBalancesCents(members, expenses, payments));
@@ -4448,167 +4566,142 @@ function gerarRelatorioGrupo(ctx) {
     byCat.set(s.cat, e);
   }
   const cats = [...byCat.entries()].sort((a, b) => b[1].cents - a[1].cents);
-
-  const zebra = i => (i % 2 === 0 ? "#fff" : "#f4f7f6");
-  const td = "padding:8px 12px;";
-  const th = (align = "left") => `padding:9px 12px;text-align:${align};`;
+  const byName = (a, b) => a.name.localeCompare(b.name, "pt", { sensitivity: "base" });
+  const pct = c => (total > 0 ? Math.round(c / total * 100) : 0);
 
   // ---- cabeçalho ----
-  const dataStr = new Date().toLocaleDateString("pt-PT", { day: "2-digit", month: "long", year: "numeric" });
+  const dataStr = new Date().toLocaleDateString("pt-PT", { day: "numeric", month: "long", year: "numeric" });
+  const datas = expenses.map(x => x.expense_date).sort();
+  const periodo = datas.length === 0 ? "—"
+    : datas[0] === datas[datas.length - 1] ? fmtDiaMes(datas[0])
+    : `${fmtDiaMes(datas[0])} – ${fmtDiaMes(datas[datas.length - 1])}`;
   const cabecalho = `
-    <div style="background:#0b5f47;color:#fff;padding:22px 26px;border-radius:12px;display:flex;justify-content:space-between;align-items:center;gap:16px;">
-      <div>
-        <div style="font-size:22px;font-weight:800;">${esc(group.name)}</div>
-        ${group.description ? `<div style="font-size:14px;opacity:.9;margin-top:4px;">${esc(group.description)}</div>` : ""}
-        <div style="font-size:12px;opacity:.6;margin-top:6px;">Relatório de ${dataStr}</div>
+    <header class="r-hero">
+      <div class="r-brand">SplitWisely · Relatório de ${esc(dataStr)}</div>
+      <div class="r-name">${esc(group.name)}</div>
+      ${group.description ? `<div class="r-desc">${esc(group.description)}</div>` : ""}
+      <div class="r-total-label">Total do grupo</div>
+      <div class="r-total num">${fmtMoney(total, cur)}</div>
+      <div class="r-stats">
+        <div class="r-stat"><span>Despesas</span><strong>${expenses.length}</strong></div>
+        <div class="r-stat"><span>Membros</span><strong>${members.length}</strong></div>
+        <div class="r-stat"><span>Período</span><strong>${esc(periodo)}</strong></div>
       </div>
-      <div style="text-align:right;flex:0 0 auto;">
-        <div style="font-size:11px;opacity:.6;">Total do grupo</div>
-        <div style="font-size:26px;font-weight:800;color:#37d39e;">${fmtMoney(total, cur)}</div>
-        <div style="font-size:11px;opacity:.6;margin-top:4px;">${expenses.length} despesa${expenses.length === 1 ? "" : "s"} · ${members.length} membro${members.length === 1 ? "" : "s"}</div>
-      </div>
-    </div>`;
+    </header>`;
 
-  // ---- quota por pessoa ---- (membros por ordem alfabética)
-  const byName = (a, b) => a.name.localeCompare(b.name, "pt", { sensitivity: "base" });
-  const quotaRows = [...members].sort(byName).map((m, i) => {
-    const pct = total > 0 ? Math.round(share[m.id] / total * 100) : 0;
-    return `<tr style="background:${zebra(i)}">
-      <td style="${td}font-weight:600;">${esc(m.name)}</td>
-      <td style="${td}text-align:right;">${fmtMoney(share[m.id] || 0, cur)}</td>
-      <td style="${td}text-align:center;color:#66788a;">${pct}%</td>
-      <td style="${td}text-align:right;color:#0d8f6c;font-weight:700;">${fmtMoney(paid[m.id] || 0, cur)}</td>
-    </tr>`;
+  // ---- despesas ---- agrupadas por dia, como na lista da app
+  const dayLabel = d => {
+    const dt = new Date(d + "T00:00:00");
+    const wd = dt.toLocaleDateString("pt-PT", { weekday: "long" }).slice(0, 3);
+    return `${wd}, ${fmtDiaMes(d)}${dt.getFullYear() !== new Date().getFullYear() ? ` ${dt.getFullYear()}` : ""}`;
+  };
+  const ordenadas = [...expenses]
+    .sort((a, b) => (a.expense_date < b.expense_date ? 1 : a.expense_date > b.expense_date ? -1 : 0));
+  const dayTotals = new Map();
+  for (const x of ordenadas) dayTotals.set(x.expense_date, (dayTotals.get(x.expense_date) || 0) + toCents(x.amount));
+  let lastDay = null;
+  const despRows = ordenadas.map(x => {
+    const head = x.expense_date !== lastDay
+      ? `<div class="r-day"><span>${esc(dayLabel(x.expense_date))}</span><span class="num">${fmtMoney(dayTotals.get(x.expense_date), cur)}</span></div>`
+      : "";
+    lastDay = x.expense_date;
+    const splits = expenseCatSplits(x).filter(s => s.cat !== "none");
+    const catLine = splits.length >= 2
+      ? `<div class="r-cats">${splits.map(s => `${catOf(s.cat).icon} ${money(s.cents)}`).join(" &nbsp; ")}</div>` : "";
+    return `${head}
+      <div class="r-row">
+        ${expenseCatIconHtml(x)}
+        <div class="r-main">
+          <div class="r-title">${esc(x.description || "—")}</div>
+          <div class="r-sub">${quemPagouRelatorio(x, memberName, cur)}</div>
+          ${catLine}
+        </div>
+        <div class="r-end num">${fmtMoney(toCents(x.amount), cur)}</div>
+      </div>`;
   }).join("");
-  const quotaSec = members.length === 0 ? "" : `
-    <h2 class="rpt-sec">👥 Quota por pessoa</h2>
-    <table style="border-radius:8px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.08);font-size:13px;">
-      <thead><tr style="background:#0f9d76;color:#fff;">
-        <th style="${th()}">Membro</th><th style="${th("right")}">Quota</th>
-        <th style="${th("center")}">% total</th><th style="${th("right")}">Adiantou</th>
-      </tr></thead>
-      <tbody>${quotaRows}</tbody>
-      <tfoot><tr style="background:#eef2f0;font-weight:800;">
-        <td style="${td}">Total</td>
-        <td style="${td}text-align:right;">${fmtMoney(total, cur)}</td>
-        <td></td>
-        <td style="${td}text-align:right;color:#0d8f6c;">${fmtMoney(total, cur)}</td>
-      </tr></tfoot>
-    </table>`;
-
-  // ---- saldos ---- (membros por ordem alfabética)
-  const balRows = [...members].sort(byName).map((m, i) => {
-    const b = balance[m.id];
-    const txt = b === 0 ? "✓ em dia" : (b > 0 ? "recebe " : "deve ") + fmtMoney(Math.abs(b), cur);
-    const cor = b > 0 ? "#0d8f6c" : b < 0 ? "#d43333" : "#66788a";
-    return `<tr style="background:${zebra(i)}">
-      <td style="${td}font-weight:600;">${esc(m.name)}</td>
-      <td style="${td}text-align:right;font-weight:700;color:${cor};">${txt}</td>
-    </tr>`;
-  }).join("");
-  const saldosSec = members.length === 0 ? "" : `
-    <h2 class="rpt-sec">⚖️ Saldos</h2>
-    <table style="border-radius:8px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.08);font-size:13px;">
-      <thead><tr style="background:#0f9d76;color:#fff;">
-        <th style="${th()}">Membro</th><th style="${th("right")}">Saldo</th>
-      </tr></thead>
-      <tbody>${balRows}</tbody>
-    </table>`;
-
-  // ---- como acertar contas ----
-  const acertosSec = `
-    <h2 class="rpt-sec">🤝 Como acertar contas</h2>
-    ${settlements.length === 0
-      ? `<p style="color:#0d8f6c;font-weight:600;font-size:13px;">Está tudo em dia 🎉</p>`
-      : `<table style="border-radius:8px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.08);font-size:13px;">
-          <thead><tr style="background:#0f9d76;color:#fff;">
-            <th style="${th()}">Quem paga</th><th style="${th()}">Recebe</th><th style="${th("right")}">Valor</th>
-          </tr></thead>
-          <tbody>${[...settlements].sort((a, b) => byName(a.from, b.from) || byName(a.to, b.to)).map((s, i) => `
-            <tr style="background:${zebra(i)}">
-              <td style="${td}font-weight:600;">${esc(s.from.name)}</td>
-              <td style="${td}">${esc(s.to.name)}</td>
-              <td style="${td}text-align:right;font-weight:700;color:#0f9d76;">${fmtMoney(s.cents, cur)}</td>
-            </tr>`).join("")}</tbody>
-        </table>`}`;
+  const despSec = expenses.length === 0 ? "" : `
+    <h2 class="r-sec">Despesas</h2>
+    <div class="r-card">${despRows}</div>`;
 
   // ---- total por categoria ----
   const catSec = cats.length === 0 ? "" : `
-    <h2 class="rpt-sec">🏷️ Total por categoria</h2>
-    <table style="border-radius:8px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.08);font-size:13px;">
-      <thead><tr style="background:#0b5f47;color:#fff;">
-        <th style="${th()}">Categoria</th>
-        <th style="${th("center")}">% total</th><th style="${th("right")}">Total</th>
-      </tr></thead>
-      <tbody>${cats.map(([id, e], i) => {
-        const c = catOf(id);
-        const label = c ? `${c.icon} ${c.label}` : "📦 Sem categoria";
-        const pct = total > 0 ? Math.round(e.cents / total * 100) : 0;
-        return `<tr style="background:${zebra(i)}">
-          <td style="${td}font-weight:600;">${esc(label)}</td>
-          <td style="${td}text-align:center;color:#66788a;">${pct}%</td>
-          <td style="${td}text-align:right;font-weight:700;color:#0f9d76;">${fmtMoney(e.cents, cur)}</td>
-        </tr>`;
-      }).join("")}</tbody>
-    </table>`;
+    <h2 class="r-sec">Por categoria</h2>
+    <div class="r-card">${cats.map(([id, e]) => {
+      const c = catOf(id);
+      return `<div class="r-row">
+        ${catIconHtml(id === "none" ? null : id)}
+        <div class="r-main">
+          <div class="r-title">${esc(c ? c.label : "Sem categoria")}</div>
+          <div class="r-bar"><i style="width:${pct(e.cents)}%"></i></div>
+        </div>
+        <div class="r-end num">${fmtMoney(e.cents, cur)}<small>${pct(e.cents)}%</small></div>
+      </div>`;
+    }).join("")}</div>`;
 
-  // ---- despesas ----
-  // data compacta (dia/mês abreviado, ex.: 18/jul) para ganhar espaço e
-  // reduzir as quebras de linha nas restantes colunas
-  const shortDate = d => {
-    const dt = new Date(d + "T00:00:00");
-    const mes = dt.toLocaleDateString("pt-PT", { month: "short" }).replace(".", "");
-    return `${dt.getDate()}/${mes}`;
-  };
-  const despRows = [...expenses]
-    .sort((a, b) => (a.expense_date < b.expense_date ? 1 : a.expense_date > b.expense_date ? -1 : 0))
-    .map((x, i) => {
-      // categoria(s) numa coluna à parte: ícone(s) da(s) parte(s) da despesa
-      // (uma fatura repartida por categorias mostra vários)
-      const cats = expenseCatSplits(x).filter(s => s.cat !== "none").map(s => catOf(s.cat).icon).join(" ");
-      const nomes = x.expense_payers.map(p => memberName(p.member_id)).join(", ");
-      const quem = x.split_mode === "own" ? `Cada um o seu (${nomes})` : (nomes || "—");
-      return `<tr style="background:${zebra(i)}">
-        <td style="${td}color:#66788a;white-space:nowrap;">${shortDate(x.expense_date)}</td>
-        <td style="${td}font-weight:600;">${esc(x.description || "—")}</td>
-        <td style="${td}text-align:center;white-space:nowrap;">${cats || `<span style="color:#c2c9cf;">—</span>`}</td>
-        <td style="${td}color:#4a534e;font-size:12px;">${esc(quem)}</td>
-        <td style="${td}text-align:right;font-weight:700;color:#0f9d76;">${fmtMoney(toCents(x.amount), cur)}</td>
-      </tr>`;
-    }).join("");
-  const despSec = expenses.length === 0 ? "" : `
-    <h2 class="rpt-sec">🧾 Despesas</h2>
-    <table style="border-radius:8px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.08);font-size:12.5px;">
-      <thead><tr style="background:#0b5f47;color:#fff;">
-        <th style="${th()}">Data</th><th style="${th()}">Descrição</th>
-        <th style="${th("center")}">Cat.</th><th style="${th()}">Quem pagou</th><th style="${th("right")}">Valor</th>
-      </tr></thead>
-      <tbody>${despRows}</tbody>
-    </table>`;
+  // ---- quota por pessoa ---- (membros por ordem alfabética)
+  const quotaSec = members.length === 0 ? "" : `
+    <h2 class="r-sec">Quota por pessoa</h2>
+    <div class="r-card">${[...members].sort(byName).map(m => `
+      <div class="r-row">
+        <span class="r-av">${inicial(m.name)}</span>
+        <div class="r-main">
+          <div class="r-title">${esc(m.name)}</div>
+          <div class="r-sub">Adiantou <b>${money(paid[m.id] || 0)}</b></div>
+        </div>
+        <div class="r-end num">${fmtMoney(share[m.id] || 0, cur)}<small>${pct(share[m.id] || 0)}% do total</small></div>
+      </div>`).join("")}
+      <div class="r-foot"><span>Total</span><span class="num">${fmtMoney(total, cur)}</span></div>
+    </div>`;
+
+  // ---- saldos ---- (membros por ordem alfabética)
+  const saldosSec = members.length === 0 ? "" : `
+    <h2 class="r-sec">Saldos</h2>
+    <div class="r-card">${[...members].sort(byName).map(m => {
+      const b = balance[m.id];
+      const chip = b === 0 ? `<span class="r-chip zero">em dia</span>`
+        : `<span class="r-chip ${b > 0 ? "pos" : "neg"} num">${b > 0 ? "recebe " : "deve "}${fmtMoney(Math.abs(b), cur)}</span>`;
+      return `<div class="r-row">
+        <span class="r-av">${inicial(m.name)}</span>
+        <div class="r-main"><div class="r-title">${esc(m.name)}</div></div>
+        ${chip}
+      </div>`;
+    }).join("")}</div>`;
+
+  // ---- como acertar contas ----
+  const acertosSec = `
+    <h2 class="r-sec">Como acertar contas</h2>
+    <div class="r-card">${settlements.length === 0
+      ? `<div class="r-ok">Está tudo em dia 🎉</div>`
+      : [...settlements].sort((a, b) => byName(a.from, b.from) || byName(a.to, b.to)).map(s => `
+        <div class="r-row">
+          <span class="r-av">${inicial(s.from.name)}</span>
+          <div class="r-main">
+            <div class="r-title">${esc(s.from.name)} <span class="r-arrow">→</span> ${esc(s.to.name)}</div>
+          </div>
+          <div class="r-end num neg">${fmtMoney(s.cents, cur)}</div>
+        </div>`).join("")}</div>`;
 
   // ---- pagamentos registados ----
   const pagSec = payments.length === 0 ? "" : `
-    <h2 class="rpt-sec">💸 Pagamentos registados</h2>
-    <table style="border-radius:8px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.08);font-size:13px;">
-      <thead><tr style="background:#0f9d76;color:#fff;">
-        <th style="${th()}">De</th><th style="${th()}">Para</th>
-        <th style="${th()}">Data</th><th style="${th("right")}">Valor</th>
-      </tr></thead>
-      <tbody>${[...payments]
-        .sort((a, b) => (a.payment_date < b.payment_date ? 1 : -1))
-        .map((p, i) => `<tr style="background:${zebra(i)}">
-          <td style="${td}font-weight:600;">${esc(memberName(p.from_member))}</td>
-          <td style="${td}">${esc(memberName(p.to_member))}</td>
-          <td style="${td}color:#66788a;">${fmtDate(p.payment_date)}${p.note ? ` · ${esc(p.note)}` : ""}</td>
-          <td style="${td}text-align:right;font-weight:700;color:#0f9d76;">${fmtMoney(toCents(p.amount), cur)}</td>
-        </tr>`).join("")}</tbody>
-    </table>`;
+    <h2 class="r-sec">Pagamentos registados</h2>
+    <div class="r-card">${[...payments]
+      .sort((a, b) => (a.payment_date < b.payment_date ? 1 : -1))
+      .map(p => `<div class="r-row">
+        <span class="r-av">${inicial(memberName(p.from_member))}</span>
+        <div class="r-main">
+          <div class="r-title">${esc(memberName(p.from_member))} <span class="r-arrow">→</span> ${esc(memberName(p.to_member))}</div>
+          <div class="r-sub">${fmtDate(p.payment_date)}${p.note ? ` · ${esc(p.note)}` : ""}</div>
+        </div>
+        <div class="r-end num pos">${fmtMoney(toCents(p.amount), cur)}</div>
+      </div>`).join("")}</div>`;
 
-  // cada quadro num bloco que o browser tenta manter na mesma página (título
-  // + tabela juntos); ver o CSS de impressão em abrirRelatorio()
-  const bloco = s => s ? `<section class="rpt-block">${s}</section>` : "";
-  const html = `<div style="max-width:720px;margin:0 auto;padding:28px 24px 48px;">
-    ${cabecalho}${bloco(despSec)}${bloco(catSec)}${bloco(quotaSec)}${bloco(saldosSec)}${bloco(acertosSec)}${bloco(pagSec)}
+  // cada quadro curto num bloco que o browser tenta manter na mesma página
+  // (título + cartão juntos); o das despesas pode ocupar várias páginas e
+  // parte-se entre linhas
+  const bloco = s => s ? `<section class="r-block">${s}</section>` : "";
+  const html = `<div class="r-wrap">
+    ${cabecalho}${despSec ? `<section>${despSec}</section>` : ""}${bloco(catSec)}${bloco(quotaSec)}${bloco(saldosSec)}${bloco(acertosSec)}${bloco(pagSec)}
+    <div class="r-footer">Gerado pela SplitWisely</div>
   </div>`;
 
   const nomeFicheiro = `relatorio_${(group.name || "grupo").toLowerCase().replace(/[^\wà-ÿ]+/gi, "_").replace(/^_+|_+$/g, "")}.pdf`;
