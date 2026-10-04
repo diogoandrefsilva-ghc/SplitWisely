@@ -4375,7 +4375,7 @@ function renderAiExpense(slot, opts) {
         <header class="xp-head ai-head">
           <div class="xp-head-bar">
             <button type="button" class="xp-icon-btn" id="ai-back" aria-label="${opts.onBack ? "Voltar ao formulário" : "Fechar"}">${uiIco(opts.onBack ? "back" : "x")}</button>
-            <span class="xp-head-title">${uiIco("sparkle")} O que a IA percebeu</span>
+            <span class="xp-head-title">O que a IA percebeu</span>
             <span class="xp-head-spacer"></span>
           </div>
           <div class="xv-amount">${plan.totalCents ? fmtMoney(plan.totalCents, cur) : "—"}</div>

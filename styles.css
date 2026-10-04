@@ -2992,9 +2992,8 @@ button.outline.ai-home-btn .ico { color: var(--gold-accent); }
 .xp-ai-btn .ico { width: 20px; height: 20px; }
 
 .ai-head { padding-bottom: 1.25rem; }
-.ai-head .xp-head-title .ico { width: 16px; height: 16px; vertical-align: -3px; color: var(--accent); }
 .ai-lead { margin: 0; text-align: center; font-size: .95rem; line-height: 1.45; opacity: .92; }
-.ai-lead .ico { width: 18px; height: 18px; vertical-align: -4px; color: var(--accent); }
+.ai-lead .ico { display: inline-block; width: 18px; height: 18px; vertical-align: -4px; color: var(--accent); }
 
 .ai-texto {
   min-height: 132px;
@@ -3052,7 +3051,7 @@ button.outline.ai-home-btn .ico { color: var(--gold-accent); }
 .ai-anexo-f > .ico { padding: 10px; color: var(--muted); }
 .ai-anexo-f span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .88rem; font-weight: 600; }
 .ai-nota { margin: .6rem 0 0; }
-.ai-nota .ico { width: 15px; height: 15px; vertical-align: -3px; }
+.ai-nota .ico { display: inline-block; width: 15px; height: 15px; vertical-align: -3px; }
 
 .ai-lendo { display: flex; flex-direction: column; align-items: center; gap: 1rem; padding-top: 3rem; text-align: center; }
 .ai-lendo .spinner { border-color: var(--primary-soft); border-top-color: var(--primary); }
