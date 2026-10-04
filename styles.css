@@ -1634,6 +1634,10 @@ table.split-table input[type="checkbox"] { width: 1.1rem; }
 }
 /* despesa sem categoria: etiqueta apagada, a pedir para ser preenchida */
 .cat-ico.none { opacity: .4; background: none; border: 1.5px dashed var(--border); filter: grayscale(1); }
+/* ícone de dois emojis (Bebidas 🍺🍷): mais pequenos e encavalitados, para
+   caberem no azulejo como os outros (ver catGlyph em app.js) */
+.cat-duo { display: inline-flex; align-items: center; font-size: .8em; line-height: 1; }
+.cat-duo > span + span { margin-left: -.3em; }
 
 /* fila de chips com scroll horizontal (picker no formulário e filtros) */
 .cat-row, .cat-strip {
