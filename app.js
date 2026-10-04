@@ -123,7 +123,7 @@ function renderExpenseView(slot, ctx, x) {
   const cats = expenseCatSplits(x).filter(c => c.cat !== "none");
   const catLine = cats.length >= 2
     ? `<ul class="xv-list">${cats.map(c => `
-        <li class="xv-li"><span class="xv-cat">${catOf(c.cat).icon}</span>
+        <li class="xv-li"><span class="xv-cat">${catGlyph(catOf(c.cat))}</span>
           <span class="xv-name">${esc(catOf(c.cat).label)}</span>
           <span class="xv-amt">${fmtMoney(c.cents, cur)}</span></li>`).join("")}</ul>`
     : "";
@@ -826,10 +826,11 @@ const CATEGORIES = [
   { id: "cafe",        label: "Café",        icon: "☕", tone: "sand" },
   { id: "restaurante", label: "Restaurante", icon: "🍽️", tone: "rose" },
   { id: "entradas",    label: "Entradas",    icon: "🧀", tone: "sand" },
-  { id: "bebidas",     label: "Bebidas",     icon: "🥤", tone: "berry" },
+  { id: "bebidas",     label: "Bebidas",     icon: "🍺🍷", tone: "berry", duo: true },
   { id: "sobremesas",  label: "Sobremesas",  icon: "🍰", tone: "berry" },
   { id: "teatro",      label: "Teatro",      icon: "🎭", tone: "violet" },
   { id: "cinema",      label: "Cinema",      icon: "🎬", tone: "violet" },
+  { id: "noite",       label: "Vida noturna", icon: "🪩", tone: "cobalt" },
   { id: "prendas",     label: "Prendas",     icon: "🎁", tone: "berry" },
   { id: "filhos",      label: "Filhos",      icon: "🧸", tone: "sky" },
   { id: "roupa",       label: "Roupa",       icon: "👕", tone: "violet" },
@@ -846,6 +847,14 @@ const CATEGORIES = [
 ];
 
 function catOf(id) { return CATEGORIES.find(c => c.id === id) || null; }
+
+// O emoji da categoria dentro de um azulejo. Um ícone de dois emojis
+// (duo, ex.: Bebidas 🍺🍷) vai mais pequeno e encavalitado (.cat-duo),
+// para caber no mesmo quadrado que os outros; em texto corrido usa-se
+// c.icon tal e qual.
+function catGlyph(c) {
+  return c.duo ? `<span class="cat-duo">${[...c.icon].map(g => `<span>${g}</span>`).join("")}</span>` : c.icon;
+}
 
 // ---- categorias que se aplicam a um grupo.
 // groups.categories (jsonb, nullable) guarda os ids das categorias
@@ -867,7 +876,7 @@ function groupCategories(group) {
 function catIconHtml(id, extra = "") {
   const c = catOf(id);
   if (!c) return `<span class="cat-ico none ${extra}" title="Sem categoria">🏷️</span>`;
-  return `<span class="cat-ico ct-${c.tone} ${extra}" title="${esc(c.label)}">${c.icon}</span>`;
+  return `<span class="cat-ico ct-${c.tone} ${extra}" title="${esc(c.label)}">${catGlyph(c)}</span>`;
 }
 
 // ---- fatura repartida por várias categorias.
@@ -891,7 +900,7 @@ function expenseCatIconHtml(x, extra = "") {
   if (splits.length < 2) return catIconHtml(x.category, extra);
   const prim = catOf(x.category) || catOf(splits[0].cat);
   const labels = splits.map(s => catOf(s.cat).label).join(" + ");
-  return `<span class="cat-ico multi ct-${prim.tone} ${extra}" title="${esc(labels)}">${prim.icon}<span class="cat-multi-badge">${splits.length}</span></span>`;
+  return `<span class="cat-ico multi ct-${prim.tone} ${extra}" title="${esc(labels)}">${catGlyph(prim)}<span class="cat-multi-badge">${splits.length}</span></span>`;
 }
 
 // ---- sugestão automática de categoria a partir da descrição.
@@ -912,6 +921,7 @@ const CAT_KEYWORDS = {
   sobremesas:  ["sobremesa", "sobremesas", "gelado", "gelados", "gelataria", "doce", "doces", "tarte", "tartes", "mousse", "pudim", "chocolate", "gomas", "bolachas"],
   teatro:      ["teatro", "peca", "espetaculo", "musical", "concerto", "opera"],
   cinema:      ["cinema", "filme", "filmes", "pipocas"],
+  noite:       ["noite", "noitada", "discoteca", "discotecas", "disco", "bar", "bares", "pub", "pubs", "club", "clube", "festa", "festas", "shot", "shots", "cocktail", "cocktails", "lounge", "karaoke", "danca", "rave", "bengaleiro"],
   prendas:     ["prenda", "prendas", "presente", "presentes", "oferta", "aniversario", "natal"],
   filhos:      ["filhos", "filho", "filha", "escola", "creche", "infantario", "atl", "explicacoes", "fraldas", "brinquedo", "brinquedos", "bebe", "natacao"],
   roupa:       ["roupa", "roupas", "sapatos", "tenis", "calcas", "camisa", "camisola", "vestido", "casaco", "zara", "primark", "decathlon"],
@@ -3357,7 +3367,7 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
       <div class="xp-cats">
         ${catList.map(c => `
           <button type="button" class="xp-cat ${catOn(c.id) ? "on" : ""}" data-cat="${c.id}">
-            <span class="xp-cat-ico ct-${c.tone}">${c.icon}</span>
+            <span class="xp-cat-ico ct-${c.tone}">${catGlyph(c)}</span>
             <span class="xp-cat-lb">${esc(c.label)}</span>
             ${state.catSplit && catOn(c.id) ? `<span class="xp-cat-v">${fmtMoney(state.catSplit[c.id] || 0, cur)}</span>` : ""}
           </button>`).join("")}
@@ -4123,7 +4133,7 @@ function renderImportForm(slot, ctx, onClose) {
       <div class="xp-cats">
         ${catsDoGrupo.map(c => `
           <button type="button" class="xp-cat ${m.cat === c.id ? "on" : ""}" data-pick="${c.id}">
-            <span class="xp-cat-ico ct-${c.tone}">${c.icon}</span>
+            <span class="xp-cat-ico ct-${c.tone}">${catGlyph(c)}</span>
             <span class="xp-cat-lb">${esc(c.label)}</span>
           </button>`).join("")}
       </div>
@@ -4887,6 +4897,8 @@ function abrirRelatorio(html, titulo) {
       .cat-ico { flex: none; width: 36px; height: 36px; display: inline-flex; align-items: center; justify-content: center;
         background: var(--ct, #f3f5fa); border-radius: 11px; font-size: 18px; line-height: 1; position: relative; }
       .cat-ico.none { opacity: .4; background: none; border: 1.5px dashed #dde2ee; filter: grayscale(1); }
+      .cat-duo { display: inline-flex; align-items: center; font-size: .8em; line-height: 1; }
+      .cat-duo > span + span { margin-left: -.3em; }
       .cat-multi-badge { position: absolute; right: -4px; bottom: -4px; background: #2140c8; color: #fff;
         border-radius: 999px; font-size: 9px; line-height: 1; padding: 2px 4px; font-weight: 700; }
       .ct-rose { --ct: #fbe9e4; } .ct-teal { --ct: #e3f3ef; } .ct-cobalt { --ct: #e8ecfb; }
