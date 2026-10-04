@@ -132,6 +132,8 @@ body {
   /* remove o double-tap zoom e o atraso de 300ms no toque */
   touch-action: manipulation;
   overscroll-behavior-y: none;
+  /* rede de segurança: nada pode alargar a página para o lado */
+  overflow-x: clip;
   -webkit-tap-highlight-color: transparent;
 }
 
@@ -2080,6 +2082,10 @@ button.soft:hover { filter: none; background: var(--chip-pos-bg); }
 @media (max-width: 520px) {
   main { padding: .7rem .7rem calc(1.4rem + env(safe-area-inset-bottom)); }
   .hero { margin: -.7rem -.7rem 1rem; padding-left: 1.1rem; padding-right: 1.1rem; }
+  /* a fila de categorias encosta às margens do ecrã: com a margem do main
+     mais estreita, o «sangrar» tem de encolher igual (senão a página fica
+     mais larga do que o ecrã e arrasta para o lado) */
+  .cat-strip.in-filters { margin: 0 -.7rem; padding-left: .7rem; padding-right: .7rem; }
   .card { padding: .8rem .8rem; }
   h1 { font-size: 1.2rem; }
   button, .btn { padding: .55rem .9rem; } /* alvos de toque maiores */
