@@ -2972,3 +2972,137 @@ button.soft:hover { filter: none; background: var(--chip-pos-bg); }
   .im-dial label { padding: .3rem .4rem .35rem; }
 }
 .im-mov.ign { border-left-color: var(--border); }
+
+/* ================================================== despesa com IA (✨) */
+/* página inicial: «Despesa com IA» ao lado de «Novo grupo»; no telemóvel
+   as duas ações descem para baixo do título em vez de o espremerem */
+.header-row:has(.header-actions) { flex-wrap: wrap; }
+.header-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+button.outline.ai-home-btn {
+  border-color: var(--gold-accent);
+  background: var(--gold-bg);
+  color: var(--gold-text);
+}
+button.outline.ai-home-btn:hover { background: var(--gold-bg-hover); }
+button.outline.ai-home-btn .ico { color: var(--gold-accent); }
+
+/* ✨ no cabeçalho do formulário da despesa nova */
+.xp-ai-btn { background: var(--accent); color: var(--accent-ink); }
+.xp-ai-btn:hover { background: var(--accent); filter: brightness(1.06); }
+.xp-ai-btn .ico { width: 20px; height: 20px; }
+
+.ai-head { padding-bottom: 1.25rem; }
+.ai-head .xp-head-title .ico { width: 16px; height: 16px; vertical-align: -3px; color: var(--accent); }
+.ai-lead { margin: 0; text-align: center; font-size: .95rem; line-height: 1.45; opacity: .92; }
+.ai-lead .ico { width: 18px; height: 18px; vertical-align: -4px; color: var(--accent); }
+
+.ai-texto {
+  min-height: 132px;
+  padding: .8rem .9rem;
+  border-radius: 16px;
+  font-weight: 500;
+  line-height: 1.45;
+  overflow: auto;
+  resize: none;
+}
+.ai-exemplos { display: flex; flex-direction: column; gap: .4rem; margin: .7rem 0 0; }
+.ai-ex {
+  white-space: normal;
+  text-align: left;
+  padding: .5rem .75rem;
+  border-radius: 12px;
+  background: var(--card-inner);
+  color: var(--muted);
+  font-size: .82rem;
+  font-weight: 500;
+  box-shadow: none;
+}
+.ai-ex::before { content: "“"; }
+.ai-ex::after { content: "”"; }
+.ai-ex:hover { filter: none; color: var(--text); }
+
+.ai-anexo { display: flex; flex-wrap: wrap; gap: .5rem; margin: 1rem 0 .4rem; }
+.ai-anexo-btn {
+  flex: 1 1 140px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: .4rem;
+  min-height: 44px;
+  border-radius: 12px;
+  border: 1.5px dashed var(--border);
+  color: var(--primary-ink);
+  font-size: .88rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+.ai-anexo-btn:hover { background: var(--primary-soft); }
+.ai-anexo-btn .ico { width: 18px; height: 18px; }
+.ai-anexo-f {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: .65rem;
+  padding: .45rem .6rem;
+  border-radius: 12px;
+  background: var(--card-inner);
+  min-width: 0;
+}
+.ai-anexo-f img, .ai-anexo-f > .ico { width: 44px; height: 44px; object-fit: cover; border-radius: 8px; flex: none; }
+.ai-anexo-f > .ico { padding: 10px; color: var(--muted); }
+.ai-anexo-f span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .88rem; font-weight: 600; }
+.ai-nota { margin: .6rem 0 0; }
+.ai-nota .ico { width: 15px; height: 15px; vertical-align: -3px; }
+
+.ai-lendo { display: flex; flex-direction: column; align-items: center; gap: 1rem; padding-top: 3rem; text-align: center; }
+.ai-lendo .spinner { border-color: var(--primary-soft); border-top-color: var(--primary); }
+
+/* resumo: o que a IA percebeu */
+.ai-avisos {
+  list-style: none;
+  margin: 0 0 .8rem;
+  padding: .65rem .8rem;
+  border-radius: 12px;
+  border: 1px solid var(--gold-border);
+  background: var(--gold-bg);
+  color: var(--gold-text);
+  font-size: .86rem;
+  line-height: 1.4;
+}
+.ai-avisos li + li { margin-top: .3rem; }
+.ai-avisos li::before { content: "⚠︎ "; }
+
+.ai-grupo {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .8rem;
+  margin: 0 0 1rem;
+  padding: .7rem .85rem;
+  border-radius: 14px;
+  background: var(--card-inner);
+}
+.ai-grupo.novo { display: block; }
+.ai-grupo-l { display: flex; flex-direction: column; min-width: 0; }
+.ai-grupo-l strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-grupo .field { display: flex; flex-direction: column; gap: .25rem; margin: 0; }
+.ai-grupo #ai-grupo-nome { background: var(--card); }
+.ai-grupo-sub { margin: .7rem 0 .3rem; }
+.ai-pessoas { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .35rem; }
+.ai-pessoas li { display: flex; align-items: center; gap: .6rem; }
+.ai-p-nome { flex: 1; font-weight: 600; }
+.ai-p-input { flex: 1; height: 38px !important; background: var(--card); }
+.ai-p-mail { color: var(--primary-ink); display: inline-flex; }
+.ai-p-mail .ico { width: 18px; height: 18px; }
+
+.ai-corrigir { margin: 1.4rem 0 .4rem; padding-top: .9rem; border-top: 1px solid var(--xp-line); }
+.ai-corrigir .xv-h { display: block; margin: 0 0 .45rem; }
+.ai-corr-row { display: flex; gap: .5rem; }
+.ai-corr-row input { flex: 1; font-weight: 500; }
+.ai-corr-row button { flex: none; height: 42px; }
+.ai-corrigir .link-btn { margin-top: .7rem; display: inline-flex; align-items: center; gap: .3rem; }
+.ai-corrigir .link-btn .ico { width: 15px; height: 15px; }
+
+.ai-foot { display: flex; gap: .6rem; }
+.ai-foot .secondary { flex: none; height: 58px; padding: 0 1.1rem; border-radius: 18px; display: inline-flex; align-items: center; gap: .35rem; }
+.ai-foot .xp-cta { flex: 1; width: auto; }

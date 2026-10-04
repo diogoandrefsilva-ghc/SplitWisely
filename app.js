@@ -84,7 +84,15 @@ function openRecurringModal(ctx, rec) {
 function openExpenseModal(ctx, x) {
   // despesa nova vai direta ao formulário; uma já lançada abre primeiro em
   // consulta (quem pagou e como se divide), e só o «Editar» leva ao formulário
-  if (!x) return renderExpenseForm(openModal(), ctx, null, closeModal, { backLabel: "Fechar" });
+  if (!x) {
+    const slot = openModal();
+    const form = () => renderExpenseForm(slot, ctx, null, closeModal, {
+      backLabel: "Fechar",
+      // ✨ no cabeçalho: descrever a despesa por palavras (ou foto) e a IA preenche
+      onAi: () => renderAiExpense(slot, { ctx, onClose: closeModal, onBack: form }),
+    });
+    return form();
+  }
   renderExpenseView(openModal(), ctx, x);
 }
 
@@ -392,6 +400,8 @@ const UI_ICONS = {
   eye: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="2.6"/>',
   edit: '<path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16z"/><path d="m13.5 6.5 4 4"/>',
   clip: '<path d="m20.5 11.5-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.8 1.8 0 0 1-2.6-2.6l7.9-7.9"/>',
+  sparkle: '<path d="M12 3.5l1.9 5.1 5.1 1.9-5.1 1.9-1.9 5.1-1.9-5.1L5 10.5l5.1-1.9z"/><path d="M18.5 15.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z"/>',
+  camera: '<path d="M4.5 7.5h3l1.6-2.5h5.8l1.6 2.5h3A1.5 1.5 0 0 1 21 9v9.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5V9a1.5 1.5 0 0 1 1.5-1.5Z"/><circle cx="12" cy="13.3" r="3.6"/>',
 };
 function uiIco(name, cls = "") {
   return `<svg class="ico ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
@@ -1657,7 +1667,10 @@ async function renderGroups() {
       ${hero}
       <div class="header-row">
         <h1>Os meus grupos</h1>
-        <button type="button" class="outline" id="btn-new-group">${uiIco("plus")} Novo grupo</button>
+        <div class="header-actions">
+          <button type="button" class="outline ai-home-btn" id="btn-ai-expense" title="Descreve uma despesa e a IA cria o grupo e a divisão">${uiIco("sparkle")} Despesa com IA</button>
+          <button type="button" class="outline" id="btn-new-group">${uiIco("plus")} Novo grupo</button>
+        </div>
       </div>
       <div id="new-group-slot"></div>
       ${groups.length === 0
@@ -1695,6 +1708,9 @@ async function renderGroups() {
     });
 
     bindNewGroup();
+    // despesa solta descrita por palavras: a IA cria o grupo e a divisão
+    $app.querySelector("#btn-ai-expense").onclick = () =>
+      renderAiExpense(openModal(), { onClose: closeModal });
   }
 
   function bindNewGroup() {
@@ -2592,7 +2608,30 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     const parts = splitByWeights(state.totalCents, ids.map(() => 1));
     state.payerAmounts = Object.fromEntries(ids.map((id, i) => [id, parts[i]]));
   }
+  // Pré-preenchimento de uma despesa NOVA (a que a IA leu e a pessoa
+  // confirmou — ver renderAiExpense). Só toca no que vem; o resto fica com
+  // os defaults de sempre.
+  const pre = !existing ? opts.prefill : null;
+  if (pre) {
+    if (pre.desc) state.desc = pre.desc;
+    if (pre.totalCents > 0) state.totalCents = pre.totalCents;
+    if (pre.date) state.date = pre.date;
+    if (pre.time !== undefined) state.time = pre.time || "";
+    if (pre.category && catOf(pre.category)) { state.category = pre.category; state.catManual = true; }
+    if (pre.payers?.length) state.payers = new Set(pre.payers);
+    if (pre.participants?.length) state.participants = new Set(pre.participants);
+    if (["equal", "weights", "exact", "own"].includes(pre.mode)) {
+      state.mode = pre.mode;
+      if (pre.mode !== "own") state.divMode = pre.mode;
+    }
+    if (pre.exact) state.exact = { ...pre.exact };
+    if (pre.receiptFile) {
+      state.receiptFile = pre.receiptFile;
+      if (pre.receiptFile.type?.startsWith("image/")) receiptPreview = URL.createObjectURL(pre.receiptFile);
+    }
+  }
   if (!existing || exOwn) distributePayersEqually();
+  if (pre?.payerAmounts) state.payerAmounts = { ...pre.payerAmounts };
 
   // Ao mexer numa despesa já gravada (juntar um pagador ou alguém à
   // divisão, mudar o total), o normal era recalcular tudo — e perdiam-se
@@ -3008,7 +3047,8 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     if (!existing && !own) notifyExpenseAdded(group, members, desc, state.totalCents, payerRows, shareRows);
 
     if (await saveReceipt(expenseId)) toast(existing ? "Despesa atualizada" : "Despesa adicionada");
-    refresh();
+    if (opts.onSaved) opts.onSaved(expenseId);
+    else refresh();
   }
 
   // ------------------------------------------------------------- ecrã (C)
@@ -3196,7 +3236,9 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
         <div class="xp-head-bar">
           <button type="button" class="xp-icon-btn" id="x-back" aria-label="${esc(opts.backLabel || "Voltar")}" ${saving ? "disabled" : ""}>${ico("back")}</button>
           <span class="xp-head-title">${esc(titulo)}</span>
-          <span class="xp-head-spacer"></span>
+          ${opts.onAi && !existing && !readOnly && !state.recurring
+            ? `<button type="button" class="xp-icon-btn xp-ai-btn" id="x-ai" aria-label="Preencher com IA" title="Descrever com IA" ${saving ? "disabled" : ""}>${uiIco("sparkle")}</button>`
+            : `<span class="xp-head-spacer"></span>`}
         </div>
         <div class="xp-amount">
           <input id="x-amount" type="text" inputmode="decimal" placeholder="0,00" enterkeyhint="done"
@@ -3551,6 +3593,11 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     // -------------------------------------------------------------- eventos
     slot.querySelector("#x-back").onclick = sair;
     slot.querySelector("#x-save")?.addEventListener("click", doSave);
+    slot.querySelector("#x-ai")?.addEventListener("click", () => {
+      if (saving) return;
+      document.removeEventListener("keydown", onEsc, true);
+      opts.onAi();
+    });
     slot.querySelector("#x-del")?.addEventListener("click", doDelete);
     slot.querySelectorAll("[data-folha]").forEach(b => { b.onclick = () => abrirFolha(b.dataset.folha); });
     slot.querySelector("#x-folha-ok")?.addEventListener("click", fecharFolha);
@@ -3793,6 +3840,610 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
   // pop-up cede-lhe o espaço todo e, no telemóvel, o ecrã inteiro
   slot.classList.add("modal-card-flush");
   slot.parentElement?.classList.add("modal-full");
+
+  draw();
+  // «Registar» no ecrã de confirmação da IA: grava logo, com as validações
+  // de sempre — se alguma falhar, fica-se aqui no formulário, no sítio onde
+  // se corrige
+  if (opts.autoSave && pre && !readOnly) doSave();
+}
+
+// ------------------------------------------- despesa com IA (texto ou foto)
+// Descreve-se a despesa como se fala («jantar de ontem no sushi, 84 €, paguei
+// eu, dividido pelos 4 menos a Rita») — e, se houver, junta-se a foto do
+// talão. A Edge Function `despesa-ia` pede ao Gemini um JSON com o que
+// percebeu (e regista a chamada em ia_uso.registos); nada se grava sem passar
+// pelo ecrã de confirmação, que mostra tudo o que vai ficar e deixa:
+//   · Registar   grava já (pelo formulário de sempre, com as validações de
+//                sempre — se alguma falhar, fica-se no formulário a corrigir)
+//   · Editar     abre o formulário normal, já preenchido
+//   · Corrigir   manda uma correção por palavras e a IA parte da resposta
+//                anterior («afinal foi o João que pagou»)
+//   · Recomeçar  volta ao texto (que se mantém) para uma leitura de raiz
+//
+// Dois sítios:
+//   · dentro de um grupo, pelo ✨ do formulário da despesa nova (ctx dado);
+//   · na página inicial, «Despesa com IA»: uma despesa solta que CRIA o grupo
+//     (nome + pessoas) — ou, se o texto o disser, vai para um grupo que já
+//     existe.
+//
+// As pessoas vêm da IA pelo NOME. Faz-se a correspondência com os membros
+// aqui (sem acentos nem maiúsculas, primeiro nome quando é único); quem não
+// bate com ninguém fica de fora, com aviso no resumo.
+const AI_FN = "despesa-ia";
+const AI_MAX_BYTES = 6 * 1024 * 1024;
+
+const aiNorm = s => catNorm(s).trim().replace(/\s+/g, " ");
+function aiMatchMember(name, members) {
+  const n = aiNorm(name);
+  if (!n) return null;
+  const exact = members.find(m => aiNorm(m.name) === n);
+  if (exact) return exact;
+  const one = arr => arr.length === 1 ? arr[0] : null;
+  return one(members.filter(m => aiNorm(m.name).split(" ")[0] === n.split(" ")[0]))
+    || one(members.filter(m => aiNorm(m.name).startsWith(n) || n.startsWith(aiNorm(m.name))));
+}
+
+// imagem reduzida como a da fatura (~2000 px JPEG); PDF segue tal e qual
+async function aiFileToBase64(file) {
+  const blob = await shrinkReceiptImage(file);
+  if (blob.size > AI_MAX_BYTES) throw new Error("O ficheiro é demasiado grande para a IA (máx. 6 MB)");
+  const image = await new Promise((ok, ko) => {
+    const r = new FileReader();
+    r.onload = () => ok(String(r.result).split(",")[1] || "");
+    r.onerror = () => ko(r.error);
+    r.readAsDataURL(blob);
+  });
+  return { image, mime: blob.type || file.type || "image/jpeg" };
+}
+
+async function aiInvoke(body) {
+  const { data, error } = await sb.functions.invoke(AI_FN, { body });
+  if (error) {
+    let msg = error.message;
+    try {
+      if (error.context?.status === 404) msg = "A função de IA (despesa-ia) ainda não está publicada no Supabase";
+      else {
+        const j = await error.context?.json?.();
+        if (j?.error) msg = j.error;
+      }
+    } catch (_) { /* fica a mensagem genérica */ }
+    throw new Error(msg);
+  }
+  if (data?.error) throw new Error(data.error);
+  if (!data?.resultado || typeof data.resultado !== "object") throw new Error("A IA não devolveu nada que se perceba");
+  return data.resultado;
+}
+
+// Converte a resposta da IA no pré-preenchimento do formulário de despesa
+// (os mesmos campos do state de renderExpenseForm). `members` pode ser de um
+// grupo que ainda não existe (ids provisórios) — o resumo mostra-se igual.
+function aiPlan(r, members, group, meId) {
+  const avisos = [];
+  const cents = v => (v === null || v === undefined || v === "" || !isFinite(Number(v))) ? null : Math.round(Number(v) * 100);
+  const totalCents = Math.max(0, cents(r.valor) || 0);
+  const desconhecidos = new Set();
+  const resolve = (list) => {
+    const ids = [], amounts = {};
+    for (const it of Array.isArray(list) ? list : []) {
+      const nome = typeof it === "string" ? it : it?.nome;
+      const m = aiMatchMember(nome, members);
+      if (!m) { if (nome) desconhecidos.add(String(nome)); continue; }
+      if (ids.includes(m.id)) continue;
+      ids.push(m.id);
+      amounts[m.id] = cents(it?.valor);
+    }
+    return { ids, amounts };
+  };
+  const useWeights = !!group.use_weights;
+  const weightOf = id => Number(members.find(m => m.id === id)?.default_weight ?? 1) || 0;
+  const defaultParts = useWeights
+    ? members.filter(m => (Number(m.default_weight ?? 1) || 0) > 0).map(m => m.id)
+    : members.map(m => m.id);
+  const fallbackPayer = meId || members[0]?.id;
+
+  const plan = {
+    desc: String(r.descricao || "").trim().slice(0, 120),
+    totalCents,
+    date: /^\d{4}-\d{2}-\d{2}$/.test(r.data || "") ? r.data : null,
+    category: r.categoria && catOf(r.categoria) && groupCategories(group).some(c => c.id === r.categoria)
+      ? r.categoria : null,
+    mode: useWeights ? "weights" : "equal",
+    payers: [], payerAmounts: {}, participants: [], exact: null,
+  };
+  if (/^\d{2}:\d{2}$/.test(r.hora || "")) plan.time = r.hora;
+  else if (plan.date && plan.date !== new Date().toISOString().slice(0, 10)) plan.time = ""; // hora de agora não serve noutro dia
+
+  const own = r.pagamento === "cada_um";
+  const part = resolve(r.participantes);
+
+  // ---- quem pagou
+  if (!own) {
+    const pay = resolve(r.pagadores);
+    if (!pay.ids.length && fallbackPayer) pay.ids.push(fallbackPayer);
+    plan.payers = pay.ids;
+    const known = pay.ids.filter(id => pay.amounts[id] != null);
+    const knownSum = known.reduce((a, id) => a + pay.amounts[id], 0);
+    const unknown = pay.ids.filter(id => pay.amounts[id] == null);
+    let amounts = null;
+    if (pay.ids.length === 1) amounts = { [pay.ids[0]]: totalCents };
+    else if (unknown.length && knownSum <= totalCents) {
+      const rest = splitByWeights(totalCents - knownSum, unknown.map(() => 1));
+      amounts = Object.fromEntries(pay.ids.map(id => [id, pay.amounts[id] ?? rest[unknown.indexOf(id)]]));
+    } else if (!unknown.length && knownSum === totalCents) amounts = { ...pay.amounts };
+    if (!amounts) {
+      const eq = splitByWeights(totalCents, pay.ids.map(() => 1));
+      amounts = Object.fromEntries(pay.ids.map((id, i) => [id, eq[i]]));
+      if (totalCents) avisos.push("O que cada um pagou não somava o total — ficou repartido em partes iguais.");
+    }
+    plan.payerAmounts = amounts;
+  }
+
+  // ---- divisão
+  if (own) {
+    plan.mode = "own";
+    plan.participants = part.ids.length ? part.ids : members.map(m => m.id);
+  } else if (r.divisao === "valores" && part.ids.length) {
+    const vals = part.ids.map(id => part.amounts[id]);
+    if (vals.every(v => v != null) && vals.reduce((a, b) => a + b, 0) === totalCents) {
+      plan.mode = "exact";
+      plan.exact = { ...part.amounts };
+    } else {
+      plan.mode = "equal";
+      if (totalCents) avisos.push("Os valores por pessoa não somavam o total — ficou em partes iguais.");
+    }
+    plan.participants = part.ids;
+  } else if (r.divisao === "iguais" && part.ids.length) {
+    plan.mode = "equal";
+    plan.participants = part.ids;
+  } else {
+    // «normal»: a divisão habitual do grupo, só entre quem a IA listou
+    plan.participants = part.ids.length ? part.ids : defaultParts;
+    if (plan.mode === "weights" && !plan.participants.some(id => weightOf(id) > 0)) plan.mode = "equal";
+  }
+
+  for (const n of desconhecidos) avisos.push(`«${n}» não é membro do grupo — ficou de fora.`);
+  if (!totalCents) avisos.push("Falta o valor — escreve-o em «Editar».");
+  if (!plan.desc) avisos.push("Falta a descrição — escreve-a em «Editar».");
+  plan.avisos = avisos;
+  plan.duvidas = (Array.isArray(r.duvidas) ? r.duvidas : []).map(String).filter(Boolean).slice(0, 3);
+  return plan;
+}
+
+// quota de cada um, para o resumo (as mesmas regras do formulário)
+function aiPlanShares(plan, members) {
+  const ids = plan.participants;
+  if (plan.mode === "exact") return Object.fromEntries(ids.map(id => [id, plan.exact?.[id] || 0]));
+  const w = plan.mode === "weights"
+    ? ids.map(id => Number(members.find(m => m.id === id)?.default_weight ?? 1) || 0)
+    : ids.map(() => 1);
+  const parts = splitByWeights(plan.totalCents, w);
+  return Object.fromEntries(ids.map((id, i) => [id, parts[i]]));
+}
+
+// Contexto de grupo igual ao de renderGroup (permissões incluídas)
+function aiGroupCtx(bundle) {
+  const { group, members } = bundle;
+  const isOwner = group.created_by === session.user.id;
+  const myMember = members.find(m => m.user_id === session.user.id);
+  const myRole = isOwner ? "write_all" : (myMember?.role || "write_all");
+  const canWrite = myRole !== "read" && !group.archived;
+  return { ...bundle, isOwner, myMember, myRole, canWrite, archived: !!group.archived, lastSeen: null };
+}
+
+// opts: { ctx } dentro de um grupo; sem ctx é a despesa solta da página
+// inicial. onClose fecha tudo; onBack (opcional) volta ao formulário vazio.
+function renderAiExpense(slot, opts) {
+  const inGroup = !!opts.ctx;
+  const me = session.user;
+  const meName = opts.ctx?.myMember?.name || me.user_metadata?.full_name || me.email;
+  const st = {
+    fase: "texto",          // texto | lendo | resumo
+    texto: "",
+    file: null, preview: null,
+    erro: "",
+    res: null,              // a última resposta da IA (vai como `anterior` na correção)
+    plan: null,             // o que vai ser gravado (aiPlan), refeito a cada resposta
+    correcao: "",
+    // despesa solta: o grupo de destino
+    alvo: null,             // { tipo: "novo", nome, pessoas: [{ id, name, email, me }] } | { tipo: "existente", ctx }
+    ocupado: false,
+  };
+  // dados de contexto para a despesa solta (grupos e pessoas conhecidas)
+  let contexto = null;
+  async function carregarContexto() {
+    if (contexto) return contexto;
+    const [groups, m, book] = await Promise.all([
+      cache.groups ? Promise.resolve(cache.groups) : fetchGroups(),
+      fetchAllRows((from, to) => sb.from("group_members").select("group_id, name").order("id").range(from, to)),
+      loadPeopleBook(),
+    ]);
+    const nomes = {};
+    for (const r of m.data || []) (nomes[r.group_id] ??= []).push(r.name);
+    const ativos = groups.filter(g => !g.archived).slice(0, 30);
+    contexto = {
+      grupos: ativos.map((g, i) => ({ key: `g${i + 1}`, id: g.id, nome: g.name, membros: nomes[g.id] || [] })),
+      book: book || [],
+    };
+    return contexto;
+  }
+
+  const voltar = () => {
+    if (st.preview) URL.revokeObjectURL(st.preview);
+    (opts.onBack || opts.onClose)();
+  };
+
+  // ------------------------------------------------------------ chamar a IA
+  async function ler({ corrigir = false } = {}) {
+    if (!st.texto.trim() && !st.file) { st.erro = "Escreve a despesa ou junta uma fotografia."; return draw(); }
+    if (corrigir && !st.correcao.trim()) return;
+    const voltarA = st.fase;
+    st.fase = "lendo"; st.erro = ""; draw();
+    try {
+      const hoje = new Date();
+      const body = {
+        modo: inGroup ? "despesa" : "grupo",
+        texto: st.texto.trim(),
+        hoje: hoje.toISOString().slice(0, 10),
+        hora: hoje.toTimeString().slice(0, 5),
+        eu: meName,
+        moeda: opts.ctx?.group.currency || "EUR",
+      };
+      if (inGroup) {
+        const { group, members } = opts.ctx;
+        body.categorias = groupCategories(group).map(c => ({ id: c.id, label: c.label }));
+        body.membros = members.map(m => m.name);
+        body.grupo_nome = group.name;
+        body.divisao_normal = group.use_weights ? "proporcao" : "iguais";
+      } else {
+        const c = await carregarContexto();
+        body.categorias = CATEGORIES.map(c2 => ({ id: c2.id, label: c2.label }));
+        body.grupos = c.grupos.map(g => ({ id: g.key, nome: g.nome, membros: g.membros }));
+        body.conhecidos = c.book.slice(0, 80).map(p => p.name);
+      }
+      if (st.file) Object.assign(body, await aiFileToBase64(st.file));
+      if (corrigir && st.res) { body.anterior = st.res; body.correcao = st.correcao.trim(); }
+      const res = await aiInvoke(body);
+      st.res = res;
+      st.correcao = "";
+      if (!inGroup) await escolherAlvo(res);
+      replan();
+      st.fase = "resumo";
+    } catch (e) {
+      st.erro = e.message || String(e);
+      st.fase = voltarA === "resumo" ? "resumo" : "texto";
+    }
+    if (slot.isConnected) draw();
+  }
+
+  // despesa solta: grupo existente (se a IA o reconheceu e se pode lançar
+  // lá) ou grupo novo com as pessoas que a IA listou
+  async function escolherAlvo(res) {
+    const c = await carregarContexto();
+    const g = c.grupos.find(x => x.key === res?.grupo?.existente);
+    if (g) {
+      try {
+        const ctx = aiGroupCtx(await fetchGroupBundle(g.id));
+        if (ctx.canWrite && ctx.members.length) { st.alvo = { tipo: "existente", ctx }; return; }
+        st.erro = `Não podes lançar despesas em «${g.nome}» — vai para um grupo novo.`;
+      } catch (_) { /* cai no grupo novo */ }
+    }
+    alvoNovo(res, st.alvo?.tipo === "novo" ? st.alvo.nome : null);
+  }
+  function alvoNovo(res, nomeAtual) {
+    const c = contexto || { book: [] };
+    const nomes = [];
+    const junta = n => {
+      const s = String(n || "").trim().slice(0, 60);
+      if (s && !nomes.some(x => aiNorm(x) === aiNorm(s))) nomes.push(s);
+    };
+    junta(meName);
+    (res.pessoas || []).forEach(junta);
+    // quem aparece a pagar ou na divisão mas faltou em «pessoas»
+    [...(res.pagadores || []), ...(res.participantes || [])].forEach(p => {
+      if (!aiMatchMember(p?.nome, nomes.map(n => ({ name: n })))) junta(p?.nome);
+    });
+    const pessoas = nomes.map((name, i) => {
+      const isMe = i === 0;
+      const known = isMe ? null : c.book.find(p => p.normName === aiNorm(name));
+      return { id: `novo:${i}`, name, email: isMe ? me.email : (known?.email || null), me: isMe, default_weight: 1 };
+    });
+    st.alvo = { tipo: "novo", nome: (nomeAtual || res?.grupo?.nome || res?.descricao || "Novo grupo").slice(0, 60), pessoas };
+  }
+
+  // Refaz o plano a partir da resposta e do grupo de destino. Só acontece
+  // quando chega uma resposta ou se troca de grupo: mudar o nome de uma
+  // pessoa do grupo novo não mexe na divisão (os ids provisórios ficam).
+  function replan() {
+    const { group, members, meId } = alvoAtual();
+    st.plan = aiPlan(st.res, members, group, meId);
+  }
+
+  // o grupo e os membros que o resumo está a usar
+  function alvoAtual() {
+    if (inGroup) return { group: opts.ctx.group, members: opts.ctx.members, meId: opts.ctx.myMember?.id };
+    if (st.alvo.tipo === "existente") {
+      const ctx = st.alvo.ctx;
+      return { group: ctx.group, members: ctx.members, meId: ctx.myMember?.id };
+    }
+    return { group: { currency: "EUR", use_weights: false, categories: null }, members: st.alvo.pessoas, meId: "novo:0" };
+  }
+
+  // ------------------------------------------------------------- gravar
+  // Cria (se for preciso) o grupo novo e os membros e devolve { ctx, idMap }
+  // — idMap traduz os ids provisórios do resumo para os verdadeiros.
+  async function prepararGrupo() {
+    if (inGroup) return { ctx: opts.ctx, idMap: null, novo: false };
+    if (st.alvo.tipo === "existente") return { ctx: st.alvo.ctx, idMap: null, novo: false };
+    const nome = st.alvo.nome.trim();
+    if (!nome) throw new Error("Dá um nome ao grupo");
+    const { data: group, error } = await sb.from("groups").insert({ name: nome, currency: "EUR" }).select().single();
+    if (error) throw error;
+    const idMap = {};
+    for (const p of st.alvo.pessoas) {
+      const row = { group_id: group.id, name: p.name.trim() || "?", email: p.email || null };
+      if (p.me) Object.assign(row, { user_id: me.id, email: me.email, role: "write_all" });
+      let { data, error: e2 } = await sb.from("group_members").insert(row).select().single();
+      // schema antigo sem a coluna role
+      if (e2 && p.me && /(\brole\b|column .*role)/i.test(e2.message)) {
+        delete row.role;
+        ({ data, error: e2 } = await sb.from("group_members").insert(row).select().single());
+      }
+      if (e2) throw e2;
+      idMap[p.id] = data.id;
+    }
+    cache.groups = null;
+    return { ctx: aiGroupCtx(await fetchGroupBundle(group.id)), idMap, novo: true };
+  }
+
+  function prefillDe(plan, idMap) {
+    const t = id => (idMap ? idMap[id] : id);
+    const mapObj = o => o ? Object.fromEntries(Object.entries(o).map(([k, v]) => [t(k), v])) : null;
+    return {
+      desc: plan.desc, totalCents: plan.totalCents, date: plan.date, category: plan.category,
+      ...("time" in plan ? { time: plan.time } : {}),
+      mode: plan.mode,
+      payers: plan.payers.map(t), payerAmounts: plan.mode === "own" ? null : mapObj(plan.payerAmounts),
+      participants: plan.participants.map(t), exact: mapObj(plan.exact),
+      receiptFile: st.file && receiptFileOk(st.file) ? st.file : null,
+    };
+  }
+
+  async function seguir(autoSave) {
+    if (st.ocupado) return;
+    const plan = st.plan;
+    st.ocupado = true; draw();
+    let prep;
+    try {
+      prep = await prepararGrupo();
+    } catch (e) {
+      st.ocupado = false;
+      toast(e.message || String(e), true);
+      return draw();
+    }
+    const irParaGrupo = () => {
+      const h = `#/g/${prep.ctx.group.id}/despesas`;
+      if (location.hash === h) refresh(); else location.hash = h;
+    };
+    // depois de criado o grupo, voltar ao resumo já não faz sentido (criava
+    // outro): o «Voltar» do formulário leva ao grupo novo
+    const back = prep.novo ? irParaGrupo : () => { st.ocupado = false; draw(); };
+    renderExpenseForm(slot, prep.ctx, null, back, {
+      prefill: prefillDe(plan, prep.idMap),
+      autoSave,
+      backLabel: prep.novo ? "Ir para o grupo" : "Voltar",
+      ...(inGroup ? {} : { onSaved: irParaGrupo }),
+    });
+  }
+
+  // ------------------------------------------------------------- ecrãs
+  function draw() {
+    slot.classList.add("modal-card-flush");
+    slot.parentElement?.classList.add("modal-full");
+    const titulo = inGroup ? `Despesa com IA · ${opts.ctx.group.name}` : "Despesa com IA";
+    const cabecalho = (sub) => `
+      <header class="xp-head ai-head">
+        <div class="xp-head-bar">
+          <button type="button" class="xp-icon-btn" id="ai-back" aria-label="${opts.onBack ? "Voltar ao formulário" : "Fechar"}">${uiIco(opts.onBack ? "back" : "x")}</button>
+          <span class="xp-head-title">${esc(titulo)}</span>
+          <span class="xp-head-spacer"></span>
+        </div>
+        ${sub}
+      </header>`;
+
+    if (st.fase === "lendo") {
+      slot.innerHTML = `
+        <div class="xp ai">
+          ${cabecalho(`<p class="ai-lead">${uiIco("sparkle")} A ler a despesa…</p>`)}
+          <div class="xp-body ai-lendo"><div class="spinner" role="status" aria-label="A ler"></div>
+            <p class="muted">${st.file ? "A olhar para a imagem e para o texto." : "A perceber quem pagou e como se divide."}</p></div>
+        </div>`;
+      slot.querySelector("#ai-back").onclick = voltar;
+      return;
+    }
+
+    if (st.fase === "texto") {
+      const exemplos = inGroup
+        ? ["Jantar de ontem no sushi, 84 €, paguei eu, dividido por todos menos a Rita",
+           "Supermercado 62,40 € pago pelo João, metade para cada um de nós dois"]
+        : ["Jantar no Porto com a Ana, o Rui e a Marta: 120 €, paguei eu, partes iguais",
+           "Gasolina 70 € da viagem ao Gerês, pago pelo Rui, dividido pelos 3"];
+      slot.innerHTML = `
+        <div class="xp ai">
+          ${cabecalho(`<p class="ai-lead">Diz por palavras tuas o que foi, quanto, quem pagou e por quem se divide${inGroup ? "" : " — a IA cria o grupo"}. Podes juntar a foto do talão.</p>`)}
+          <div class="xp-body">
+            <textarea id="ai-texto" class="ai-texto" rows="5" maxlength="2000"
+              placeholder="Ex.: ${esc(exemplos[0])}">${esc(st.texto)}</textarea>
+            <div class="ai-exemplos">
+              ${exemplos.map((e, i) => `<button type="button" class="ai-ex" data-ex="${i}">${esc(e)}</button>`).join("")}
+            </div>
+            <div class="ai-anexo">
+              ${st.file ? `
+                <div class="ai-anexo-f">
+                  ${st.preview ? `<img src="${st.preview}" alt="" />` : uiIco("doc")}
+                  <span>${esc(st.file.name || "Imagem")}</span>
+                  <button type="button" class="link-btn" id="ai-file-del">Tirar</button>
+                </div>` : `
+                <label class="ai-anexo-btn">${uiIco("camera")} Fotografar talão
+                  <input type="file" accept="image/*" capture="environment" data-ai-file hidden /></label>
+                <label class="ai-anexo-btn">${uiIco("clip")} Escolher ficheiro
+                  <input type="file" accept="image/*,application/pdf" data-ai-file hidden /></label>`}
+            </div>
+            ${st.erro ? `<p class="xp-aviso">${esc(st.erro)}</p>` : ""}
+            <p class="ai-nota muted">Nada fica gravado sem confirmares no passo seguinte.</p>
+          </div>
+          <footer class="xp-foot">
+            <button class="xp-cta" id="ai-ler">${uiIco("sparkle")} Ler com IA</button>
+          </footer>
+        </div>`;
+      slot.querySelector("#ai-back").onclick = voltar;
+      const $t = slot.querySelector("#ai-texto");
+      $t.oninput = () => { st.texto = $t.value; };
+      $t.onkeydown = (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) ler(); };
+      setTimeout(() => $t.focus(), 50);
+      slot.querySelectorAll("[data-ex]").forEach(b => b.onclick = () => {
+        st.texto = exemplos[+b.dataset.ex]; $t.value = st.texto; $t.focus();
+      });
+      slot.querySelectorAll("[data-ai-file]").forEach(inp => inp.onchange = () => {
+        const f = inp.files?.[0];
+        if (!f) return;
+        if (!(f.type.startsWith("image/") || f.type === "application/pdf")) return toast("Tem de ser uma imagem ou um PDF", true);
+        if (f.type === "application/pdf" && f.size > AI_MAX_BYTES) return toast("O PDF passa dos 6 MB", true);
+        if (st.preview) URL.revokeObjectURL(st.preview);
+        st.file = f;
+        st.preview = f.type.startsWith("image/") ? URL.createObjectURL(f) : null;
+        draw();
+      });
+      slot.querySelector("#ai-file-del")?.addEventListener("click", () => {
+        if (st.preview) URL.revokeObjectURL(st.preview);
+        st.file = null; st.preview = null; draw();
+      });
+      slot.querySelector("#ai-ler").onclick = () => ler();
+      return;
+    }
+
+    // ---------------------------------------------------------- resumo
+    const { group, members, meId } = alvoAtual();
+    const plan = st.plan;
+    const cur = group.currency || "EUR";
+    const curto = nomesCurtos(members);
+    const nameOf = id => {
+      if (id === meId) return "Tu";
+      return curto(members.find(m => m.id === id)?.name || "?");
+    };
+    const fullName = id => members.find(m => m.id === id)?.name || "?";
+    const shares = aiPlanShares(plan, members);
+    const pessoa = (id, cents, extra = "") => `
+      <li class="xv-li">${avatarHtml(fullName(id), "sm")}
+        <span class="xv-name">${esc(nameOf(id))}${extra}</span>
+        ${cents == null ? "" : `<span class="xv-amt">${fmtMoney(cents, cur)}</span>`}</li>`;
+    const modoTxt = plan.mode === "own" ? "cada um pagou a sua parte"
+      : plan.mode === "exact" ? "valores definidos"
+      : plan.mode === "weights" ? "por proporção"
+      : plan.participants.length === members.length ? "partes iguais, entre todos" : `partes iguais, entre ${plan.participants.length}`;
+    const cat = plan.category ? catOf(plan.category) : null;
+    const dataTxt = fmtDate(plan.date || new Date().toISOString().slice(0, 10))
+      + (plan.time ? ` · ${plan.time}` : "");
+
+    let grupoHtml = "";
+    if (!inGroup && st.alvo.tipo === "existente") {
+      grupoHtml = `
+        <div class="ai-grupo">
+          <div class="ai-grupo-l"><span class="muted">Vai para o grupo</span><strong>${esc(st.alvo.ctx.group.name)}</strong></div>
+          <button type="button" class="link-btn" id="ai-grupo-novo">Criar grupo novo</button>
+        </div>`;
+    } else if (!inGroup) {
+      grupoHtml = `
+        <div class="ai-grupo novo">
+          <label class="field"><span class="muted">Grupo novo</span>
+            <input id="ai-grupo-nome" value="${esc(st.alvo.nome)}" maxlength="60" placeholder="Nome do grupo" /></label>
+          <p class="ai-grupo-sub muted">Pessoas — toca num nome para o mudar:</p>
+          <ul class="ai-pessoas">
+            ${st.alvo.pessoas.map((p, i) => `
+              <li>${avatarHtml(p.name, "sm")}
+                ${p.me ? `<span class="ai-p-nome">${esc(p.name)} <span class="muted">(tu)</span></span>`
+                  : `<input class="ai-p-input" data-pessoa="${i}" value="${esc(p.name)}" maxlength="60" />`}
+                ${!p.me && p.email ? `<span class="ai-p-mail" title="${esc(p.email)}">${uiIco("user")}</span>` : ""}
+              </li>`).join("")}
+          </ul>
+        </div>`;
+    }
+
+    const avisos = [...plan.avisos, ...plan.duvidas];
+    slot.innerHTML = `
+      <div class="xp ai">
+        <header class="xp-head ai-head">
+          <div class="xp-head-bar">
+            <button type="button" class="xp-icon-btn" id="ai-back" aria-label="${opts.onBack ? "Voltar ao formulário" : "Fechar"}">${uiIco(opts.onBack ? "back" : "x")}</button>
+            <span class="xp-head-title">${uiIco("sparkle")} O que a IA percebeu</span>
+            <span class="xp-head-spacer"></span>
+          </div>
+          <div class="xv-amount">${plan.totalCents ? fmtMoney(plan.totalCents, cur) : "—"}</div>
+          <p class="xv-desc">${esc(plan.desc || "Sem descrição")}</p>
+          <p class="xp-quando">${esc(dataTxt)}${cat ? ` · ${esc(`${cat.icon} ${cat.label}`)}` : ""}</p>
+        </header>
+        <div class="xp-body">
+          ${grupoHtml}
+          ${avisos.length ? `<ul class="ai-avisos">${avisos.map(a => `<li>${esc(a)}</li>`).join("")}</ul>` : ""}
+          ${plan.mode === "own" ? "" : `
+          <h3 class="xv-h">Quem pagou</h3>
+          <ul class="xv-list">${plan.payers.map(id => pessoa(id, plan.payerAmounts[id])).join("")}</ul>`}
+          <h3 class="xv-h">Como se divide <span class="muted">· ${esc(modoTxt)}</span></h3>
+          <ul class="xv-list">${plan.participants.map(id => pessoa(id, plan.mode === "own" ? null : shares[id])).join("")}</ul>
+          ${st.file ? `<p class="ai-nota muted">${uiIco("clip")} A ${st.file.type === "application/pdf" ? "fatura em PDF" : "fotografia"} fica anexada à despesa.</p>` : ""}
+
+          <div class="ai-corrigir">
+            <label for="ai-corr" class="xv-h">Não é bem isto? Diz o que mudar</label>
+            <div class="ai-corr-row">
+              <input id="ai-corr" value="${esc(st.correcao)}" maxlength="600"
+                placeholder="Ex.: afinal foi o João que pagou" enterkeyhint="send" />
+              <button type="button" id="ai-corr-ok" ${st.correcao.trim() ? "" : "disabled"}>Corrigir</button>
+            </div>
+            ${st.erro ? `<p class="xp-aviso">${esc(st.erro)}</p>` : ""}
+            <button type="button" class="link-btn" id="ai-recomecar">${uiIco("repeat")} Recomeçar com outro texto</button>
+          </div>
+        </div>
+        <footer class="xp-foot ai-foot">
+          <button class="secondary" id="ai-editar" ${st.ocupado ? "disabled" : ""}>${uiIco("edit")} Editar</button>
+          <button class="xp-cta" id="ai-ok" ${st.ocupado || !plan.totalCents || !plan.desc ? "disabled" : ""}>
+            ${st.ocupado ? "A preparar…" : !inGroup && st.alvo.tipo === "novo" ? "Criar grupo e registar" : "Registar"}</button>
+        </footer>
+      </div>`;
+
+    slot.querySelector("#ai-back").onclick = voltar;
+    const $corr = slot.querySelector("#ai-corr");
+    const $corrOk = slot.querySelector("#ai-corr-ok");
+    $corr.oninput = () => { st.correcao = $corr.value; $corrOk.disabled = !st.correcao.trim(); };
+    $corr.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); ler({ corrigir: true }); } };
+    $corrOk.onclick = () => ler({ corrigir: true });
+    slot.querySelector("#ai-recomecar").onclick = () => { st.fase = "texto"; st.erro = ""; draw(); };
+    slot.querySelector("#ai-editar").onclick = () => seguir(false);
+    slot.querySelector("#ai-ok").onclick = () => seguir(true);
+    slot.querySelector("#ai-grupo-novo")?.addEventListener("click", () => { alvoNovo(st.res, null); replan(); draw(); });
+    const $gn = slot.querySelector("#ai-grupo-nome");
+    if ($gn) $gn.oninput = () => { st.alvo.nome = $gn.value; };
+    // mudar o nome de uma pessoa só muda o nome: a divisão mantém-se
+    slot.querySelectorAll("[data-pessoa]").forEach(inp => {
+      inp.onchange = () => {
+        const p = st.alvo.pessoas[+inp.dataset.pessoa];
+        const novo = inp.value.trim();
+        if (!novo || novo === p.name) { inp.value = p.name; return; }
+        // numa correção a IA parte da resposta anterior: leva já o nome novo
+        // (a divisão do resumo não se mexe — vive no plano, por ids)
+        const ren = x => (x && aiNorm(x.nome) === aiNorm(p.name) ? { ...x, nome: novo } : x);
+        st.res = {
+          ...st.res,
+          pessoas: (st.res.pessoas || []).map(n => (aiNorm(n) === aiNorm(p.name) ? novo : n)),
+          pagadores: (st.res.pagadores || []).map(ren),
+          participantes: (st.res.participantes || []).map(ren),
+        };
+        const known = (contexto?.book || []).find(b => b.normName === aiNorm(novo));
+        p.name = novo;
+        p.email = known?.email || null;
+        draw();
+      };
+    });
+  }
 
   draw();
 }
