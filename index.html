@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
   <title>SplitWisely — Despesas partilhadas</title>
-  <meta name="theme-color" content="#0f9d76" />
+  <meta name="theme-color" content="#2140c8" />
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="icon" href="icons/icon-192.png" />
   <link rel="apple-touch-icon" href="icons/icon-192.png" />
@@ -12,11 +12,13 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="SplitWisely" />
+  <link rel="preload" href="fonts/figtree.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="preload" href="fonts/bricolage-grotesque.woff2" as="font" type="font/woff2" crossorigin />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="#/"><img class="brand-ico" src="icons/icon-mark.webp" alt="" width="26" height="26" /> SplitWisely</a>
+    <a class="brand" href="#/"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="currentColor"/></svg></span> SplitWisely</a>
     <div class="topbar-right" id="topbar-user"></div>
   </header>
 
@@ -24,7 +26,7 @@
 
   <!-- Ecrã de arranque: fica por cima de tudo enquanto os dados carregam -->
   <div id="splash" class="splash">
-    <div class="splash-brand"><img src="icons/icon-splash.webp" alt="SplitWisely" width="384" height="384" fetchpriority="high" /></div>
+    <div class="splash-brand"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="currentColor"/></svg></span><span>SplitWisely</span></div>
     <div class="spinner" role="status" aria-label="A carregar"></div>
   </div>
 
