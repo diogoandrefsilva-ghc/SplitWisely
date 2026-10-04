@@ -3105,3 +3105,42 @@ button.outline.ai-home-btn .ico { color: var(--gold-accent); }
 .ai-foot { display: flex; gap: .6rem; }
 .ai-foot .secondary { flex: none; height: 58px; padding: 0 1.1rem; border-radius: 18px; display: inline-flex; align-items: center; gap: .35rem; }
 .ai-foot .xp-cta { flex: 1; width: auto; }
+
+/* várias despesas de uma vez: um cartão por despesa */
+.ai-cards { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .6rem; }
+.ai-card {
+  padding: .75rem .85rem .6rem;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--card);
+}
+.ai-card:not(.on) { opacity: .6; }
+.ai-card-top { display: flex; align-items: center; gap: .65rem; cursor: pointer; }
+.ai-card-top input { width: 20px; height: 20px; flex: none; accent-color: var(--primary); }
+.ai-card-t { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.ai-card-t strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-card-t small { color: var(--muted); font-size: .8rem; }
+.ai-card-v { font-weight: 800; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ai-card-l { margin: .35rem 0 0 calc(20px + .65rem); font-size: .86rem; }
+.ai-card .ai-avisos { margin: .5rem 0 0; }
+.ai-card .link-btn { margin: .45rem 0 0 calc(20px + .65rem); display: inline-flex; align-items: center; gap: .3rem; }
+.ai-card .link-btn .ico { width: 14px; height: 14px; }
+
+/* alterar com IA: o que muda (antes → depois) */
+.ai-diff { list-style: none; margin: 0 0 .4rem; padding: 0; }
+.ai-diff li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: .2rem .7rem;
+  padding: .5rem .1rem;
+  border-bottom: 1px solid var(--xp-line);
+}
+.ai-diff li:last-child { border-bottom: none; }
+.ai-diff-k { width: 6.5rem; flex: none; color: var(--muted); font-size: .85rem; font-weight: 600; }
+.ai-diff-v { flex: 1; min-width: 12rem; display: flex; flex-wrap: wrap; align-items: baseline; gap: .3rem; }
+.ai-diff-v s { color: var(--muted); }
+.ai-diff-arr { color: var(--muted); }
+.ai-exemplos.chips { flex-direction: row; flex-wrap: wrap; }
+.ai-exemplos.chips .ai-ex { flex: none; }
+.xv-ai .ico { color: var(--gold-accent); }

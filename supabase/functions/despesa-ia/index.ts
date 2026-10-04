@@ -4,12 +4,17 @@
 // ecrã de confirmação. Nada é gravado aqui: quem grava é sempre a app, depois
 // de a pessoa ver (e, se quiser, corrigir) o que a IA percebeu.
 //
-// Dois modos:
+// Três modos:
 //   'despesa'  dentro de um grupo: a app manda os nomes dos membros e a IA
 //              diz quem pagou, por quem se divide e quanto.
-//   'grupo'    a partir da página inicial: uma despesa solta que cria o grupo
-//              (nome + pessoas) — ou, se o texto o disser claramente, que vai
+//   'grupo'    a partir da página inicial: despesas soltas que criam o grupo
+//              (nome + pessoas) — ou, se o texto o disser claramente, que vão
 //              para um dos grupos que a pessoa já tem.
+//   'alterar'  uma despesa já registada (`atual`, no mesmo formato) e o que se
+//              quer mudar nela; devolve a despesa completa já alterada.
+//
+// Nos dois primeiros o texto pode trazer VÁRIAS despesas («jantar 80 € e
+// gasolina 45 €»): a resposta é sempre { ..., despesas: [...] }.
 //
 // Correção («re-prompt»): com `anterior` (a resposta anterior, já em JSON) e
 // `correcao` (o que a pessoa quer mudar), a IA parte da resposta anterior e só
@@ -83,18 +88,22 @@ function lerGrupos(raw: unknown): GrupoExistente[] {
 }
 
 // ---------------------------------------------------------------- prompt
-const FORMA = (modo: string) => `{${modo === "grupo" ? `
+// Uma despesa. Nos modos 'despesa' e 'grupo' vem dentro de "despesas" (o
+// texto pode trazer várias de uma vez); no modo 'alterar' é o objeto todo.
+const DESPESA = `{"descricao": string,
+   "valor": number|null,
+   "data": "YYYY-MM-DD"|null,
+   "hora": "HH:MM"|null,
+   "categoria": string|null,
+   "pagamento": "alguem"|"cada_um",
+   "pagadores": [{"nome": string, "valor": number|null}],
+   "divisao": "normal"|"iguais"|"valores",
+   "participantes": [{"nome": string, "valor": number|null}],
+   "duvidas": [string]}`;
+const FORMA = (modo: string) => modo === "alterar" ? DESPESA : `{${modo === "grupo" ? `
  "grupo": {"existente": string|null, "nome": string|null},
  "pessoas": [string],` : ""}
- "descricao": string,
- "valor": number|null,
- "data": "YYYY-MM-DD"|null,
- "hora": "HH:MM"|null,
- "categoria": string|null,
- "pagamento": "alguem"|"cada_um",
- "pagadores": [{"nome": string, "valor": number|null}],
- "divisao": "normal"|"iguais"|"valores",
- "participantes": [{"nome": string, "valor": number|null}],
+ "despesas": [${DESPESA}],
  "duvidas": [string]
 }`;
 
@@ -102,11 +111,12 @@ function montarPrompt(p: {
   modo: string; texto: string; hoje: string; hora: string; eu: string; moeda: string;
   cats: Cat[]; membros: string[]; divisaoNormal: string; grupoNome: string;
   grupos: GrupoExistente[]; conhecidos: string[]; temImagem: boolean;
-  anterior: unknown; correcao: string;
+  anterior: unknown; correcao: string; atual: unknown;
 }): string {
   const grupoModo = p.modo === "grupo";
+  const alterar = p.modo === "alterar";
   const pessoasRegra = grupoModo
-    ? `- "pessoas": TODAS as pessoas envolvidas na despesa (quem pagou e quem
+    ? `- "pessoas": TODAS as pessoas envolvidas nas despesas (quem pagou e quem
   entra na divisão), incluindo quem está a escrever (refere-te a essa pessoa
   como "${p.eu}"). Se o texto disser só "nós os 4" sem nomes, inventa nomes
   provisórios "Pessoa 2", "Pessoa 3", … e diz isso em "duvidas".
@@ -116,8 +126,8 @@ function montarPrompt(p: {
   referir a uma delas (mesmo só pelo primeiro nome ou por um diminutivo
   óbvio), usa o nome EXATAMENTE como está aqui:
 ${p.conhecidos.map((n) => `  · ${n}`).join("\n")}` : ""}
-- "grupo": a despesa vai para um grupo. Se o texto disser claramente que é
-  de um destes grupos que já existem, põe em "existente" o id dele (ex.:
+- "grupo": as despesas vão para um grupo. Se o texto disser claramente que
+  são de um destes grupos que já existem, põe em "existente" o id dele (ex.:
   "g2"), "nome" null, e usa em "pessoas" os nomes EXATAMENTE como estão nos
   membros desse grupo (podes acrescentar pessoas que não estejam lá):
 ${p.grupos.length ? p.grupos.map((g) => `  · ${g.id} — ${g.nome}${g.membros.length ? ` (membros: ${g.membros.join(", ")})` : ""}`).join("\n") : "  (nenhum)"}
@@ -131,14 +141,39 @@ ${p.membros.map((n) => `  · ${n}`).join("\n")}
   "eu"/"paguei" para o nome certo). Se o texto falar de alguém que não está
   na lista, usa o nome como vier escrito e diz isso em "duvidas".`;
 
+  const variasRegra = alterar ? "" : `
+- "despesas": uma entrada por CADA despesa diferente do texto. Muitas vezes é
+  só uma (array com 1 elemento). Mas se o texto descrever várias — "jantar
+  80 € e gasolina 45 €", uma lista com uma por linha, "paguei o hotel (300)
+  e a Ana o supermercado (62)" — devolve uma por despesa, pela ordem do
+  texto. Não partas uma despesa em várias (o jantar com entradas, pratos e
+  bebidas é UMA despesa; as linhas de um talão são UMA despesa). O que for
+  dito uma vez para todas ("dividido por todos", "ontem") vale para cada uma.
+  Máximo 20.
+- "duvidas" (fora de "despesas"): dúvidas gerais, que não são de uma despesa
+  só. [] se não houver.`;
+
+  const tarefa = alterar
+    ? `Vais ALTERAR uma despesa que já está registada. Esta é a despesa tal como
+está agora:
+${JSON.stringify(p.atual)}
+
+A pessoa diz o que quer mudar no texto abaixo. Devolve APENAS a despesa
+COMPLETA já alterada, com esta forma exata (a mesma de cima):`
+    : `Lê a(s) despesa(s) e devolve APENAS um objeto JSON com esta forma exata:`;
+
   const base = `És o assistente da app SplitWisely (despesas partilhadas, Portugal).
 Quem escreve é "${p.eu}". Hoje é ${p.hoje}${p.hora ? `, ${p.hora}` : ""}. Moeda: ${p.moeda}.
 ${p.temImagem ? "Vem também uma imagem/PDF (talão, fatura, print): usa-a para o valor, a data, a hora e a descrição (nome da loja/restaurante), e o texto para quem pagou e como se divide.\n" : ""}
-Lê a despesa e devolve APENAS um objeto JSON com esta forma exata:
+${tarefa}
 ${FORMA(p.modo)}
 
 Regras:
-${pessoasRegra}
+${pessoasRegra}${variasRegra}${alterar ? `
+- Muda SÓ o que o texto pede. Tudo o resto fica EXATAMENTE como na despesa
+  atual (mesmos valores, mesmas pessoas, mesma data). Se mudar o valor total
+  e a divisão for "valores" ou houver vários pagadores, ajusta-os para
+  continuarem a somar o total (proporcionalmente) e diz isso em "duvidas".` : ""}
 - "descricao": curta e clara, em português, como se escreveria na app
   (ex.: "Jantar no Sushi Lab", "Gasolina", "Supermercado Continente").
 - "valor": o total da despesa em ${p.moeda} (número, ponto decimal). Se o
@@ -164,15 +199,15 @@ ${p.cats.map((c) => `  · ${c.id} — ${c.label}`).join("\n")}
   Se alguém fica de fora ("menos a Ana", "a Rita não comeu"), não o
   incluas e usa "iguais". Em "valores", põe o valor de cada um (têm de
   somar o total); nos outros modos valor = null.
-- "duvidas": frases curtas (máx. 3) sobre o que ficou por perceber ou o que
-  assumiste sem certeza. [] se estiver tudo claro.
+- "duvidas" (de cada despesa): frases curtas (máx. 3) sobre o que ficou por
+  perceber ou o que assumiste sem certeza. [] se estiver tudo claro.
 - Não inventes valores: na dúvida, null e uma linha em "duvidas".
 Responde só com o JSON.`;
 
   if (p.anterior && p.correcao) {
     return `${base}
 
-Texto original de quem escreve:
+${alterar ? "O que a pessoa pediu para mudar" : "Texto original de quem escreve"}:
 """${p.texto || "(sem texto — só a imagem)"}"""
 
 Já tinhas respondido isto:
@@ -186,7 +221,7 @@ como estava na resposta anterior.`;
   }
   return `${base}
 
-Texto de quem escreve:
+${alterar ? "O que a pessoa quer mudar" : "Texto de quem escreve"}:
 """${p.texto || "(sem texto — lê tudo da imagem)"}"""`;
 }
 
@@ -281,7 +316,7 @@ Deno.serve(async (req) => {
     if (!uid || !(await podeUsar(uid))) return json({ error: "não autorizado" }, 403);
 
     const b = await req.json();
-    const modo = b.modo === "grupo" ? "grupo" : "despesa";
+    const modo = b.modo === "grupo" || b.modo === "alterar" ? b.modo : "despesa";
     const texto = String(b.texto ?? "").trim().slice(0, 2000);
     const image = typeof b.image === "string" && b.image ? b.image : null;
     if (image && image.length > 8_000_000) return json({ error: "a imagem é demasiado grande" }, 400);
@@ -290,7 +325,9 @@ Deno.serve(async (req) => {
     const correcao = limpa(b.correcao, 600);
     const cats = lerCategorias(b.categorias);
     const membros = listaTextos(b.membros, 60, 60);
-    if (modo === "despesa" && !membros.length) return json({ error: "o grupo não tem membros" }, 400);
+    const atual = b.atual && typeof b.atual === "object" ? b.atual : null;
+    if (modo === "alterar" && !atual) return json({ error: "falta a despesa a alterar" }, 400);
+    if (modo !== "grupo" && !membros.length) return json({ error: "o grupo não tem membros" }, 400);
 
     const prompt = montarPrompt({
       modo, texto,
@@ -304,7 +341,7 @@ Deno.serve(async (req) => {
       grupos: lerGrupos(b.grupos),
       conhecidos: listaTextos(b.conhecidos, 80, 60),
       temImagem: !!image,
-      anterior, correcao,
+      anterior, correcao, atual,
     });
     detalhe = {
       modo, correcao: !!(anterior && correcao), imagem: !!image,
@@ -380,10 +417,18 @@ Deno.serve(async (req) => {
     }
     if (Array.isArray(parsed)) parsed = parsed[0] ?? {};
 
+    // modo 'despesa'/'grupo': "despesas" é sempre um array (uma resposta à
+    // moda antiga, com a despesa solta no topo, embrulha-se)
+    if (modo !== "alterar" && !Array.isArray(parsed?.despesas)) {
+      const { grupo, pessoas, ...d } = parsed ?? {};
+      parsed = { grupo, pessoas, despesas: [d], duvidas: [] };
+    }
+    if (modo !== "alterar") parsed.despesas = parsed.despesas.filter((d: unknown) => d && typeof d === "object").slice(0, 20);
+    const lista = modo === "alterar" ? [parsed] : parsed.despesas;
     await registarIaUso("ok", quem, modelo, Date.now() - inicio, {
       ...detalhe,
-      valor: typeof parsed?.valor === "number" ? parsed.valor : null,
-      duvidas: Array.isArray(parsed?.duvidas) ? parsed.duvidas.length : 0,
+      despesas: lista.length,
+      valor: lista.reduce((a: number, d: any) => a + (typeof d?.valor === "number" ? d.valor : 0), 0),
     }, usage);
     return json({ resultado: parsed, modelo });
   } catch (e) {
