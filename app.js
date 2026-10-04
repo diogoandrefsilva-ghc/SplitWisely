@@ -2204,6 +2204,44 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
   }
   if (!existing || exOwn) distributePayersEqually();
 
+  // Ao mexer numa despesa já gravada (juntar um pagador ou alguém à
+  // divisão, mudar o total), o normal era recalcular tudo — e perdiam-se
+  // os valores acertados à mão. Agora pergunta-se uma vez: recalcular, ou
+  // manter o que lá está e acertar à mão (a pessoa nova entra com 0).
+  // A resposta vale até se fechar o formulário.
+  let ajuste = null;    // null (ainda não se perguntou) | "recalc" | "manter"
+  let pergunta = null;  // { recalc, manter } enquanto a pergunta está aberta
+
+  // fixa as quotas atuais como valores exatos (só nos modos calculados)
+  function congelarQuotas() {
+    if (state.mode !== "equal" && state.mode !== "weights") return;
+    if (catDividing()) return;
+    state.exact = computedShares();
+    state.mode = state.divMode = "exact";
+  }
+
+  // `mexe`: a alteração muda valores que já lá estavam? Só então se pergunta.
+  function decidir(mexe, recalc, manter) {
+    const modo = ajuste || (existing && !readOnly && mexe ? null : "recalc");
+    if (modo === "recalc") recalc();
+    else if (modo === "manter") manter();
+    else {
+      pergunta = { recalc, manter };
+      document.addEventListener("keydown", onEsc, true);
+    }
+    draw();
+  }
+
+  // compara as quotas de quem já entrava antes e depois de `fn`
+  function quotasMudam(fn) {
+    const antes = computedShares();
+    const guardado = new Set(state.participants);
+    fn();
+    const depois = computedShares();
+    state.participants = guardado;
+    return Object.keys(antes).some(id => id in depois && depois[id] !== antes[id]);
+  }
+
   // Uma ocorrência de série abre primeiro num ecrã de escolha — o utilizador
   // toma consciência de que é recorrente e decide: gerir a série (pop-up) ou
   // editar só esta ocorrência. Só depois disso o formulário fica editável.
@@ -2587,7 +2625,14 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     if (e.key !== "Escape") return;
     e.stopPropagation();
     e.preventDefault();
+    if (pergunta) return cancelarPergunta();
     fecharFolha();
+  }
+  // fechar a pergunta sem responder: a alteração não se faz
+  function cancelarPergunta() {
+    pergunta = null;
+    if (!folha) document.removeEventListener("keydown", onEsc, true);
+    draw();
   }
   function abrirFolha(id) {
     if (!folha) document.addEventListener("keydown", onEsc, true);
@@ -2599,6 +2644,15 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
   function fecharFolha() {
     document.removeEventListener("keydown", onEsc, true);
     folha = null;
+    draw();
+  }
+  function responder(escolha) {
+    const p = pergunta;
+    pergunta = null;
+    if (!folha) document.removeEventListener("keydown", onEsc, true);
+    if (!p) return draw();
+    ajuste = escolha;
+    p[escolha]();
     draw();
   }
   // sair do formulário com um pop-up aberto não pode deixar o listener solto
@@ -3011,6 +3065,17 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
         <button class="xp-cta" id="x-save" ${okValor && !saving ? "" : "disabled"}>${saving ? "A guardar…" : acao}</button>
       </footer>`}
       ${popup}
+      ${pergunta ? `
+      <div class="xp-scrim xp-ask-scrim" id="x-ask-scrim">
+        <div class="xp-ask" role="alertdialog" aria-modal="true" aria-labelledby="x-ask-t">
+          <h3 id="x-ask-t">Recalcular os valores?</h3>
+          <p>Esta alteração mexe no que já estava gravado. Podes recalcular tudo,
+            ou manter os valores como estão e acertar tu à mão — quem entra de novo fica com 0.</p>
+          <button type="button" class="xp-cta" data-ajuste="manter">Manter e acertar à mão</button>
+          <button type="button" class="xp-link wide" data-ajuste="recalc">Recalcular tudo</button>
+          <button type="button" class="xp-link wide xp-ask-no" id="x-ask-cancel">Cancelar</button>
+        </div>
+      </div>` : ""}
     </div>`;
 
     // o painel só anima ao abrir; depois disso mantém a posição de scroll
@@ -3027,6 +3092,9 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     slot.querySelectorAll("[data-folha]").forEach(b => { b.onclick = () => abrirFolha(b.dataset.folha); });
     slot.querySelector("#x-folha-ok")?.addEventListener("click", fecharFolha);
     slot.querySelector("#x-scrim")?.addEventListener("click", (e) => { if (e.target.id === "x-scrim") fecharFolha(); });
+    slot.querySelectorAll("[data-ajuste]").forEach(b => { b.onclick = () => responder(b.dataset.ajuste); });
+    slot.querySelector("#x-ask-cancel")?.addEventListener("click", cancelarPergunta);
+    slot.querySelector("#x-ask-scrim")?.addEventListener("click", (e) => { if (e.target.id === "x-ask-scrim") cancelarPergunta(); });
 
     const $desc = slot.querySelector("#x-desc");
     if ($desc) $desc.oninput = () => {
@@ -3048,9 +3116,15 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     };
     const $amount = slot.querySelector("#x-amount");
     if ($amount) $amount.onchange = () => {
-      state.totalCents = toCents($amount.value);
-      distributePayersEqually();
-      draw();
+      const novo = toCents($amount.value);
+      if (novo === state.totalCents) return;
+      // com um só pagador e uma só pessoa não há nada para acertar à mão
+      const calcula = (state.mode === "equal" || state.mode === "weights") && !catDividing();
+      const mexe = state.totalCents > 0
+        && (state.payers.size > 1 || (calcula && Object.keys(computedShares()).length > 1));
+      decidir(mexe,
+        () => { state.totalCents = novo; distributePayersEqually(); },
+        () => { congelarQuotas(); state.totalCents = novo; });
     };
 
     slot.querySelectorAll("[data-date]").forEach(b => {
@@ -3147,9 +3221,17 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     slot.querySelectorAll("[data-payer]").forEach(b => {
       b.onclick = () => {
         const id = b.dataset.payer;
-        state.payers.has(id) ? state.payers.delete(id) : state.payers.add(id);
-        distributePayersEqually();
-        draw();
+        const sai = state.payers.has(id);
+        const alternar = () => { sai ? state.payers.delete(id) : state.payers.add(id); };
+        // juntar alguém mexe em quem já pagava; tirar mexe se ficar alguém
+        const mexe = state.totalCents > 0 && state.payers.size > (sai ? 1 : 0);
+        decidir(mexe,
+          () => { alternar(); distributePayersEqually(); },
+          () => {
+            alternar();
+            if (sai) delete state.payerAmounts[id];
+            else state.payerAmounts[id] = 0;
+          });
       };
     });
     slot.querySelectorAll("[data-payer-amount]").forEach(inp => {
@@ -3171,13 +3253,28 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     slot.querySelectorAll("[data-part]").forEach(b => {
       b.onclick = () => {
         const id = b.dataset.part;
-        state.participants.has(id) ? state.participants.delete(id) : state.participants.add(id);
-        draw();
+        const sai = state.participants.has(id);
+        const alternar = () => { sai ? state.participants.delete(id) : state.participants.add(id); };
+        const calcula = (state.mode === "equal" || state.mode === "weights") && !catDividing();
+        decidir(calcula && quotasMudam(alternar), alternar, () => {
+          congelarQuotas();
+          alternar();
+          if (sai) delete state.exact[id];
+          else if (state.mode === "exact") state.exact[id] = 0;
+        });
       };
     });
     slot.querySelector("#x-part-all")?.addEventListener("click", () => {
-      members.forEach(m => state.participants.add(m.id));
-      draw();
+      const todos = () => members.forEach(m => state.participants.add(m.id));
+      const calcula = (state.mode === "equal" || state.mode === "weights") && !catDividing();
+      decidir(calcula && quotasMudam(todos), todos, () => {
+        congelarQuotas();
+        for (const m of members) {
+          if (state.participants.has(m.id)) continue;
+          state.participants.add(m.id);
+          if (state.mode === "exact") state.exact[m.id] = 0;
+        }
+      });
     });
     slot.querySelector("#x-part-none")?.addEventListener("click", () => { state.participants.clear(); draw(); });
     slot.querySelectorAll("[data-weight]").forEach(inp => {

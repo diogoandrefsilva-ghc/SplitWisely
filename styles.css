@@ -2391,6 +2391,22 @@ button.soft:hover { filter: none; background: var(--chip-pos-bg); }
 .xp-folha-b > .xp-seg + .xp-folha-sub { margin-top: 1rem; }
 .xp-folha-act > span { display: flex; gap: .9rem; flex: none; }
 .xp-folha-b > .xp-link { margin-top: .6rem; }
+/* pergunta «recalcular ou manter?»: por cima do painel que estiver aberto */
+.xp-ask-scrim { z-index: 80; align-items: center; padding: 1.15rem; }
+.xp-ask {
+  width: 100%;
+  max-width: 400px;
+  padding: 1.4rem 1.25rem 1rem;
+  background: var(--card);
+  border-radius: 22px;
+  box-shadow: 0 18px 50px -18px rgba(0, 0, 0, .55);
+  animation: xp-sobe .22s cubic-bezier(.22, 1, .36, 1);
+}
+.xp-ask h3 { margin: 0 0 .5rem; font-size: 1.1rem; letter-spacing: -.01em; }
+.xp-ask p { margin: 0 0 1.15rem; font-size: .9rem; color: var(--muted); line-height: 1.45; }
+.xp-ask .xp-cta { height: 52px; font-size: 1rem; }
+.xp-ask .xp-link.wide { margin-top: .35rem; }
+.xp-ask .xp-ask-no { margin-top: 0; color: var(--muted); }
 .xp-aviso { margin: .1rem 0 .8rem; font-size: .85rem; font-weight: 600; color: var(--danger); }
 .xp-nota { margin: .4rem 0; font-size: .8rem; color: var(--muted); }
 
