@@ -456,9 +456,10 @@ h3 { font-family: var(--font-display); letter-spacing: -.01em; }
   letter-spacing: -.025em;
   line-height: 1.1;
 }
-.gh-stat .gh-owe { margin-top: .3rem; font-size: .84rem; font-weight: 500; opacity: .92; line-height: 1.35; }
-.gh-owe b { font-weight: 700; }
-.gh-total { text-align: right; margin-left: auto; }
+.gh-right { text-align: right; margin-left: auto; }
+/* «Deves a» no lugar do total: até 2 credores, um por linha, sem crescer */
+.gh-owe strong { font-size: .95rem; font-weight: 500; line-height: 1.2; }
+.gh-owe strong b { font-weight: 800; }
 /* cabeçalho compacto (Saldos, Definições): o 1.º cartão sobe por cima dele */
 .group-hero.compact { padding-bottom: 3.4rem; margin-bottom: 0; }
 .group-hero.compact + #tab-content > .card:first-child { position: relative; margin-top: -2.3rem; }

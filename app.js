@@ -1510,9 +1510,9 @@ async function renderGroups() {
 
 // ---------------------------------------------------------------- vista: grupo
 // Cabeçalho cobalto do grupo (vista normal e link público): voltar e ações
-// em cima; nome, descrição e quem está no grupo; por baixo o saldo de «quem
-// está a ver» (só quando é membro — um criador que não participa, ou o link
-// público sem nome escolhido, não têm saldo) e o total gasto no grupo.
+// em cima; nome e descrição; por baixo o saldo de «quem está a ver» e, à
+// direita, a quem deve (só quando deve). Quem não tem saldo — um criador que
+// não participa, ou o link público sem nome escolhido — vê o total gasto.
 // `compact` tira os números: nos Saldos já estão em grande no 1.º cartão.
 function groupHeroHtml(bundle, myMember, { shell, back = "", actions = "", compact = false }) {
   const { group, members, expenses, payments } = bundle;
@@ -1539,13 +1539,17 @@ function groupHeroHtml(bundle, myMember, { shell, back = "", actions = "", compa
         <div class="gh-stat">
           <span>O teu saldo</span>
           <strong class="gh-bal">${myBal === 0 ? "Em dia" : (myBal > 0 ? "+" : "−") + fmtMoney(Math.abs(myBal), cur)}</strong>
-          ${owe.length ? `<span class="gh-owe">Deves a ${owe.map(s =>
-            `<b>${esc(curto(s.to.name))}</b> ${fmtMoney(s.cents, cur)}`).join(" · ")}</span>` : ""}
-        </div>` : ""}
-        <div class="gh-stat gh-total">
+        </div>
+        ${owe.length ? `<div class="gh-stat gh-right gh-owe">
+          <span>Deves a</span>
+          ${(owe.length > 2 ? owe.slice(0, 1) : owe).map(s =>
+            `<strong><b>${esc(curto(s.to.name))}</b> ${fmtMoney(s.cents, cur)}</strong>`).join("")}
+          ${owe.length > 2 ? `<strong>+ ${owe.length - 1} pessoas</strong>` : ""}
+        </div>` : ""}` : `
+        <div class="gh-stat gh-right">
           <span>Total do grupo</span>
           <strong>${fmtMoney(total, cur)}</strong>
-        </div>
+        </div>`}
       </div>`}
     </section>`;
 }
