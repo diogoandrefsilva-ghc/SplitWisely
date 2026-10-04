@@ -8,7 +8,7 @@
    Pedidos a outras origens (API do Supabase) passam direto, sem cache. */
 "use strict";
 
-const CACHE = "splitwisely-v21";
+const CACHE = "splitwisely-v22";
 const SHELL = [
   "./",
   "./index.html",
@@ -18,8 +18,8 @@ const SHELL = [
   "./manifest.webmanifest",
   "./vendor/supabase.js",
   "./icons/icon-192.png",
-  "./icons/icon-splash.webp",
-  "./icons/icon-mark.webp",
+  "./fonts/figtree.woff2",
+  "./fonts/bricolage-grotesque.woff2",
 ];
 
 // Ficheiros cuja mudança justifica recarregar a página aberta (o resto —

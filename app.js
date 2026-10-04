@@ -110,14 +110,65 @@ function shortName(name) {
 }
 
 // Avatar redondo com iniciais, cor estável derivada do nome
-const AVATAR_COLORS = ["#0ea5e9", "#8b5cf6", "#f59e0b", "#10b981", "#ef4444",
-  "#ec4899", "#14b8a6", "#f97316", "#6366f1", "#d946ef"];
+// (tons do azulejo, todos com contraste para as iniciais a branco)
+const AVATAR_COLORS = ["#2b44c4", "#b4462f", "#127368", "#9a6412", "#6d3fb8",
+  "#1d6a8c", "#a8325e", "#3f6212", "#4338ca", "#b45309"];
 function avatarHtml(name, extra = "") {
   const parts = String(name || "?").trim().split(/\s+/);
   const initials = ((parts[0]?.[0] || "?") + (parts.length > 1 ? parts[parts.length - 1][0] : "")).toUpperCase();
   let h = 0;
   for (const c of String(name || "")) h = (h * 31 + c.charCodeAt(0)) >>> 0;
   return `<span class="avatar ${extra}" style="background:${AVATAR_COLORS[h % AVATAR_COLORS.length]}">${esc(initials)}</span>`;
+}
+
+// Avatares sobrepostos (até `max`, depois «+N»)
+function avatarStackHtml(names, max = 3, extra = "") {
+  const shown = names.slice(0, max).map(n => avatarHtml(n, extra)).join("");
+  const more = names.length - max;
+  return `<span class="avatar-stack">${shown}${more > 0
+    ? `<span class="avatar avatar-more ${extra}">+${more}</span>` : ""}</span>`;
+}
+
+// Nomes curtos: só o primeiro nome, a não ser que haja mais do que um
+// «Diogo» no grupo — aí entra a inicial do apelido («Diogo S.»)
+function nomesCurtos(members) {
+  const primeiro = n => String(n || "?").trim().split(/\s+/)[0];
+  const quantos = {};
+  for (const m of members) {
+    const k = primeiro(m.name).toLowerCase();
+    quantos[k] = (quantos[k] || 0) + 1;
+  }
+  return n => quantos[primeiro(n).toLowerCase()] > 1 ? shortName(n) : primeiro(n);
+}
+
+// Ícones da interface (traço, herdam a cor). O emoji fica só nas
+// categorias, onde é conteúdo.
+const UI_ICONS = {
+  back: '<path d="M15 18l-6-6 6-6"/>',
+  chev: '<path d="m9 6 6 6-6 6"/>',
+  down: '<path d="m6 9 6 6 6-6"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+  x: '<path d="M6 6l12 12M18 6 6 18"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
+  calendar: '<rect x="3.5" y="5" width="17" height="15" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/>',
+  clipboard: '<path d="M9 4h6v3H9z"/><path d="M15 5.5h2.5A1.5 1.5 0 0 1 19 7v12a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 5 19V7a1.5 1.5 0 0 1 1.5-1.5H9"/><path d="M8.5 12h7"/><path d="M8.5 15.5h4.5"/>',
+  receipt: '<path d="M6 3.5h12a1 1 0 0 1 1 1v16l-2.5-1.5-2.5 1.5-2-1.5-2 1.5-2.5-1.5L5 20.5v-16a1 1 0 0 1 1-1z"/><path d="M9 8.5h6M9 12h6"/>',
+  scale: '<path d="M12 4v16M8 20h8M5 7h14"/><path d="M5 7l-2.5 6a2.5 2.5 0 0 0 5 0zM19 7l-2.5 6a2.5 2.5 0 0 0 5 0z"/>',
+  gear: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>',
+  user: '<circle cx="12" cy="8" r="3.8"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/>',
+  shield: '<path d="M12 3.5 5 6v5.5c0 4.3 2.9 7.6 7 9 4.1-1.4 7-4.7 7-9V6z"/><path d="m9 12 2 2 4-4"/>',
+  logout: '<path d="M14 4h4.5A1.5 1.5 0 0 1 20 5.5v13a1.5 1.5 0 0 1-1.5 1.5H14"/><path d="M10 16l-4-4 4-4"/><path d="M6 12h10"/>',
+  star: '<path d="M12 3.5l2.6 5.3 5.8.8-4.2 4.1 1 5.8L12 16.8l-5.2 2.7 1-5.8-4.2-4.1 5.8-.8z"/>',
+  grid: '<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/>',
+  archive: '<rect x="3" y="4" width="18" height="5" rx="1.5"/><path d="M5 9v9.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V9M10 13h4"/>',
+  doc: '<path d="M14 3.5H7A1.5 1.5 0 0 0 5.5 5v14A1.5 1.5 0 0 0 7 20.5h10a1.5 1.5 0 0 0 1.5-1.5V8z"/><path d="M14 3.5V8h4.5M9 13h6M9 16.5h4"/>',
+  repeat: '<path d="M17 3l3 3-3 3"/><path d="M4 11V9a3 3 0 0 1 3-3h13"/><path d="M7 21l-3-3 3-3"/><path d="M20 13v2a3 3 0 0 1-3 3H4"/>',
+  eye: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="2.6"/>',
+};
+function uiIco(name, cls = "") {
+  return `<svg class="ico ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+    stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${UI_ICONS[name]}</svg>`;
 }
 
 // URL base da app (sem hash/rota) — o link que se envia no convite.
@@ -338,8 +389,16 @@ async function openAccountModal() {
           <span class="switch-track"><span class="switch-thumb"></span></span>
         </span>` : ""}
       </label>
-      <button class="secondary" id="account-close" style="margin-top:1rem;">Fechar</button>`;
+      <div class="modal-actions">
+        <button class="secondary" id="account-close">Fechar</button>
+        <button class="danger" id="account-logout">${uiIco("logout")} Sair da conta</button>
+      </div>`;
     $c.querySelector("#account-close").onclick = closeModal;
+    $c.querySelector("#account-logout").onclick = async () => {
+      closeModal();
+      await sb.auth.signOut();
+      location.hash = "#/";
+    };
     const $sw = $c.querySelector("#push-switch");
     if ($sw) $sw.onchange = async () => {
       $sw.disabled = true;
@@ -531,31 +590,32 @@ const MEMBER_ROLES = {
 // ---------------------------------------------------------------- categorias
 // Lista fixa de categorias de despesa, cada uma com um ícone simples.
 // Na base de dados grava-se só o id (coluna expenses.category, nullable).
+// tone: a cor do quadrado onde o ícone aparece nas listas (ver .ct-* no CSS)
 const CATEGORIES = [
-  { id: "talho",       label: "Talho",       icon: "🥩" },
-  { id: "peixe",       label: "Peixe",       icon: "🐟" },
-  { id: "mercearia",   label: "Mercearia",   icon: "🛒" },
-  { id: "padaria",     label: "Padaria",     icon: "🥖" },
-  { id: "cafe",        label: "Café",        icon: "☕" },
-  { id: "restaurante", label: "Restaurante", icon: "🍽️" },
-  { id: "entradas",    label: "Entradas",    icon: "🧀" },
-  { id: "bebidas",     label: "Bebidas",     icon: "🥤" },
-  { id: "sobremesas",  label: "Sobremesas",  icon: "🍰" },
-  { id: "teatro",      label: "Teatro",      icon: "🎭" },
-  { id: "cinema",      label: "Cinema",      icon: "🎬" },
-  { id: "prendas",     label: "Prendas",     icon: "🎁" },
-  { id: "filhos",      label: "Filhos",      icon: "🧸" },
-  { id: "roupa",       label: "Roupa",       icon: "👕" },
-  { id: "bricolage",   label: "Bricolage",   icon: "🔨" },
-  { id: "mobiliario",  label: "Mobiliário",  icon: "🛋️" },
-  { id: "casa",        label: "Casa",        icon: "🏠" },
-  { id: "utensilios",  label: "Utensílios",  icon: "🍴" },
-  { id: "limpeza",     label: "Limpeza",     icon: "🧼" },
-  { id: "saude",       label: "Saúde",       icon: "💊" },
-  { id: "transportes", label: "Transportes", icon: "🚗" },
-  { id: "viagens",     label: "Viagens",     icon: "✈️" },
-  { id: "animais",     label: "Animais",     icon: "🐾" },
-  { id: "outros",      label: "Outros",      icon: "📦" },
+  { id: "talho",       label: "Talho",       icon: "🥩", tone: "rose" },
+  { id: "peixe",       label: "Peixe",       icon: "🐟", tone: "sky" },
+  { id: "mercearia",   label: "Mercearia",   icon: "🛒", tone: "teal" },
+  { id: "padaria",     label: "Padaria",     icon: "🥖", tone: "sand" },
+  { id: "cafe",        label: "Café",        icon: "☕", tone: "sand" },
+  { id: "restaurante", label: "Restaurante", icon: "🍽️", tone: "rose" },
+  { id: "entradas",    label: "Entradas",    icon: "🧀", tone: "sand" },
+  { id: "bebidas",     label: "Bebidas",     icon: "🥤", tone: "berry" },
+  { id: "sobremesas",  label: "Sobremesas",  icon: "🍰", tone: "berry" },
+  { id: "teatro",      label: "Teatro",      icon: "🎭", tone: "violet" },
+  { id: "cinema",      label: "Cinema",      icon: "🎬", tone: "violet" },
+  { id: "prendas",     label: "Prendas",     icon: "🎁", tone: "berry" },
+  { id: "filhos",      label: "Filhos",      icon: "🧸", tone: "sky" },
+  { id: "roupa",       label: "Roupa",       icon: "👕", tone: "violet" },
+  { id: "bricolage",   label: "Bricolage",   icon: "🔨", tone: "sand" },
+  { id: "mobiliario",  label: "Mobiliário",  icon: "🛋️", tone: "teal" },
+  { id: "casa",        label: "Casa",        icon: "🏠", tone: "teal" },
+  { id: "utensilios",  label: "Utensílios",  icon: "🍴", tone: "cobalt" },
+  { id: "limpeza",     label: "Limpeza",     icon: "🧼", tone: "sky" },
+  { id: "saude",       label: "Saúde",       icon: "💊", tone: "teal" },
+  { id: "transportes", label: "Transportes", icon: "🚗", tone: "cobalt" },
+  { id: "viagens",     label: "Viagens",     icon: "✈️", tone: "ochre" },
+  { id: "animais",     label: "Animais",     icon: "🐾", tone: "sand" },
+  { id: "outros",      label: "Outros",      icon: "📦", tone: "slate" },
 ];
 
 function catOf(id) { return CATEGORIES.find(c => c.id === id) || null; }
@@ -580,7 +640,7 @@ function groupCategories(group) {
 function catIconHtml(id, extra = "") {
   const c = catOf(id);
   if (!c) return `<span class="cat-ico none ${extra}" title="Sem categoria">🏷️</span>`;
-  return `<span class="cat-ico ${extra}" title="${esc(c.label)}">${c.icon}</span>`;
+  return `<span class="cat-ico ct-${c.tone} ${extra}" title="${esc(c.label)}">${c.icon}</span>`;
 }
 
 // ---- fatura repartida por várias categorias.
@@ -604,7 +664,7 @@ function expenseCatIconHtml(x, extra = "") {
   if (splits.length < 2) return catIconHtml(x.category, extra);
   const prim = catOf(x.category) || catOf(splits[0].cat);
   const labels = splits.map(s => catOf(s.cat).label).join(" + ");
-  return `<span class="cat-ico multi ${extra}" title="${esc(labels)}">${prim.icon}<span class="cat-multi-badge">${splits.length}</span></span>`;
+  return `<span class="cat-ico multi ct-${prim.tone} ${extra}" title="${esc(labels)}">${prim.icon}<span class="cat-multi-badge">${splits.length}</span></span>`;
 }
 
 // ---- sugestão automática de categoria a partir da descrição.
@@ -741,7 +801,10 @@ function renderLogin() {
   $topbarUser.innerHTML = "";
   $app.innerHTML = `
     <div class="card login-box" style="max-width:460px;margin:2rem auto;">
-      <div class="brand-big"><img src="icons/icon-splash.webp" alt="SplitWisely" width="384" height="384" /></div>
+      <div class="brand-big">
+        <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="currentColor"/></svg></span>
+        <h1>SplitWisely</h1>
+      </div>
       <p class="muted">Grupos, eventos e despesas partilhadas — quem pagou o quê e quem deve a quem.</p>
       <button class="btn-google" id="btn-google">
         <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#FFC107" d="M43.6 20.1H42V20H24v8h11.3C33.7 32.7 29.3 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.9 1.2 8 3l5.7-5.7C34.3 6.1 29.4 4 24 4 13 4 4 13 4 24s9 20 20 20 20-9 20-20c0-1.3-.1-2.6-.4-3.9z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.9 1.2 8 3l5.7-5.7C34.3 6.1 29.4 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.3 0-9.7-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.1H42V20H24v8h11.3c-.8 2.2-2.2 4.1-4.1 5.5l6.2 5.2C41.3 34.9 44 30 44 24c0-1.3-.1-2.6-.4-3.9z"/></svg>
@@ -768,22 +831,19 @@ function renderLogin() {
 function renderTopbar() {
   const u = session?.user;
   if (!u) { $topbarUser.innerHTML = ""; return; }
-  const name = u.user_metadata?.full_name || u.email;
   const avatar = u.user_metadata?.avatar_url;
+  // a fotografia da conta Google é o próprio botão da Conta (sem ela, uma
+  // silhueta — a roda dentada fica para as Definições do grupo); o «Sair»
+  // vive lá dentro, no ecrã da Conta
   $topbarUser.innerHTML = `
-    ${avatar ? `<img src="${esc(avatar)}" alt="" referrerpolicy="no-referrer" />` : ""}
-    <span class="user-name">${esc(name)}</span>
-    <button class="secondary small" id="btn-account" title="Conta e notificações">⚙️</button>
-    ${profile?.is_admin ? `<button class="secondary small" id="btn-admin">Admin</button>` : ""}
-    <button class="secondary small" id="btn-logout">Sair</button>`;
+    ${profile?.is_admin ? `<button type="button" class="hero-btn round" id="btn-admin" aria-label="Admin" title="Admin">${uiIco("shield")}</button>` : ""}
+    <button type="button" class="hero-btn round account-btn" id="btn-account" aria-label="Conta e notificações" title="Conta e notificações">
+      ${avatar ? `<img src="${esc(avatar)}" alt="" referrerpolicy="no-referrer" />` : uiIco("user")}
+    </button>`;
   document.getElementById("btn-account").onclick = () => openAccountModal();
   document.getElementById("btn-admin")?.addEventListener("click", () => {
     location.hash = "#/admin";
   });
-  document.getElementById("btn-logout").onclick = async () => {
-    await sb.auth.signOut();
-    location.hash = "#/";
-  };
 }
 
 // Ecrã de espera para contas ainda não aprovadas pelo admin
@@ -967,7 +1027,7 @@ function canUse() {
   return !!(profile && (profile.is_approved || profile.is_admin));
 }
 
-// Ecrã de arranque (verde, a full-screen). Fica visível enquanto os dados
+// Ecrã de arranque (cobalto, a full-screen). Fica visível enquanto os dados
 // carregam e some assim que a primeira vista fica pronta.
 function showSplash() { document.getElementById("splash")?.classList.remove("splash-out"); }
 function hideSplash() { document.getElementById("splash")?.classList.add("splash-out"); }
@@ -1105,13 +1165,13 @@ async function fetchMyGroupBalances() {
     // paginado como o resto: o roundPreservingSum final corre sobre os
     // membros do grupo, e uma lista truncada dava saldos errados
     fetchAllRows((from, to) =>
-      sb.from("group_members").select("id, group_id, user_id").order("id").range(from, to)),
+      sb.from("group_members").select("id, group_id, user_id, name").order("id").range(from, to)),
     selectExpensesDegrading(expenseSelect),
     fetchAllRows((from, to) =>
       sb.from("payments").select("group_id, created_at, from_member, to_member, amount")
         .order("id").range(from, to)),
   ]);
-  if (m.error || e.error) return { balances: {}, activity: {} };
+  if (m.error || e.error) return { balances: {}, activity: {}, people: {} };
   const pays = p.error ? [] : p.data;
 
   const activity = {};
@@ -1133,6 +1193,11 @@ async function fetchMyGroupBalances() {
     return out;
   };
   const gMembers = byGroup(m.data);
+  // nomes de quem está em cada grupo, para os avatares dos cards da home
+  // (pela ordem de entrada — o PostgREST devolve-os ordenados pelo id)
+  const people = {};
+  for (const [gid, rows] of gMembers)
+    people[gid] = [...rows].sort((x, y) => (y.user_id === uid) - (x.user_id === uid)).map(r => r.name);
   const gExpenses = byGroup(e.data);
   const gPayments = byGroup(pays);
 
@@ -1144,7 +1209,7 @@ async function fetchMyGroupBalances() {
       gMembers.get(gid) || [], gExpenses.get(gid) || [], gPayments.get(gid) || []
     ).get(mem.id) ?? 0;
   }
-  return { balances, activity };
+  return { balances, activity, people };
 }
 
 // Grupos favoritos (máx. 4), guardados por utilizador neste browser.
@@ -1160,7 +1225,7 @@ async function renderGroups() {
   invalidateGroupCache();
   showSplash();
   $app.innerHTML = `<div class="loading">A carregar grupos…</div>`;
-  const [groups, { balances, activity }] = await Promise.all([fetchGroups(), fetchMyGroupBalances()]);
+  const [groups, { balances, activity, people }] = await Promise.all([fetchGroups(), fetchMyGroupBalances()]);
   let othersOpen = false;
   let archivedOpen = false;
 
@@ -1175,14 +1240,6 @@ async function renderGroups() {
       <span class="bal-label">${b > 0 ? "recebes" : "deves"}</span>`;
   };
 
-  // saldo no rodapé de um card: chip colorido
-  const chipBalance = (g) => {
-    const b = balances[g.id];
-    if (b === undefined) return "";
-    if (b === 0) return `<span class="chip zero">✓ em dia</span>`;
-    return `<span class="chip ${b > 0 ? "positive" : "negative"}">${b > 0 ? "recebes" : "deves"} ${fmtMoney(Math.abs(b), g.currency)}</span>`;
-  };
-
   // grupos ativos vs em histórico (arquivados). Os ativos aparecem em cards
   // (destaque) + «Outros grupos»; os arquivados numa lista compacta à parte.
   const activeGroups = groups.filter(g => !g.archived);
@@ -1193,21 +1250,27 @@ async function renderGroups() {
   const sameCur = activeGroups.filter(g => g.currency === mainCur && balances[g.id] !== undefined);
   const totPos = sameCur.reduce((a, g) => a + Math.max(balances[g.id], 0), 0);
   const totNeg = sameCur.reduce((a, g) => a - Math.min(balances[g.id], 0), 0);
-  const statStrip = groups.length === 0 ? "" : `
-    <div class="stat-strip">
-      <div class="stat">
-        <span class="stat-label">A receber</span>
-        <span class="stat-value ${totPos > 0 ? "positive" : "zero"}">${fmtMoney(totPos, mainCur)}</span>
+  const net = totPos - totNeg;
+  // cabeçalho cobalto: o saldo global em grande, a receber e a dever por baixo
+  const hero = `
+    <section class="hero home-hero">
+      <p class="hero-label">${activeGroups.length
+        ? `Saldo global · ${activeGroups.length} grupo${activeGroups.length === 1 ? "" : "s"} ativo${activeGroups.length === 1 ? "" : "s"}`
+        : "Saldo global"}</p>
+      <div class="hero-amount">${net > 0 ? "+" : net < 0 ? "−" : ""}${fmtMoney(Math.abs(net), mainCur)}</div>
+      <div class="hero-stats">
+        <div class="hero-stat"><span>A receber</span><strong>${fmtMoney(totPos, mainCur)}</strong></div>
+        <div class="hero-stat"><span>A dever</span><strong>${fmtMoney(totNeg, mainCur)}</strong></div>
       </div>
-      <div class="stat">
-        <span class="stat-label">A dever</span>
-        <span class="stat-value ${totNeg > 0 ? "negative" : "zero"}">${fmtMoney(totNeg, mainCur)}</span>
-      </div>
-      <div class="stat">
-        <span class="stat-label">Grupos</span>
-        <span class="stat-value">${activeGroups.length}</span>
-      </div>
-    </div>`;
+    </section>`;
+
+  // cada grupo tem o seu azulejo: cor e padrão estáveis, tirados do id
+  const tileOf = (id) => {
+    let h = 0;
+    for (const c of String(id)) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+    const mix = Math.imul(h ^ (h >>> 15), 2246822507) >>> 0; // baralha os bits
+    return `tone-${h % 6} motif-${(mix >>> 13) % 4}`;
+  };
 
   function draw() {
     // até 4 cards em destaque: primeiro os favoritos, depois os grupos
@@ -1226,21 +1289,38 @@ async function renderGroups() {
 
     const starBtn = (g, extra = "") => {
       const isFav = favs.includes(g.id);
-      return `<button class="fav-btn ${extra} ${isFav ? "active" : ""}" data-fav="${g.id}"
-        title="${isFav ? "Tirar dos favoritos" : "Marcar como favorito"}">${isFav ? "★" : "☆"}</button>`;
+      const label = isFav ? "Tirar dos favoritos" : "Marcar como favorito";
+      return `<button type="button" class="fav-btn ${extra} ${isFav ? "active" : ""}" data-fav="${g.id}"
+        aria-label="${label}" title="${label}">${uiIco("star")}</button>`;
+    };
+
+    // saldo no rodapé de um card: valor em cima, verbo por baixo
+    const cardBalance = (g) => {
+      const b = balances[g.id];
+      if (b === undefined) return "";
+      if (b === 0) return `<span class="gc-bal zero">${uiIco("check")} em dia</span>`;
+      return `<span class="gc-bal ${b > 0 ? "positive" : "negative"}">
+        <strong>${fmtMoney(Math.abs(b), g.currency)}</strong><small>${b > 0 ? "recebes" : "deves"}</small></span>`;
     };
 
     const card = (g) => `
-      <div class="group-card" data-goto="${g.id}">
+      <div class="group-card">
+        <div class="gc-band ${tileOf(g.id)}"></div>
         ${starBtn(g)}
-        <span class="group-card-name">${esc(g.name)}</span>
-        ${g.description ? `<span class="group-card-desc">${esc(g.description)}</span>` : ""}
-        <div class="group-card-foot">${chipBalance(g)}</div>
+        <div class="gc-body">
+          <a class="group-card-name" href="#/g/${g.id}">${esc(g.name)}</a>
+          ${g.description ? `<span class="group-card-desc">${esc(g.description)}</span>` : ""}
+          <div class="group-card-foot">
+            ${avatarStackHtml(people[g.id] || [], 2, "xs")}
+            ${cardBalance(g)}
+          </div>
+        </div>
       </div>`;
 
     const row = (g) => `
       <li class="group-row">
         <a class="item-link" href="#/g/${g.id}">
+          <span class="row-tile ${tileOf(g.id)}"></span>
           <span class="item-main">
             <span class="item-title">${esc(g.name)}</span>
             ${g.description ? `<span class="item-sub">${esc(g.description)}</span>` : ""}
@@ -1250,18 +1330,28 @@ async function renderGroups() {
         ${starBtn(g, "in-list")}
       </li>`;
 
-    // linha de um grupo em histórico: sem estrela (favoritos são só ativos),
-    // com um selo 📕 a assinalar que está arquivado
+    // linha de um grupo em histórico: sem estrela (favoritos são só ativos)
+    // e com o azulejo apagado
     const archivedRow = (g) => `
       <li class="group-row archived-row">
         <a class="item-link" href="#/g/${g.id}">
+          <span class="row-tile ${tileOf(g.id)}"></span>
           <span class="item-main">
-            <span class="item-title">📕 ${esc(g.name)}</span>
+            <span class="item-title">${esc(g.name)}</span>
             ${g.description ? `<span class="item-sub">${esc(g.description)}</span>` : ""}
           </span>
           <span class="item-end">${balanceHtml(g)}</span>
         </a>
       </li>`;
+
+    // «Outros grupos» e «Histórico»: uma linha que abre a lista por baixo
+    const toggleRow = (id, icon, label, n, open) => `
+      <button type="button" class="list-toggle ${open ? "open" : ""}" id="${id}" aria-expanded="${open}">
+        <span class="lt-ico">${uiIco(icon)}</span>
+        <span class="lt-label">${label}</span>
+        <span class="lt-count">${n}</span>
+        ${uiIco("down", "lt-chev")}
+      </button>`;
 
     const activeSection = activeGroups.length === 0
       ? (archivedGroups.length
@@ -1269,40 +1359,30 @@ async function renderGroups() {
           : "")
       : `<div class="group-grid">${featured.map(card).join("")}</div>
           ${others.length ? `
-            <button class="secondary others-toggle" id="btn-others">
-              Outros grupos (${others.length}) <span class="others-arrow">${othersOpen ? "▴" : "▾"}</span>
-            </button>
-            <div class="card ${othersOpen ? "" : "hidden"}" id="others-card">
+            ${toggleRow("btn-others", "grid", "Outros grupos", others.length, othersOpen)}
+            <div class="card list-card ${othersOpen ? "" : "hidden"}" id="others-card">
               <ul class="list">${others.map(row).join("")}</ul>
             </div>` : ""}`;
 
     const archivedSection = archivedGroups.length ? `
-      <button class="secondary others-toggle" id="btn-archived">
-        Histórico (${archivedGroups.length}) <span class="others-arrow">${archivedOpen ? "▴" : "▾"}</span>
-      </button>
-      <div class="card ${archivedOpen ? "" : "hidden"}" id="archived-card">
+      ${toggleRow("btn-archived", "archive", "Histórico", archivedGroups.length, archivedOpen)}
+      <div class="card list-card ${archivedOpen ? "" : "hidden"}" id="archived-card">
         <ul class="list">${archivedSorted.map(archivedRow).join("")}</ul>
       </div>` : "";
 
     $app.innerHTML = `
+      ${hero}
       <div class="header-row">
         <h1>Os meus grupos</h1>
-        <button id="btn-new-group">+ Novo grupo</button>
+        <button type="button" class="outline" id="btn-new-group">${uiIco("plus")} Novo grupo</button>
       </div>
       <div id="new-group-slot"></div>
-      ${statStrip}
       ${groups.length === 0
-        ? `<div class="card"><p class="empty">Ainda não tens grupos. Cria o primeiro no botão «+ Novo grupo» 👆</p></div>`
+        ? `<div class="card"><p class="empty">Ainda não tens grupos. Cria o primeiro em «Novo grupo», aqui em cima.</p></div>`
         : activeSection + archivedSection}`;
 
-    // navegação dos cards (a estrela dentro do card não navega)
-    $app.querySelectorAll("[data-goto]").forEach(c => {
-      c.onclick = (e) => {
-        if (e.target.closest(".fav-btn")) return;
-        location.hash = `#/g/${c.dataset.goto}`;
-      };
-    });
-
+    // o card todo navega (o link do nome estica-se por cima dele, ver
+    // .group-card-name::after); a estrela fica por cima e não navega
     $app.querySelectorAll("[data-fav]").forEach(b => {
       b.onclick = (e) => {
         e.preventDefault();
@@ -1320,13 +1400,15 @@ async function renderGroups() {
     $app.querySelector("#btn-others")?.addEventListener("click", (ev) => {
       othersOpen = !othersOpen;
       $app.querySelector("#others-card").classList.toggle("hidden", !othersOpen);
-      ev.currentTarget.querySelector(".others-arrow").textContent = othersOpen ? "▴" : "▾";
+      ev.currentTarget.classList.toggle("open", othersOpen);
+      ev.currentTarget.setAttribute("aria-expanded", othersOpen);
     });
 
     $app.querySelector("#btn-archived")?.addEventListener("click", (ev) => {
       archivedOpen = !archivedOpen;
       $app.querySelector("#archived-card").classList.toggle("hidden", !archivedOpen);
-      ev.currentTarget.querySelector(".others-arrow").textContent = archivedOpen ? "▴" : "▾";
+      ev.currentTarget.classList.toggle("open", archivedOpen);
+      ev.currentTarget.setAttribute("aria-expanded", archivedOpen);
     });
 
     bindNewGroup();
@@ -1427,19 +1509,57 @@ async function renderGroups() {
 }
 
 // ---------------------------------------------------------------- vista: grupo
-// Saldo de «quem está a ver», no canto do cabeçalho do grupo (vazio quando
-// não é membro — ex.: criador que não participa, ou link público sem nome
-// escolhido).
-function headBalanceHtml(myMember, { group, members, expenses, payments }) {
-  if (!myMember) return "";
-  const myBal = groupBalancesCents(members, expenses, payments).get(myMember.id) ?? 0;
+// Cabeçalho cobalto do grupo (vista normal e link público): voltar e ações
+// em cima; nome, descrição e quem está no grupo; por baixo o saldo de «quem
+// está a ver» (só quando é membro — um criador que não participa, ou o link
+// público sem nome escolhido, não têm saldo) e o total gasto no grupo.
+// `compact` tira os números: nos Saldos já estão em grande no 1.º cartão.
+function groupHeroHtml(bundle, myMember, { shell, back = "", actions = "", compact = false }) {
+  const { group, members, expenses, payments } = bundle;
+  const cur = group.currency;
+  const total = expenses.reduce((a, x) => a + toCents(x.amount), 0);
+  const myBal = myMember ? (groupBalancesCents(members, expenses, payments).get(myMember.id) ?? 0) : null;
   return `
-        <div class="head-balance">
-          <span class="head-balance-label">O teu saldo</span>
-          <span class="chip ${myBal > 0 ? "positive" : myBal < 0 ? "negative" : "zero"}">
-            ${myBal === 0 ? "✓ em dia" : (myBal > 0 ? "+" : "−") + fmtMoney(Math.abs(myBal), group.currency)}
-          </span>
-        </div>`;
+    <section class="hero group-hero ${compact ? "compact" : ""}" ${shell}>
+      ${back || actions ? `<div class="hero-bar">${back}<span class="hero-actions">${actions}</span></div>` : ""}
+      <div class="gh-title">
+        <h1>${esc(group.name)}</h1>
+        ${cur !== "EUR" ? `<span class="hero-badge">${esc(cur)}</span>` : ""}
+        ${group.archived ? `<span class="hero-badge">${uiIco("archive")} Histórico</span>` : ""}
+      </div>
+      <div class="gh-sub">
+        <span class="gh-desc">${esc(group.description || "")}</span>
+        ${members.length ? avatarStackHtml(members.map(m => m.name), 5, "xs") : ""}
+      </div>
+      ${compact ? "" : `<div class="gh-stats">
+        ${myMember ? `
+        <div class="gh-stat">
+          <span>O teu saldo</span>
+          <strong class="gh-bal">${myBal === 0 ? "Em dia" : (myBal > 0 ? "+" : "−") + fmtMoney(Math.abs(myBal), cur)}</strong>
+        </div>` : ""}
+        <div class="gh-stat gh-total">
+          <span>Total do grupo</span>
+          <strong>${fmtMoney(total, cur)}</strong>
+        </div>
+      </div>`}
+    </section>`;
+}
+
+// Barra de baixo dentro do grupo: Despesas · (+) · Saldos. O «+» lança uma
+// despesa nova em qualquer separador (só aparece a quem pode escrever).
+function groupNavHtml(base, tab, withAdd, addDisabled) {
+  const item = (id, icon, label) => `
+    <a href="${base}/${id}" class="${tab === id ? "on" : ""}" ${tab === id ? `aria-current="page"` : ""}>
+      ${uiIco(icon)}<span>${label}</span></a>`;
+  return `
+    <nav class="bottom-nav" aria-label="Separadores do grupo">
+      <div class="bn-inner ${withAdd ? "" : "no-add"}">
+        ${item("despesas", "receipt", "Despesas")}
+        ${withAdd ? `<button type="button" class="bn-add" id="btn-add-expense" aria-label="Nova despesa"
+          title="Nova despesa" ${addDisabled ? "disabled" : ""}>${uiIco("plus")}</button>` : ""}
+        ${item("saldos", "scale", "Saldos")}
+      </div>
+    </nav>`;
 }
 
 async function renderGroup(groupId, tab) {
@@ -1466,39 +1586,7 @@ async function renderGroup(groupId, tab) {
   const isOwner = group.created_by === session.user.id;
   const isArchived = !!group.archived;
 
-  // o saldo atual do utilizador vive aqui, alinhado com o título do grupo
   const myMember = members.find(m => m.user_id === session.user.id);
-  const headBalance = headBalanceHtml(myMember, bundle);
-
-  const tabs = [
-    ["despesas", "Despesas"],
-    ["saldos", "Saldos"],
-    ["definicoes", "Definições"],
-  ];
-
-  $app.innerHTML = `
-    <div class="page-head" data-group-shell="${group.id}">
-      <a class="back-pill" href="#/"><span class="arr">←</span> Grupos</a>
-      <div class="header-row">
-        <div class="title-line">
-          <h1>${esc(group.name)}</h1>
-          <span class="badge">${esc(group.currency)}</span>
-          ${isArchived ? `<span class="badge archived-badge" title="Grupo em histórico">📕 Histórico</span>` : ""}
-        </div>
-        ${headBalance}
-      </div>
-      ${group.description ? `<p class="page-desc">${esc(group.description)}</p>` : ""}
-      ${isArchived ? `<p class="archived-note">Este grupo está em <strong>histórico</strong> — os dados estão bloqueados. ${isOwner ? "Reativa-o nas <strong>Definições</strong> para voltar a lançar despesas." : "Só o criador o pode reativar."}</p>` : ""}
-    </div>
-    <div class="tabs page-tabs">
-      ${tabs.map(([id, label]) =>
-        `<button data-tab="${id}" class="${id === tab ? "active" : ""}">${label}</button>`).join("")}
-    </div>
-    <div id="tab-content"></div>`;
-
-  $app.querySelectorAll(".tabs button").forEach(b => {
-    b.onclick = () => { location.hash = `#/g/${groupId}/${b.dataset.tab}`; };
-  });
 
   // permissão do utilizador atual neste grupo: o criador tem sempre acesso
   // total; os restantes herdam o role da sua linha de membro (schema antigo
@@ -1512,6 +1600,20 @@ async function renderGroup(groupId, tab) {
   const canWrite = myRole !== "read" && !archived; // pode lançar/registar
 
   const ctx = { group, members, expenses, payments, paymentsReady, recurring, recurringReady, isOwner, myMember, myRole, canWrite, archived, lastSeen: groupSeen.ts };
+
+  // as Definições abrem pela roda dentada do cabeçalho; Despesas e Saldos
+  // vivem na barra de baixo, ao alcance do polegar
+  const back = `<a class="hero-btn back" href="#/">${uiIco("back")} Grupos</a>`;
+  const actions = `<a class="hero-btn round ${tab === "definicoes" ? "on" : ""}" href="#/g/${group.id}/definicoes"
+    aria-label="Definições do grupo" title="Definições do grupo" ${tab === "definicoes" ? `aria-current="page"` : ""}>${uiIco("gear")}</a>`;
+  $app.innerHTML = `
+    ${groupHeroHtml(bundle, myMember, { shell: `data-group-shell="${group.id}"`, back, actions, compact: tab !== "despesas" })}
+    ${isArchived ? `<p class="archived-note">Este grupo está em <strong>histórico</strong> — os dados estão bloqueados. ${isOwner ? "Reativa-o nas <strong>Definições</strong> para voltar a lançar despesas." : "Só o criador o pode reativar."}</p>` : ""}
+    <div id="tab-content"></div>
+    ${groupNavHtml(`#/g/${group.id}`, tab, canWrite, members.length === 0)}`;
+  const $add = document.getElementById("btn-add-expense");
+  if ($add) $add.onclick = () => openExpenseModal(ctx, null);
+
   const $c = document.getElementById("tab-content");
   if (tab === "despesas") renderExpensesTab($c, ctx);
   else if (tab === "saldos") renderBalancesTab($c, ctx);
@@ -1593,38 +1695,24 @@ async function renderPublicGroup(token, tab) {
   const myMember = members.find(m => m.id === meId) || null;
 
   $app.innerHTML = `
-    <div class="page-head" data-public-shell="${token}">
-      ${session ? `<a class="back-pill" href="#/"><span class="arr">←</span> Grupos</a>` : ""}
-      <div class="header-row">
-        <div class="title-line">
-          <h1>${esc(group.name)}</h1>
-          <span class="badge">${esc(group.currency)}</span>
-          ${group.archived ? `<span class="badge archived-badge" title="Grupo em histórico">📕 Histórico</span>` : ""}
-        </div>
-        ${headBalanceHtml(myMember, bundle)}
-      </div>
-      ${group.description ? `<p class="page-desc">${esc(group.description)}</p>` : ""}
-      <p class="public-note"><span aria-hidden="true">👁️</span>
-        <span>Link público, só de consulta — válido até <strong>${esc(fmtDateTime(bundle.expires_at))}</strong>.</span></p>
-      ${members.length ? `
-      <div class="public-me">
-        <label for="pub-me">Quem és tu?</label>
-        <select id="pub-me">
-          <option value="">Escolhe o teu nome</option>
-          ${members.map(m =>
-            `<option value="${m.id}" ${m.id === myMember?.id ? "selected" : ""}>${esc(m.name)}</option>`).join("")}
-        </select>
-      </div>` : ""}
-    </div>
-    <div class="tabs page-tabs">
-      ${[["despesas", "Despesas"], ["saldos", "Saldos"]].map(([id, label]) =>
-        `<button data-tab="${id}" class="${id === tab ? "active" : ""}">${label}</button>`).join("")}
-    </div>
-    <div id="tab-content"></div>`;
-
-  $app.querySelectorAll(".tabs button").forEach(b => {
-    b.onclick = () => { location.hash = `#/p/${token}/${b.dataset.tab}`; };
-  });
+    ${groupHeroHtml(bundle, myMember, {
+      shell: `data-public-shell="${token}"`,
+      back: session ? `<a class="hero-btn back" href="#/">${uiIco("back")} Grupos</a>` : "",
+      compact: tab === "saldos",
+    })}
+    <p class="public-note">${uiIco("eye")}
+      <span>Link público, só de consulta — válido até <strong>${esc(fmtDateTime(bundle.expires_at))}</strong>.</span></p>
+    ${members.length ? `
+    <div class="public-me">
+      <label for="pub-me">Quem és tu?</label>
+      <select id="pub-me">
+        <option value="">Escolhe o teu nome</option>
+        ${members.map(m =>
+          `<option value="${m.id}" ${m.id === myMember?.id ? "selected" : ""}>${esc(m.name)}</option>`).join("")}
+      </select>
+    </div>` : ""}
+    <div id="tab-content"></div>
+    ${groupNavHtml(`#/p/${token}`, tab, false, true)}`;
   const $me = document.getElementById("pub-me");
   if ($me) $me.onchange = () => { setPublicMe(token, $me.value); route(); };
 
@@ -1643,7 +1731,10 @@ async function renderPublicGroup(token, tab) {
 // ------------------------------------------------ tab: despesas
 function renderExpensesTab($c, ctx) {
   const { group, members, expenses, myMember } = ctx;
-  const memberName = id => members.find(m => m.id === id)?.name || "?";
+  const curto = nomesCurtos(members);
+  const nameOf = id => curto(members.find(m => m.id === id)?.name || "?");
+  const juntar = arr => arr.length <= 1 ? arr.join("")
+    : `${arr.slice(0, -1).join(", ")} e ${arr[arr.length - 1]}`;
   const cur = group.currency;
 
   // efeito líquido da despesa no utilizador: o que pagou menos a sua parte
@@ -1654,14 +1745,25 @@ function renderExpensesTab($c, ctx) {
     // «cada um pagou o seu» não mexe no saldo: mostra-se só o que coube ao
     // próprio, a cinzento e sem sinal — é o que gastou, não o que deve
     if (x.split_mode === "own") return share > 0
-      ? `<span class="my-impact neutral" title="A tua parte (só registo, não mexe no saldo)">${fmtMoney(share, cur)}</span>`
+      ? `<span class="my-impact neutral" title="A tua parte (só registo, não mexe no saldo)">a tua parte ${fmtMoney(share, cur)}</span>`
       : "";
     const paid = x.expense_payers.filter(p => p.member_id === myMember.id)
       .reduce((a, p) => a + toCents(p.amount), 0);
     const net = paid - share;
     if (net === 0 && paid === 0) return "";
     return `<span class="my-impact ${net >= 0 ? "positive" : "negative"}">
-      ${net > 0 ? "+" : ""}${fmtMoney(net, cur)}</span>`;
+      ${net > 0 ? "+" : net < 0 ? "−" : ""}${fmtMoney(Math.abs(net), cur)}</span>`;
+  };
+
+  // quem pagou, como se diz: «Ana pagou», «Pagaste tu», «Tu e Ana pagaram»
+  const whoPaid = (x) => {
+    if (x.split_mode === "own") return "Cada um pagou o seu";
+    const ids = x.expense_payers.map(p => p.member_id);
+    const mine = !!myMember && ids.includes(myMember.id);
+    const others = ids.filter(id => id !== myMember?.id).map(nameOf);
+    if (mine && others.length === 0) return "Pagaste tu";
+    if (mine) return `Tu e ${juntar(others)} pagaram`;
+    return `${juntar(others)} ${others.length === 1 ? "pagou" : "pagaram"}`;
   };
 
   // movimentos por ver desde a última consulta a este grupo (ctx.lastSeen —
@@ -1683,13 +1785,14 @@ function renderExpensesTab($c, ctx) {
     return "";
   };
 
-  // linhas agrupadas por mês; a data fica num bloco compacto à esquerda
-  const monthLabel = (d) =>
-    new Date(d + "T00:00:00").toLocaleDateString("pt-PT", { month: "long", year: "numeric" });
-  const dateBlock = (d) => {
+  // a lista agrupa-se por dia: «Seg, 28 set» (com o ano quando não é o atual)
+  const thisYear = new Date().getFullYear();
+  const dayLabel = (d) => {
     const dt = new Date(d + "T00:00:00");
-    return `<span class="date-block"><span class="d">${dt.getDate()}</span>
-      <span class="m">${dt.toLocaleDateString("pt-PT", { month: "short" }).replace(".", "")}</span></span>`;
+    // o pt-PT dá o dia por extenso («segunda»): ficam as três primeiras
+    const wd = dt.toLocaleDateString("pt-PT", { weekday: "long" }).slice(0, 3);
+    const yr = dt.getFullYear() !== thisYear ? ` ${dt.getFullYear()}` : "";
+    return `${wd.charAt(0).toUpperCase()}${wd.slice(1)}, ${fmtDiaMes(d)}${yr}`;
   };
 
   // filtros da lista: categoria (chips), texto e intervalo de datas.
@@ -1704,55 +1807,59 @@ function renderExpensesTab($c, ctx) {
     && (!filter.from || x.expense_date >= filter.from)
     && (!filter.to || x.expense_date <= filter.to);
 
+  // aviso do que há por ver — conta o grupo todo, não o recorte dos
+  // filtros: um movimento novo com data antiga fica lá em baixo na lista
+  // (ordenada por data da despesa) e passava despercebido
+  const nFresh = expenses.filter(x => freshOf(x)).length;
+  const freshNote = nFresh === 0 ? "" :
+    `<p class="fresh-note"><span class="fresh-dot"></span>${nFresh} movimento${nFresh === 1 ? "" : "s"}
+      ${nFresh === 1 ? "novo ou alterado" : "novos ou alterados"} desde a tua última visita</p>`;
+
   // o shell (filtros) desenha-se uma única vez — só a lista, os chips de
   // categoria e a linha de resultados voltam a desenhar-se, para o input
-  // não perder o foco. Pesquisa, datas e categorias vivem num cartão
-  // próprio; a lista noutro; a despesa nova/consulta abre em pop-up (FAB).
+  // não perder o foco. A despesa nova abre pelo «+» da barra de baixo; a
+  // consulta abre em pop-up.
   $c.innerHTML = `
     ${members.length === 0
       ? `<div class="card"><p class="empty">${ctx.publicView
           ? "Este grupo ainda não tem membros."
-          : "Adiciona primeiro membros no separador «Definições»."}</p></div>` : ""}
-    ${expenses.length === 0 ? "" : `
-    <div class="card" id="expense-filters">
+          : "Adiciona primeiro membros nas Definições (a roda dentada, lá em cima)."}</p></div>` : ""}
+    ${expenses.length === 0 ? (members.length === 0 ? "" : `
+    <div class="card empty-card">
+      <p class="empty">Ainda não há despesas.${ctx.canWrite
+        ? " Toca no <strong>+</strong> para lançar a primeira — ou cola vários movimentos de uma vez." : ""}</p>
+      ${ctx.canWrite ? `<button type="button" class="secondary" id="btn-import">${uiIco("clipboard")} Colar movimentos</button>` : ""}
+    </div>`) : `
+    ${freshNote}
+    <div class="exp-tools" id="expense-filters">
       <div class="filter-bar">
-        <div class="search-box">
-          <span class="search-ico">🔍</span>
-          <input id="f-q" type="search" placeholder="Pesquisar por descrição…" autocomplete="off" />
-        </div>
-        <button type="button" class="secondary date-toggle" id="f-dates-btn"
-          title="Filtrar por intervalo de datas">📅</button>
+        <label class="search-box">
+          ${uiIco("search", "search-ico")}
+          <input id="f-q" type="search" placeholder="Pesquisar despesas" aria-label="Pesquisar despesas" autocomplete="off" />
+        </label>
+        <button type="button" class="tool-btn date-toggle" id="f-dates-btn"
+          aria-label="Filtrar por datas" title="Filtrar por intervalo de datas">${uiIco("calendar")}</button>
+        ${ctx.canWrite ? `<button type="button" class="tool-btn" id="btn-import"
+          aria-label="Colar vários movimentos" title="Colar vários movimentos">${uiIco("clipboard")}</button>` : ""}
       </div>
       <div class="date-range hidden" id="f-dates">
-        <div class="field"><label>De</label><input type="date" id="f-from" /></div>
-        <div class="field"><label>Até</label><input type="date" id="f-to" /></div>
+        <div class="field"><label for="f-from">De</label><input type="date" id="f-from" /></div>
+        <div class="field"><label for="f-to">Até</label><input type="date" id="f-to" /></div>
         <button type="button" class="secondary small" id="f-clear">Limpar</button>
       </div>
       ${hasCats ? `<div class="cat-strip in-filters" id="cat-strip"></div>` : ""}
       <p class="filter-result hidden" id="f-result"></p>
-    </div>`}
-    ${members.length === 0 && expenses.length === 0 ? "" : `
-    <div class="card">
+    </div>
+    <div class="card exp-card">
       <div id="expense-list"></div>
-    </div>`}
-    ${ctx.canWrite ? `
-      <button class="fab fab-sec" id="btn-import" title="Colar vários movimentos"
-        ${members.length === 0 ? "disabled" : ""} aria-label="Colar vários movimentos">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
-          stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" width="22" height="22">
-          <path d="M9 4h6v3H9z"/><path d="M15 5.5h2.5A1.5 1.5 0 0 1 19 7v12a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 5 19V7a1.5 1.5 0 0 1 1.5-1.5H9"/>
-          <path d="M8.5 12h7"/><path d="M8.5 15.5h4.5"/>
-        </svg>
-      </button>
-      <button class="fab" id="btn-add-expense" title="Nova despesa"
-        ${members.length === 0 ? "disabled" : ""}>+</button>` : ""}`;
+    </div>`}`;
 
   const $list = $c.querySelector("#expense-list");
   const $result = $c.querySelector("#f-result");
   const $catStrip = $c.querySelector("#cat-strip");
 
   function drawList() {
-    if (!$list) return; // grupo ainda sem membros nem despesas
+    if (!$list) return; // grupo ainda sem despesas
     const base = expenses.filter(matches);
 
     // chips de categoria (com o total de cada uma dentro do recorte atual)
@@ -1771,10 +1878,12 @@ function renderExpensesTab($c, ctx) {
         return `<button type="button" class="cat-chip ${filter.cat === id ? "active" : ""}" data-catfilter="${id}">
           ${c.icon}<span>${esc(c.label)}</span></button>`;
       };
-      $catStrip.innerHTML = [...catTotals.entries()].sort((a, b) => b[1] - a[1]).map(catChip).join("");
+      $catStrip.innerHTML = `<button type="button" class="cat-chip all ${filter.cat ? "" : "active"}" data-catfilter="">Todas</button>`
+        + [...catTotals.entries()].sort((a, b) => b[1] - a[1]).map(catChip).join("");
       $catStrip.querySelectorAll("[data-catfilter]").forEach(b => {
         b.onclick = () => {
-          filter.cat = filter.cat === b.dataset.catfilter ? null : b.dataset.catfilter;
+          const id = b.dataset.catfilter || null;
+          filter.cat = filter.cat === id ? null : id;
           drawList();
         };
       });
@@ -1785,23 +1894,28 @@ function renderExpensesTab($c, ctx) {
     const shown = filter.cat
       ? base.filter(x => expenseCatSplits(x).some(s => s.cat === filter.cat)) : base;
     const filtered = !!filter.cat || searching();
-    const totalShown = shown.reduce((a, x) => a + (filter.cat
+    const centsOf = (x) => filter.cat
       ? expenseCatSplits(x).filter(s => s.cat === filter.cat).reduce((s2, s) => s2 + s.cents, 0)
-      : toCents(x.amount)), 0);
-    // com filtros ativos, o cartão dos filtros mostra o que está à vista
+      : toCents(x.amount);
+    const totalShown = shown.reduce((a, x) => a + centsOf(x), 0);
+    // com filtros ativos, a linha por baixo dos filtros diz o que está à vista
     if ($result) {
       $result.classList.toggle("hidden", !filtered);
       if (filtered) $result.textContent =
         `${shown.length} despesa${shown.length === 1 ? "" : "s"} · ${fmtMoney(totalShown, cur)}`;
     }
 
-    let lastMonth = null;
+    // total de cada dia (do que está à vista), para o cabeçalho do dia
+    const dayTotals = new Map();
+    for (const x of shown) dayTotals.set(x.expense_date, (dayTotals.get(x.expense_date) || 0) + centsOf(x));
+
+    let lastDay = null;
     const rows = shown.map(x => {
-      const payers = x.expense_payers.map(p => memberName(p.member_id)).join(", ");
       const nShares = x.expense_shares.length;
-      const m = monthLabel(x.expense_date);
-      const head = m !== lastMonth ? `<li class="month-head">${esc(m)}</li>` : "";
-      lastMonth = m;
+      const head = x.expense_date !== lastDay
+        ? `<li class="day-head"><span>${esc(dayLabel(x.expense_date))}</span>
+            <span>${fmtMoney(dayTotals.get(x.expense_date), cur)}</span></li>` : "";
+      lastDay = x.expense_date;
       // fatura repartida: linha miudinha com cada categoria e o seu valor
       const catSplits = expenseCatSplits(x).filter(s => s.cat !== "none");
       const catLine = catSplits.length >= 2
@@ -1810,37 +1924,30 @@ function renderExpensesTab($c, ctx) {
         : "";
       const fresh = freshOf(x);
       const freshBadge = fresh
-        ? ` <span class="badge fresh-${fresh}" title="${fresh === "novo"
+        ? `<span class="badge fresh-${fresh}" title="${fresh === "novo"
             ? "Lançada desde a tua última visita" : "Alterada desde a tua última visita"}">${fresh}</span>`
         : "";
       return `${head}
-        <li class="clickable${fresh ? " fresh-row" : ""}" data-open="${x.id}">
-          ${dateBlock(x.expense_date)}
+        <li class="exp-row clickable" data-open="${x.id}">
           ${expenseCatIconHtml(x)}
           <div class="item-main">
-            <span class="item-title">${esc(x.description)}${freshBadge}${x.recurring_id ? ` <span class="badge linked" title="Despesa recorrente">🔁</span>` : ""}</span>
-            <span class="item-sub">${x.split_mode === "own" ? "cada um pagou o seu" : `pago por ${esc(payers)}`} · ${nShares} pessoa${nShares === 1 ? "" : "s"}</span>
+            <span class="item-title-line">
+              <span class="item-title">${esc(x.description)}</span>${freshBadge}${x.recurring_id
+                ? `<span class="badge linked" title="Despesa recorrente">${uiIco("repeat")}</span>` : ""}
+            </span>
+            <span class="item-sub">${esc(whoPaid(x))} · ${nShares} pessoa${nShares === 1 ? "" : "s"}</span>
             ${catLine}
           </div>
           <div class="item-end">
             <span class="amount">${fmtMoney(toCents(x.amount), cur)}</span>
             ${myImpact(x)}
           </div>
-          <span class="chevron">›</span>
         </li>`;
     }).join("");
 
-    // aviso do que há por ver — conta o grupo todo, não o recorte dos
-    // filtros: um movimento novo com data antiga fica lá em baixo na lista
-    // (ordenada por data da despesa) e passava despercebido
-    const nFresh = expenses.filter(x => freshOf(x)).length;
-    const freshNote = nFresh === 0 ? "" :
-      `<p class="fresh-note">✨ ${nFresh} movimento${nFresh === 1 ? "" : "s"}
-        ${nFresh === 1 ? "novo ou alterado" : "novos ou alterados"} desde a tua última visita</p>`;
-
-    $list.innerHTML = shown.length === 0 && members.length > 0
-      ? `<p class="empty">${filtered ? "Nenhuma despesa encontrada com estes filtros." : "Sem despesas ainda."}</p>`
-      : `${freshNote}<ul class="list compact">${rows}</ul>`;
+    $list.innerHTML = shown.length === 0
+      ? `<p class="empty">Nenhuma despesa encontrada com estes filtros.</p>`
+      : `<ul class="list exp-list">${rows}</ul>`;
 
     // consulta da despesa em pop-up — fechar devolve à lista tal como estava
     $list.querySelectorAll("[data-open]").forEach(li => {
@@ -1848,21 +1955,19 @@ function renderExpensesTab($c, ctx) {
     });
   }
 
-  const $addBtn = $c.querySelector("#btn-add-expense");
-  if ($addBtn) $addBtn.onclick = () => openExpenseModal(ctx, null);
   const $impBtn = $c.querySelector("#btn-import");
   if ($impBtn) $impBtn.onclick = () => openImportModal(ctx);
 
-  // pesquisa por descrição e intervalo de datas (o cartão dos filtros só
-  // existe quando há despesas)
+  // pesquisa por descrição e intervalo de datas (os filtros só existem
+  // quando há despesas)
   const $q = $c.querySelector("#f-q");
   if ($q) {
     const $from = $c.querySelector("#f-from");
     const $to = $c.querySelector("#f-to");
     const $datesBtn = $c.querySelector("#f-dates-btn");
     const $dates = $c.querySelector("#f-dates");
-    // o botão 📅 fica realçado enquanto houver datas aplicadas, mesmo com o
-    // painel fechado — para o filtro nunca ficar "escondido" sem se notar
+    // o botão das datas fica realçado enquanto houver datas aplicadas, mesmo
+    // com o painel fechado — para o filtro nunca ficar "escondido" sem se notar
     const syncDatesBtn = () => $datesBtn.classList.toggle("active", !!(filter.from || filter.to));
     $q.oninput = () => { filter.q = $q.value; drawList(); };
     $from.onchange = () => { filter.from = $from.value; syncDatesBtn(); drawList(); };
@@ -2781,7 +2886,7 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
       <div class="xp-cats">
         ${catList.map(c => `
           <button type="button" class="xp-cat ${catOn(c.id) ? "on" : ""}" data-cat="${c.id}">
-            <span class="xp-cat-ico">${c.icon}</span>
+            <span class="xp-cat-ico ct-${c.tone}">${c.icon}</span>
             <span class="xp-cat-lb">${esc(c.label)}</span>
             ${state.catSplit && catOn(c.id) ? `<span class="xp-cat-v">${fmtMoney(state.catSplit[c.id] || 0, cur)}</span>` : ""}
           </button>`).join("")}
@@ -3444,7 +3549,7 @@ function renderImportForm(slot, ctx, onClose) {
       <div class="xp-cats">
         ${catsDoGrupo.map(c => `
           <button type="button" class="xp-cat ${m.cat === c.id ? "on" : ""}" data-pick="${c.id}">
-            <span class="xp-cat-ico">${c.icon}</span>
+            <span class="xp-cat-ico ct-${c.tone}">${c.icon}</span>
             <span class="xp-cat-lb">${esc(c.label)}</span>
           </button>`).join("")}
       </div>
@@ -3735,7 +3840,6 @@ function renderImportForm(slot, ctx, onClose) {
 function renderBalancesTab($c, ctx) {
   const { group, members, expenses, payments, paymentsReady } = ctx;
   const cur = group.currency;
-  const memberName = id => members.find(m => m.id === id)?.name || "?";
 
   // cêntimos: + recebe, - deve (pagamentos já feitos incluídos)
   const balance = Object.fromEntries(groupBalancesCents(members, expenses, payments));
@@ -3743,140 +3847,156 @@ function renderBalancesTab($c, ctx) {
   // sugestões de acerto (preferências de liquidação + algoritmo guloso)
   const settlements = settlementsFor(members, balance);
 
-  // a quem deve / de quem recebe cada pessoa (para a linha secundária)
+  const { myMember } = ctx;
+  const curto = nomesCurtos(members);
+  const isMe = (id) => !!myMember && id === myMember.id;
+  // nas frases, o próprio é «tu» («Rui → tu», «Tu → Ana»)
+  const quem = (m, inicio = false) => isMe(m.id) ? (inicio ? "Tu" : "tu") : curto(m.name);
+
+  // a quem deve / de quem recebe cada pessoa (detalhe ao tocar na linha)
   const owesTo = {}, getsFrom = {};
   for (const s of settlements) {
-    (owesTo[s.from.id] ??= []).push({ name: s.to.name, cents: s.cents });
-    (getsFrom[s.to.id] ??= []).push({ name: s.from.name, cents: s.cents });
+    (owesTo[s.from.id] ??= []).push({ name: quem(s.to), cents: s.cents });
+    (getsFrom[s.to.id] ??= []).push({ name: quem(s.from), cents: s.cents });
   }
-  // sublinha: 1 pessoa mostra o nome; várias ficam «deve a N pessoas ▾»
-  // e a linha expande ao toque com o detalhe de cada uma
-  const subline = (mId, b) => {
-    const list = b < 0 ? owesTo[mId] : b > 0 ? getsFrom[mId] : null;
-    if (!list?.length) return "";
-    const verb = b < 0 ? "deve a" : "recebe de";
-    if (list.length === 1) return `<span class="item-sub">${verb} ${esc(list[0].name)}</span>`;
-    return `<span class="item-sub">${verb} ${list.length} pessoas <span class="expand-arrow">▾</span></span>`;
-  };
 
   const totalPaid = payments.reduce((a, p) => a + toCents(p.amount), 0);
-  const { myMember } = ctx;
 
   // intervalo de datas do resumo: recorta o total, as quotas e o gráfico.
   // Os saldos e os acertos ficam sempre sobre tudo — dívida é dívida.
   const period = { from: "", to: "" };
 
-  // Em cada cartão, o que é do próprio utilizador fica sempre visível; só o
-  // que é dos outros (saldos, acertos, pagamentos, quotas) fica atrás de um
-  // «Ver … dos outros (N) ▾». Um criador que não é membro do grupo não tem
-  // "próprio": vê tudo sempre visível, sem botão de colapsar.
+  // Nos acertos, nos pagamentos e nas quotas, o que é do próprio fica sempre
+  // visível; o que é dos outros fica atrás de um «Ver … dos outros (N) ▾».
+  // Um criador que não é membro do grupo não tem "próprio": vê tudo sempre
+  // visível, sem botão de colapsar.
   const isMineS = (s) => !!myMember && (s.from.id === myMember.id || s.to.id === myMember.id);
   const isMineP = (p) => !!myMember && (p.from_member === myMember.id || p.to_member === myMember.id);
   const mySettles = settlements.map((s, i) => [s, i]).filter(([s]) => !myMember || isMineS(s));
   const otherSettles = myMember ? settlements.map((s, i) => [s, i]).filter(([s]) => !isMineS(s)) : [];
   const myPayments = payments.filter(p => !myMember || isMineP(p));
   const otherPayments = myMember ? payments.filter(p => !isMineP(p)) : [];
-  const mineMembers = myMember ? [myMember] : members;
   const otherMembers = myMember ? members.filter(m => m.id !== myMember.id) : [];
   // quotas por pessoa: sem "próprio" mostra toda a gente (senão só os outros)
   const quotaMembers = myMember ? otherMembers : members;
 
-  // linha de acerto (o índice aponta para settlements, para o «Pagar» pré-preencher)
+  // linha de acerto (o índice aponta para settlements, para o «Registar»
+  // pré-preencher o pagamento)
   const settleLine = ([s, i]) => `
     <div class="settle-line">
       <span class="settle-avatars">
         ${avatarHtml(s.from.name)}${avatarHtml(s.to.name)}
       </span>
       <div class="item-main">
-        <span class="item-title">${esc(shortName(s.from.name))} <span class="settle-arrow">→</span> ${esc(shortName(s.to.name))}</span>
+        <span class="item-title">${esc(quem(s.from, true))} <span class="settle-arrow">→</span> ${esc(quem(s.to))}</span>
       </div>
-      <span class="settle-right">
-        <span class="amount">${fmtMoney(s.cents, cur)}</span>
-        ${paymentsReady && ctx.canWrite ? `<button class="small" data-settle="${i}">Pagar</button>` : ""}
-      </span>
+      <span class="amount">${fmtMoney(s.cents, cur)}</span>
+      ${paymentsReady && ctx.canWrite ? `<button type="button" class="small soft" data-settle="${i}">Registar</button>` : ""}
     </div>`;
 
-  const paymentLi = (p) => `
+  const paymentLi = (p) => {
+    const from = members.find(m => m.id === p.from_member);
+    const to = members.find(m => m.id === p.to_member);
+    return `
     <li>
       <div class="item-main">
         <span class="item-title payment-line">
-          ${esc(memberName(p.from_member))} <span class="settle-arrow">→</span> ${esc(memberName(p.to_member))}
+          ${esc(from ? quem(from, true) : "?")} <span class="settle-arrow">→</span> ${esc(to ? quem(to) : "?")}
         </span>
         <span class="item-sub">${fmtDate(p.payment_date)}${p.note ? ` · ${esc(p.note)}` : ""}</span>
       </div>
       <span class="amount">${fmtMoney(toCents(p.amount), cur)}</span>
-      ${ctx.canWrite ? `<button class="ghost small" data-pdel="${p.id}" title="Apagar pagamento">✕</button>` : ""}
+      ${ctx.canWrite ? `<button type="button" class="ghost small" data-pdel="${p.id}" aria-label="Apagar pagamento" title="Apagar pagamento">${uiIco("x")}</button>` : ""}
     </li>`;
+  };
 
-  // linha de saldo de um membro (com detalhe expansível se deve/recebe de vários)
-  const balanceLi = (m) => {
+  // ---- Quem deve a quem: uma barra por pessoa, para os dois lados de um
+  // eixo (à esquerda quem deve, à direita quem recebe), na mesma escala.
+  // Tocar numa linha mostra a quem deve / de quem recebe.
+  const maxNeg = Math.max(0, ...members.map(m => -balance[m.id]));
+  const maxPos = Math.max(0, ...members.map(m => balance[m.id]));
+  const span = maxNeg + maxPos;
+  const axis = span ? (maxNeg / span) * 100 : 50;
+  const num = (c) => new Intl.NumberFormat("pt-PT", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(c / 100);
+  const barRow = (m) => {
     const b = balance[m.id];
     const list = b < 0 ? owesTo[m.id] : b > 0 ? getsFrom[m.id] : null;
-    const expandable = (list?.length || 0) > 1;
-    return `<li class="${expandable ? "clickable" : ""}" ${expandable ? `data-bal="${m.id}"` : ""}>
-        ${avatarHtml(m.name)}
-        <div class="item-main">
-          <span class="item-title">${esc(m.name)}</span>
-          ${subline(m.id, b)}
-        </div>
-        <span class="chip ${b > 0 ? "positive" : b < 0 ? "negative" : "zero"}">
-          ${b === 0 ? "✓ em dia" : (b > 0 ? "recebe " : "deve ") + fmtMoney(Math.abs(b), cur)}
-        </span>
+    const expandable = (list?.length || 0) > 0;
+    const w = span ? Math.abs(b) / span * 100 : 0;
+    const bar = b > 0 ? `<span class="bb-bar pos" style="left:${axis}%;width:${w}%"></span>`
+      : b < 0 ? `<span class="bb-bar neg" style="right:${100 - axis}%;width:${w}%"></span>` : "";
+    return `
+      <li class="bb-row ${expandable ? "clickable" : ""}" ${expandable ? `data-bal="${m.id}"` : ""}>
+        <span class="bb-who">${avatarHtml(m.name, "sm")}<span class="bb-name">${esc(isMe(m.id) ? "Tu" : curto(m.name))}</span></span>
+        <span class="bb-track" aria-hidden="true"><span class="bb-axis" style="left:${axis}%"></span>${bar}</span>
+        <span class="bb-val ${b > 0 ? "positive" : b < 0 ? "negative" : "zero"}">${b === 0 ? "em dia" : (b > 0 ? "+" : "−") + num(Math.abs(b))}</span>
       </li>
       ${expandable ? `<li class="balance-detail hidden" data-bdetail="${m.id}">
         <ul class="detail-list">
           ${list.map(x => `<li>
-            <span>${b < 0 ? "a" : "de"} ${esc(x.name)}</span>
+            <span>${b < 0 ? "deve a" : "recebe de"} ${esc(x.name)}</span>
             <span class="amount">${fmtMoney(x.cents, cur)}</span>
           </li>`).join("")}
         </ul>
       </li>` : ""}`;
   };
+  const byBalance = [...members].sort((a, b) => balance[b.id] - balance[a.id]);
+  const barsCard = members.length === 0 ? "" : `
+    <div class="card">
+      <div class="card-title-row"><h2>Quem deve a quem</h2><span class="muted bb-legend">deve · recebe</span></div>
+      <ul class="list bal-bars">${byBalance.map(barRow).join("")}</ul>
+    </div>`;
 
   // cartão com o do próprio sempre visível + o dos outros atrás do colapsar
-  const card = (title, id, mine, others, othersCount, othersLabel, action = "") => `
+  const card = (title, id, mine, others, othersCount, othersLabel, action = "", sub = "") => `
     <div class="card">
       <div class="card-title-row"><h2>${title}</h2>${action}</div>
+      ${sub ? `<p class="card-sub">${sub}</p>` : ""}
       ${mine}
       ${othersCount > 0 ? `
         <button type="button" class="collapse-toggle" data-collapse="${id}">
           <span>${othersLabel} <span class="muted">(${othersCount})</span></span>
-          <span class="collapse-arrow">▾</span>
+          ${uiIco("down", "collapse-arrow")}
         </button>
         <div class="collapse-body hidden" data-body="${id}">${others}</div>` : ""}
     </div>`;
 
-  // ---- Resumo dos gastos: total + a tua quota + gráfico sempre visíveis;
-  // a quota por pessoa (dos outros) fica no colapsável ----
+  // ---- O teu saldo (em grande) + resumo dos gastos: total, a tua quota e
+  // gráfico sempre visíveis; a quota por pessoa dos outros fica no colapsável
+  const myBal = myMember ? balance[myMember.id] : 0;
+  const nCount = myMember ? (myBal < 0 ? owesTo[myMember.id] : getsFrom[myMember.id])?.length || 0 : 0;
+  const recebido = myMember ? payments.filter(p => p.to_member === myMember.id).reduce((a, p) => a + toCents(p.amount), 0) : 0;
+  const pago = myMember ? payments.filter(p => p.from_member === myMember.id).reduce((a, p) => a + toCents(p.amount), 0) : 0;
+  const balSub = !myMember ? ""
+    : myBal > 0 ? `Recebes de ${nCount} pessoa${nCount === 1 ? "" : "s"}${recebido ? ` · já recebeste ${fmtMoney(recebido, cur)}` : ""}`
+    : myBal < 0 ? `Deves a ${nCount} pessoa${nCount === 1 ? "" : "s"}${pago ? ` · já pagaste ${fmtMoney(pago, cur)}` : ""}`
+    : "Não deves nada a ninguém e ninguém te deve nada";
   const resumoCard = `
-    <div class="card">
+    <div class="card bal-card">
       <div class="card-title-row">
-        <h2>Resumo dos gastos</h2>
+        <span class="bal-label">${myMember ? "O teu saldo" : "Resumo dos gastos"}</span>
         <div class="title-actions">
-          <button type="button" class="secondary small" id="bp-report">📄 Relatório</button>
-          <button type="button" class="secondary small date-toggle-txt" id="bp-toggle">📅 Período</button>
+          <button type="button" class="pill-btn" id="bp-report">${uiIco("doc")} Relatório</button>
+          <button type="button" class="pill-btn date-toggle-txt" id="bp-toggle">${uiIco("calendar")} Período</button>
         </div>
       </div>
+      ${myMember ? `
+      <div class="bal-big ${myBal > 0 ? "positive" : myBal < 0 ? "negative" : "zero"}">${myBal === 0 ? "Em dia" : (myBal > 0 ? "+" : "−") + fmtMoney(Math.abs(myBal), cur)}</div>
+      <p class="bal-sub">${balSub}</p>` : ""}
       <div class="date-range hidden" id="bp-range">
-        <div class="field"><label>De</label><input type="date" id="bp-from" /></div>
-        <div class="field"><label>Até</label><input type="date" id="bp-to" /></div>
+        <div class="field"><label for="bp-from">De</label><input type="date" id="bp-from" /></div>
+        <div class="field"><label for="bp-to">Até</label><input type="date" id="bp-to" /></div>
         <button type="button" class="secondary small" id="bp-clear">Limpar</button>
       </div>
       <div id="balance-summary"></div>
       ${quotaMembers.length === 0 ? "" : myMember ? `
         <button type="button" class="collapse-toggle" data-collapse="resumo">
           <span>Quota por pessoa <span class="muted">(${quotaMembers.length})</span></span>
-          <span class="collapse-arrow">▾</span>
+          ${uiIco("down", "collapse-arrow")}
         </button>
         <div class="collapse-body hidden" data-body="resumo"><div id="balance-quotas"></div></div>`
         : `<div id="balance-quotas" style="margin-top:.6rem;"></div>`}
     </div>`;
-
-  // ---- Saldos ----
-  const saldosMine = members.length === 0
-    ? `<p class="empty">Sem membros.</p>`
-    : `<ul class="list balances">${mineMembers.map(balanceLi).join("")}</ul>`;
-  const saldosOthers = `<ul class="list balances">${otherMembers.map(balanceLi).join("")}</ul>`;
 
   // ---- Como acertar contas ----
   const acertosMine = mySettles.length
@@ -3884,10 +4004,12 @@ function renderBalancesTab($c, ctx) {
     : `<p class="empty">${settlements.length && myMember
         ? "Não tens contas por acertar 🎉" : "Está tudo em dia 🎉"}</p>`;
   const acertosOthers = otherSettles.map(settleLine).join("");
+  const acertosSub = settlements.length
+    ? `${settlements.length} pagamento${settlements.length === 1 ? "" : "s"} e ficam todos em dia` : "";
 
   // ---- Pagamentos ----
   const pagAction = paymentsReady && ctx.canWrite
-    ? `<button type="button" class="secondary small" id="btn-add-payment">+ Registar</button>` : "";
+    ? `<button type="button" class="pill-btn" id="btn-add-payment">${uiIco("plus")} Registar</button>` : "";
   const pagMine = !paymentsReady
     ? `<p class="muted">Para ativar o registo de pagamentos, corre a versão mais
       recente de <code>supabase/schema.sql</code> no SQL Editor do Supabase.</p>`
@@ -3902,8 +4024,8 @@ function renderBalancesTab($c, ctx) {
 
   $c.innerHTML = `
     ${resumoCard}
-    ${card("Saldos", "saldos", saldosMine, saldosOthers, otherMembers.length, "Ver saldos dos outros")}
-    ${card("Como acertar contas", "acertos", acertosMine, acertosOthers, otherSettles.length, "Ver acertos entre os outros")}
+    ${barsCard}
+    ${card("Como acertar", "acertos", acertosMine, acertosOthers, otherSettles.length, "Ver acertos entre os outros", "", acertosSub)}
     ${card("Pagamentos", "pagamentos", pagMine, pagOthers, otherPayments.length, "Ver pagamentos dos outros", pagAction)}`;
 
   // abrir/fechar a parte "dos outros" de cada cartão
@@ -3914,7 +4036,7 @@ function renderBalancesTab($c, ctx) {
     };
   });
 
-  // expandir/encolher o detalhe de um saldo com várias pessoas
+  // expandir/encolher o detalhe de um saldo (a quem deve / de quem recebe)
   $c.querySelectorAll("[data-bal]").forEach(li => {
     li.onclick = () => {
       $c.querySelector(`[data-bdetail="${li.dataset.bal}"]`).classList.toggle("hidden");
