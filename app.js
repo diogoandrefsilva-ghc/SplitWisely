@@ -2320,6 +2320,8 @@ function renderExpensesTab($c, ctx) {
     let lastDay = null;
     const rows = shown.map(x => {
       const nShares = x.expense_shares.length;
+      // a dividir por todos não precisa de dizer quantos são
+      const porTodos = members.length > 0 && members.every(m => x.expense_shares.some(s => s.member_id === m.id));
       const head = x.expense_date !== lastDay
         ? `<li class="day-head"><span>${esc(dayLabel(x.expense_date))}</span>
             <span>${fmtMoney(dayTotals.get(x.expense_date), cur)}</span></li>` : "";
@@ -2344,7 +2346,7 @@ function renderExpensesTab($c, ctx) {
                 ? `<span class="badge linked" title="Despesa recorrente">${uiIco("repeat")}</span>` : ""}${x.receipt_path
                 ? `<span class="badge linked" title="Tem fatura">${uiIco("clip")}</span>` : ""}
             </span>
-            <span class="item-sub">${x.expense_time ? `${x.expense_time.slice(0, 5)} · ` : ""}${esc(whoPaid(x))} · ${nShares} pessoa${nShares === 1 ? "" : "s"}</span>
+            <span class="item-sub">${x.expense_time ? `${x.expense_time.slice(0, 5)} · ` : ""}${esc(whoPaid(x))}${porTodos ? "" : ` · ${nShares} pessoa${nShares === 1 ? "" : "s"}`}</span>
             ${catLine}
           </div>
           <div class="item-end">
@@ -4551,9 +4553,9 @@ function renderAiExpense(slot, opts) {
         <div class="xp-body">
           <textarea id="ai-texto" class="ai-texto" rows="5" maxlength="2000"
             placeholder="Ex.: ${esc(exemplos[0])}">${esc(st.texto)}</textarea>
-          <div class="ai-exemplos ${alterar ? "chips" : ""}">
+          ${alterar ? `<div class="ai-exemplos chips">
             ${exemplos.map((e, i) => `<button type="button" class="ai-ex" data-ex="${i}">${esc(e)}</button>`).join("")}
-          </div>
+          </div>` : ""}
           <div class="ai-anexo">
             ${st.file ? `
               <div class="ai-anexo-f">
