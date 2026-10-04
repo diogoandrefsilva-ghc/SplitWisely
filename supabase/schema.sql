@@ -331,6 +331,11 @@ alter table splitwisely.expenses add constraint expenses_split_mode_check
 alter table splitwisely.expenses
   add column if not exists category text;
 
+-- expense_time -> hora da despesa (opcional). Despesas antigas, importadas
+-- ou recorrentes ficam a null; a app mostra a hora só quando existe.
+alter table splitwisely.expenses
+  add column if not exists expense_time time;
+
 -- Quem pagou (uma ou mais pessoas)
 create table if not exists splitwisely.expense_payers (
   expense_id uuid not null references splitwisely.expenses (id) on delete cascade,

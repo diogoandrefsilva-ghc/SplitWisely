@@ -2002,10 +2002,9 @@ button.soft:hover { filter: none; background: var(--chip-pos-bg); }
 .pill-btn:hover { filter: none; background: var(--seg-bg); }
 
 /* quem deve a quem: barras para os dois lados de um eixo */
-.bb-legend { font-size: .76rem; font-weight: 700; }
 .list.bal-bars li.bb-row {
   display: grid;
-  grid-template-columns: minmax(0, 6.6rem) minmax(0, 1fr) 4.9rem;
+  grid-template-columns: minmax(0, 1fr) minmax(3rem, 6.5rem) 4.9rem;
   align-items: center;
   gap: .7rem;
   padding: .42rem 0;
@@ -2642,6 +2641,35 @@ button.soft:hover { filter: none; background: var(--chip-pos-bg); }
 }
 .xp-cta:active { transform: translateY(1px) scale(.995); }
 .xp-cta:disabled { background: var(--seg-bg); color: var(--muted); box-shadow: none; }
+
+/* consulta da despesa (antes do «Editar») */
+.xv-amount {
+  text-align: center;
+  font-family: var(--font-display);
+  font-size: clamp(2.4rem, 12vw, 3.2rem);
+  font-weight: 700;
+  letter-spacing: -.04em;
+  line-height: 1.05;
+  font-variant-numeric: tabular-nums;
+}
+.xv-desc { margin: .55rem 0 0; text-align: center; font-size: 1.1rem; font-weight: 700; }
+.xv-desc + .xp-quando { margin-top: .5rem; }
+.xv-h { margin: 1.1rem 0 .3rem; font-size: .95rem; font-weight: 750; }
+.xv-h:first-child { margin-top: .2rem; }
+.xv-h .muted { font-weight: 500; font-size: .85rem; }
+.xv-list { list-style: none; margin: 0; padding: 0; }
+.xv-li {
+  display: flex;
+  align-items: center;
+  gap: .7rem;
+  padding: .55rem .1rem;
+  border-bottom: 1px solid var(--xp-line);
+}
+.xv-li:last-child { border-bottom: none; }
+.xv-name { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.xv-amt { font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.xv-cat { width: 28px; text-align: center; font-size: 1.1rem; }
+.xp-cta .ico { width: 20px; height: 20px; vertical-align: -4px; margin-right: .3rem; }
 
 /* ================================================ importar movimentos */
 /* Mesmo ecrã do lançamento de despesa (cabeçalho da marca + corpo +

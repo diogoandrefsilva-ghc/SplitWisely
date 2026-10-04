@@ -57,7 +57,87 @@ function openRecurringModal(ctx, rec) {
   renderExpenseForm(openModal(), ctx, rec, closeModal, { recurring: true, backLabel: "Fechar" });
 }
 function openExpenseModal(ctx, x) {
-  renderExpenseForm(openModal(), ctx, x, closeModal, { backLabel: "Fechar" });
+  // despesa nova vai direta ao formulário; uma já lançada abre primeiro em
+  // consulta (quem pagou e como se divide), e só o «Editar» leva ao formulário
+  if (!x) return renderExpenseForm(openModal(), ctx, null, closeModal, { backLabel: "Fechar" });
+  renderExpenseView(openModal(), ctx, x);
+}
+
+// Consulta de uma despesa: valor, data/hora, quem pagou e como se divide
+function renderExpenseView(slot, ctx, x) {
+  const { group, members, myMember } = ctx;
+  const cur = group.currency;
+  const curto = nomesCurtos(members);
+  const nameOf = id => {
+    if (myMember && id === myMember.id) return "Tu";
+    const m = members.find(mm => mm.id === id);
+    return m ? curto(m.name) : "?";
+  };
+  const fullName = id => members.find(m => m.id === id)?.name || "?";
+  // mesma regra de permissão do formulário (espelha a RLS do servidor)
+  const canEdit = !group.archived
+    && (ctx.myRole === "write_all"
+        || (ctx.myRole === "write_own" && x.created_by === session?.user.id));
+  const own = x.split_mode === "own";
+
+  const pessoa = (id, cents) => `
+    <li class="xv-li">
+      ${avatarHtml(fullName(id), "sm")}
+      <span class="xv-name">${esc(nameOf(id))}</span>
+      <span class="xv-amt">${fmtMoney(cents, cur)}</span>
+    </li>`;
+  const porValor = rows => [...rows].sort((a, b) => toCents(b.amount) - toCents(a.amount));
+  const payers = porValor(x.expense_payers || []).filter(p => toCents(p.amount) > 0);
+  const shares = porValor(x.expense_shares || []).filter(p => toCents(p.amount) > 0);
+  const modoTxt = own ? "cada um pagou a sua parte"
+    : (x.expense_category_shares || []).length ? "por categoria"
+    : x.split_mode === "equal" ? "partes iguais"
+    : x.split_mode === "weights" ? "por proporção"
+    : "valores definidos";
+
+  const cats = expenseCatSplits(x).filter(c => c.cat !== "none");
+  const catLine = cats.length >= 2
+    ? `<ul class="xv-list">${cats.map(c => `
+        <li class="xv-li"><span class="xv-cat">${catOf(c.cat).icon}</span>
+          <span class="xv-name">${esc(catOf(c.cat).label)}</span>
+          <span class="xv-amt">${fmtMoney(c.cents, cur)}</span></li>`).join("")}</ul>`
+    : "";
+  const catTxt = cats.length === 1 ? `${catOf(cats[0].cat).icon} ${catOf(cats[0].cat).label}` : "";
+  const hora = x.expense_time ? ` · ${x.expense_time.slice(0, 5)}` : "";
+
+  slot.innerHTML = `
+    <div class="expense-detail xp">
+      <header class="xp-head">
+        <div class="xp-head-bar">
+          <button type="button" class="xp-icon-btn" id="xv-back" aria-label="Fechar">${uiIco("x")}</button>
+          <span class="xp-head-title">${x.recurring_id ? "Despesa recorrente" : "Despesa"}</span>
+          <span class="xp-head-spacer"></span>
+        </div>
+        <div class="xv-amount">${fmtMoney(toCents(x.amount), cur)}</div>
+        <p class="xv-desc">${esc(x.description)}</p>
+        <p class="xp-quando">${esc(fmtDate(x.expense_date) + hora)}${catTxt ? ` · ${esc(catTxt)}` : ""}</p>
+      </header>
+      <div class="xp-body">
+        ${own ? "" : `
+        <h3 class="xv-h">Quem pagou</h3>
+        <ul class="xv-list">${payers.map(p => pessoa(p.member_id, toCents(p.amount))).join("")}</ul>`}
+        <h3 class="xv-h">Como se divide <span class="muted">· ${modoTxt}</span></h3>
+        <ul class="xv-list">${shares.map(p => pessoa(p.member_id, toCents(p.amount))).join("")}</ul>
+        ${catLine ? `<h3 class="xv-h">Categorias</h3>${catLine}` : ""}
+      </div>
+      ${canEdit ? `
+      <footer class="xp-foot">
+        <button class="xp-cta" id="xv-edit">${uiIco("edit")} Editar</button>
+      </footer>` : ""}
+    </div>`;
+
+  slot.classList.add("modal-card-flush");
+  slot.parentElement?.classList.add("modal-full");
+  slot.querySelector("#xv-back").onclick = closeModal;
+  slot.querySelector("#xv-edit")?.addEventListener("click", () => {
+    // o «Voltar» do formulário regressa a esta consulta
+    renderExpenseForm(slot, ctx, x, () => renderExpenseView(slot, ctx, x), { backLabel: "Voltar" });
+  });
 }
 function openImportModal(ctx) {
   // o parser vive num ficheiro à parte: sem ele (versão em cache a meio de
@@ -130,15 +210,27 @@ function avatarStackHtml(names, max = 3, extra = "") {
 }
 
 // Nomes curtos: só o primeiro nome, a não ser que haja mais do que um
-// «Diogo» no grupo — aí entra a inicial do apelido («Diogo S.»)
+// «João» no grupo — aí juntam-se nomes até se distinguirem («João Paulo»
+// e «João Pedro»), em vez de abreviar para iniciais iguais
 function nomesCurtos(members) {
-  const primeiro = n => String(n || "?").trim().split(/\s+/)[0];
-  const quantos = {};
-  for (const m of members) {
-    const k = primeiro(m.name).toLowerCase();
-    quantos[k] = (quantos[k] || 0) + 1;
+  const words = n => String(n || "?").trim().split(/\s+/);
+  const names = [...new Set(members.map(m => String(m.name || "?").trim()))];
+  const map = new Map();
+  for (const name of names) {
+    const w = words(name);
+    const rivals = names.filter(o => o !== name && words(o)[0].toLowerCase() === w[0].toLowerCase());
+    let k = 1;
+    while (k < w.length && rivals.some(o =>
+      words(o).slice(0, k).join(" ").toLowerCase() === w.slice(0, k).join(" ").toLowerCase())) k++;
+    // «Maria Costa Santos» vs «Maria Costa Silva»: basta o primeiro e o
+    // último quando o último os distingue
+    const firstLast = w.length > 2 ? `${w[0]} ${w[w.length - 1]}` : null;
+    const shortened = w.slice(0, k).join(" ");
+    map.set(name, k > 2 && firstLast && !rivals.some(o => {
+      const ow = words(o); return `${ow[0]} ${ow[ow.length - 1]}`.toLowerCase() === firstLast.toLowerCase();
+    }) ? firstLast : shortened);
   }
-  return n => quantos[primeiro(n).toLowerCase()] > 1 ? shortName(n) : primeiro(n);
+  return n => map.get(String(n || "?").trim()) ?? words(n)[0];
 }
 
 // Ícones da interface (traço, herdam a cor). O emoji fica só nas
@@ -165,6 +257,7 @@ const UI_ICONS = {
   doc: '<path d="M14 3.5H7A1.5 1.5 0 0 0 5.5 5v14A1.5 1.5 0 0 0 7 20.5h10a1.5 1.5 0 0 0 1.5-1.5V8z"/><path d="M14 3.5V8h4.5M9 13h6M9 16.5h4"/>',
   repeat: '<path d="M17 3l3 3-3 3"/><path d="M4 11V9a3 3 0 0 1 3-3h13"/><path d="M7 21l-3-3 3-3"/><path d="M20 13v2a3 3 0 0 1-3 3H4"/>',
   eye: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="2.6"/>',
+  edit: '<path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16z"/><path d="m13.5 6.5 4 4"/>',
 };
 function uiIco(name, cls = "") {
   return `<svg class="ico ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
@@ -1011,6 +1104,13 @@ async function fetchGroupBundle(groupId) {
   if (p.error) console.warn("payments indisponível:", p.error.message);
   if (r.error) console.warn("recurring indisponível:", r.error.message);
   if (s.error) console.warn("group_reads indisponível:", s.error.message);
+  // dentro do mesmo dia, a mais recente primeiro: pela hora da despesa ou,
+  // sem hora, pela hora a que foi registada
+  const horaDe = x => x.expense_time
+    || new Date(x.created_at).toTimeString().slice(0, 8);
+  e.data.sort((a, b) => a.expense_date !== b.expense_date
+    ? (a.expense_date < b.expense_date ? 1 : -1)
+    : horaDe(b).localeCompare(horaDe(a)));
   return {
     group: g.data, members: m.data, expenses: e.data,
     payments: p.error ? [] : p.data,
@@ -1963,7 +2063,7 @@ function renderExpensesTab($c, ctx) {
               <span class="item-title">${esc(x.description)}</span>${freshBadge}${x.recurring_id
                 ? `<span class="badge linked" title="Despesa recorrente">${uiIco("repeat")}</span>` : ""}
             </span>
-            <span class="item-sub">${esc(whoPaid(x))} · ${nShares} pessoa${nShares === 1 ? "" : "s"}</span>
+            <span class="item-sub">${x.expense_time ? `${x.expense_time.slice(0, 5)} · ` : ""}${esc(whoPaid(x))} · ${nShares} pessoa${nShares === 1 ? "" : "s"}</span>
             ${catLine}
           </div>
           <div class="item-end">
@@ -2109,6 +2209,9 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
   const state = {
     desc: existing?.description || "",
     date: existing?.expense_date || new Date().toISOString().slice(0, 10),
+    // hora (HH:MM); despesas antigas sem hora ficam em branco
+    time: existing ? (existing.expense_time || "").slice(0, 5)
+      : new Date().toTimeString().slice(0, 5),
     category: existing?.category && catOf(existing.category) ? existing.category : null,
     // repartição do valor por categoria ({catId: cêntimos}); null = uma só
     catSplit: catSplitInit,
@@ -2489,6 +2592,7 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
       description: desc,
       amount: (state.totalCents / 100).toFixed(2),
       expense_date: date || new Date().toISOString().slice(0, 10),
+      expense_time: state.time || null,
       // dividir por categoria produz valores por pessoa arbitrários: grava
       // como "exact" para reabrir fiel mesmo sem a tabela da divisão
       split_mode: catDividing() ? "exact" : state.mode,
@@ -2502,6 +2606,11 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
       if (/split_mode/i.test(error.message) && "split_mode" in payload) {
         toast("Modo de divisão não gravado — corre o schema.sql mais recente no Supabase", true);
         delete payload.split_mode;
+        return true;
+      }
+      if (/expense_time/i.test(error.message) && "expense_time" in payload) {
+        toast("Hora não gravada — corre o schema.sql mais recente no Supabase", true);
+        delete payload.expense_time;
         return true;
       }
       if (/category/i.test(error.message) && "category" in payload) {
@@ -2606,6 +2715,7 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     check: '<path d="m5 12.5 4.5 4.5L19 7"/>',
     trash: '<path d="M4 7h16"/><path d="M9.5 7V5.2A1.2 1.2 0 0 1 10.7 4h2.6a1.2 1.2 0 0 1 1.2 1.2V7"/><path d="M6.5 7 7.6 20h8.8L17.5 7"/>',
     eye: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="2.6"/>',
+  edit: '<path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16z"/><path d="m13.5 6.5 4 4"/>',
   };
   const ico = (n, cls = "") =>
     `<svg class="xp-ico ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -2676,15 +2786,7 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
 
   const ontem = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
 
-  // Nome curto com o mínimo que chegue: só o próprio nome quando é único no
-  // grupo, «Diogo S.» quando há mais do que um Diogo.
-  const primeiroNome = n => String(n || "?").trim().split(/\s+/)[0];
-  const quantosPrimeiros = {};
-  for (const m of members) {
-    const k = primeiroNome(m.name).toLowerCase();
-    quantosPrimeiros[k] = (quantosPrimeiros[k] || 0) + 1;
-  }
-  const curto = n => quantosPrimeiros[primeiroNome(n).toLowerCase()] > 1 ? shortName(n) : primeiroNome(n);
+  const curto = nomesCurtos(members);
 
   // Proporção entre dois em percentagem — é assim que se pensa nela
   // (0,55 e 0,45 dá «55/45», e não uma razão reduzida como «11 : 9»).
@@ -2701,7 +2803,7 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     const outra = state.date !== today && state.date !== ontem;
     slot.querySelectorAll(".xp-seg [data-date]").forEach(b =>
       b.classList.toggle("on", !outra && b.dataset.date === state.date));
-    const $o = slot.querySelector(".xp-seg-o");
+    const $o = slot.querySelector(".xp-seg-o:not(.xp-hora)");
     if ($o) {
       $o.classList.toggle("on", outra);
       const $s = $o.querySelector("small");
@@ -2757,6 +2859,11 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
           <small>${outraData ? fmtDiaMes(state.date) : "escolher"}</small>
           <input id="x-date" type="date" value="${esc(state.date)}" aria-label="Outra data" />
         </label>
+        <label class="xp-seg-o xp-hora">
+          <span>Hora</span>
+          <small>${state.time || "—"}</small>
+          <input id="x-time" type="time" value="${esc(state.time)}" aria-label="Hora" />
+        </label>
       </div>`;
 
     // ---------------------------------------------------------- cabeçalho
@@ -2778,7 +2885,7 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
         <input id="x-desc" class="xp-desc" value="${esc(state.desc)}"
           placeholder="Em que foi?" ${readOnly ? "readonly" : ""} />
         ${readOnly
-          ? `<p class="xp-quando">${esc(state.recurring ? `Todo o mês no dia ${state.dayOfMonth}` : fmtDate(state.date))}</p>`
+          ? `<p class="xp-quando">${esc(state.recurring ? `Todo o mês no dia ${state.dayOfMonth}` : fmtDate(state.date) + (state.time ? ` · ${state.time}` : ""))}</p>`
           : datas}
       </header>`;
 
@@ -3140,6 +3247,15 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
         pintarDatas();
       };
     }
+    const $time = slot.querySelector("#x-time");
+    if ($time) {
+      $time.onclick = () => { try { $time.showPicker(); } catch (_) { /* sem showPicker */ } };
+      $time.onchange = () => {
+        state.time = $time.value;
+        const $s = $time.closest("label").querySelector("small");
+        if ($s) $s.textContent = state.time || "—";
+      };
+    }
     const $dom = slot.querySelector("#x-dom");
     if ($dom) $dom.onchange = () => {
       state.dayOfMonth = Math.min(31, Math.max(1, parseInt($dom.value, 10) || 1));
@@ -3325,13 +3441,7 @@ function renderImportForm(slot, ctx, onClose) {
     `<svg class="xp-ico ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor"
       stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS_IM[n]}</svg>`;
   const SIMBOLO_IM = { EUR: "€", USD: "$", GBP: "£", BRL: "R$" };
-  const primeiroNome = n => String(n || "?").trim().split(/\s+/)[0];
-  const quantos = {};
-  for (const m of members) {
-    const k = primeiroNome(m.name).toLowerCase();
-    quantos[k] = (quantos[k] || 0) + 1;
-  }
-  const curto = n => quantos[primeiroNome(n).toLowerCase()] > 1 ? shortName(n) : primeiroNome(n);
+  const curto = nomesCurtos(members);
   const nomeDe = id => members.find(m => m.id === id)?.name || "?";
 
   const state = {
@@ -4068,7 +4178,7 @@ function renderBalancesTab($c, ctx) {
   const byBalance = [...members].sort((a, b) => balance[b.id] - balance[a.id]);
   const barsCard = members.length === 0 ? "" : `
     <div class="card">
-      <div class="card-title-row"><h2>Quem deve / quem recebe</h2><span class="muted bb-legend">deve · recebe</span></div>
+      <div class="card-title-row"><h2>Quem deve / quem recebe</h2></div>
       <ul class="list bal-bars">${byBalance.map(barRow).join("")}</ul>
     </div>`;
 
