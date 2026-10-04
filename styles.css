@@ -598,6 +598,10 @@ body:has(.bottom-nav) .toast { bottom: calc(var(--nav-h) + 1rem + env(safe-area-
   box-shadow: 0 0 0 2px var(--hero);
 }
 .filters-btn.on.has-filter::after { box-shadow: 0 0 0 2px #fff; }
+/* «Todas · Onde entro · A liquidar»: o seletor segmentado do formulário,
+   com a pastilha ativa em cartão (fora do .xp não há --xp-on) */
+.who-seg { --xp-on: var(--card); margin-bottom: .7rem; }
+@media (prefers-color-scheme: dark) { .who-seg { --xp-on: #26304f; } }
 /* a fila de categorias dos filtros vai até às margens do ecrã */
 .cat-strip.in-filters { margin: 0 -1.2rem; padding: .1rem 1.2rem .2rem; }
 .filter-bar:last-child { margin-bottom: 0; }
@@ -2701,6 +2705,87 @@ button.soft:hover { filter: none; background: var(--chip-pos-bg); }
 .xv-name { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .xv-amt { font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .xv-cat { width: 28px; text-align: center; font-size: 1.1rem; }
+/* fatura na consulta: a imagem inteira (toque abre em tamanho real) ou o
+   link para o PDF */
+.xv-fatura { margin: .35rem 0 .2rem; }
+.xv-fat-img { display: block; }
+.xv-fat-img img {
+  display: block;
+  max-width: 100%;
+  max-height: 60vh;
+  margin: 0 auto;
+  border-radius: var(--radius-s);
+  border: 1px solid var(--xp-line);
+  background: var(--card-inner);
+}
+.xv-fat-link {
+  display: inline-flex;
+  align-items: center;
+  gap: .45rem;
+  padding: .7rem 1rem;
+  border-radius: var(--radius-s);
+  background: var(--chip-pos-bg);
+  color: var(--primary-ink);
+  font-weight: 700;
+  text-decoration: none;
+}
+.xv-fat-link .ico { width: 20px; height: 20px; }
+
+/* fatura no formulário: dois botões grandes (fotografar / escolher) com o
+   campo de ficheiro por cima, invisível — como o «Outra» das datas */
+.xp-fat-acoes { display: grid; grid-template-columns: 1fr 1fr; gap: .6rem; }
+.xp-fat-btn {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: .35rem;
+  margin: 0;
+  padding: 1rem .5rem;
+  border: none;
+  border-radius: 15px;
+  background: var(--seg-bg);
+  box-shadow: none;
+  color: var(--text);
+  font-size: .9rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.xp-fat-btn:hover { filter: none; background: var(--card-inner); }
+.xp-fat-btn .xp-ico { width: 24px; height: 24px; color: var(--primary-ink); }
+.xp-fat-btn.del, .xp-fat-btn.del .xp-ico { color: var(--danger); }
+.xp-fat-in {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  opacity: 0;
+  cursor: pointer;
+}
+.xp-fat-prev {
+  display: grid;
+  place-items: center;
+  margin-bottom: .8rem;
+  padding: .5rem;
+  border-radius: 15px;
+  background: var(--card-inner);
+}
+.xp-fat-prev img { display: block; max-width: 100%; max-height: 42vh; border-radius: 10px; }
+.xp-fat-doc {
+  display: flex;
+  align-items: center;
+  gap: .55rem;
+  max-width: 100%;
+  padding: .9rem .6rem;
+  font-weight: 600;
+}
+.xp-fat-doc .xp-ico { width: 26px; height: 26px; color: var(--primary-ink); }
+.xp-fat-doc span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .xp-cta .ico { width: 20px; height: 20px; vertical-align: -4px; margin-right: .3rem; }
 
 /* ================================================ importar movimentos */

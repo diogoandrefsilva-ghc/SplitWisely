@@ -149,6 +149,9 @@ function renderExpenseView(slot, ctx, x) {
         <h3 class="xv-h">Como se divide <span class="muted">· ${modoTxt}</span></h3>
         <ul class="xv-list">${shares.map(p => pessoa(p.member_id, toCents(p.amount))).join("")}</ul>
         ${catLine ? `<h3 class="xv-h">Categorias</h3>${catLine}` : ""}
+        ${x.receipt_path ? `
+        <h3 class="xv-h">Fatura</h3>
+        <div class="xv-fatura" id="xv-fat"><span class="muted">A abrir a fatura…</span></div>` : ""}
       </div>
       ${canEdit ? `
       <footer class="xp-foot">
@@ -159,6 +162,22 @@ function renderExpenseView(slot, ctx, x) {
   slot.classList.add("modal-card-flush");
   slot.parentElement?.classList.add("modal-full");
   slot.querySelector("#xv-back").onclick = closeModal;
+  // a fatura chega por um link assinado: a imagem abre em tamanho real num
+  // separador novo, o PDF no leitor do sistema
+  const $fat = slot.querySelector("#xv-fat");
+  if ($fat) {
+    const falhou = () => { $fat.innerHTML = `<span class="muted">Não foi possível abrir a fatura.</span>`; };
+    receiptUrl(x.receipt_path).then(url => {
+      if (!$fat.isConnected) return;
+      const abrir = `<a class="xv-fat-link" href="${esc(url)}" target="_blank" rel="noopener">${uiIco("doc")} Abrir a fatura${receiptIsPdf(x.receipt_path) ? " (PDF)" : ""}</a>`;
+      if (receiptIsPdf(x.receipt_path)) { $fat.innerHTML = abrir; return; }
+      $fat.innerHTML = `<a class="xv-fat-img" href="${esc(url)}" target="_blank" rel="noopener"
+        title="Abrir em tamanho real"><img src="${esc(url)}" alt="Fatura de ${esc(x.description)}" /></a>`;
+      // uma imagem que o browser não sabe mostrar (HEIC fora do Safari)
+      // fica só com o link para a descarregar
+      $fat.querySelector("img").onerror = () => { $fat.innerHTML = abrir; };
+    }).catch(() => { if ($fat.isConnected) falhou(); });
+  }
   slot.querySelector("#xv-edit")?.addEventListener("click", () => {
     // o «Voltar» do formulário regressa a esta consulta
     renderExpenseForm(slot, ctx, x, () => renderExpenseView(slot, ctx, x), { backLabel: "Voltar" });
@@ -169,6 +188,94 @@ function openImportModal(ctx) {
   // uma atualização) não se abre o ecrã em vez de rebentar a meio
   if (typeof SWImport === "undefined") return toast("Recarrega a app para importar movimentos", true);
   renderImportForm(openModal(), ctx, closeModal);
+}
+
+// ---------------------------------------------------------------- faturas
+// A fatura de uma despesa (fotografia do talão ou PDF) vive no bucket
+// privado do Supabase Storage, em <group_id>/<expense_id>/<ficheiro>; a
+// despesa guarda só o caminho (receipt_path). Vê-a quem tem acesso ao grupo
+// e troca-a quem pode editar a despesa — as policies estão no schema.sql.
+// Como o bucket é privado, a app mostra-a por um link assinado que dura uma
+// hora.
+const RECEIPT_BUCKET = "splitwisely-faturas";
+const RECEIPT_MAX_BYTES = 10 * 1024 * 1024; // o limite do bucket
+const RECEIPT_MAX_PX = 2000;                // chega para ler um talão
+const RECEIPT_EXT = {
+  "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp",
+  "image/heic": "heic", "image/heif": "heif", "application/pdf": "pdf",
+};
+
+function receiptIsPdf(pathOrType) { return /pdf$/i.test(pathOrType || ""); }
+function receiptFileOk(file) { return !!file && file.type in RECEIPT_EXT; }
+
+// Uma fotografia de telemóvel tem 3 a 6 MB e 4000 px: para ler um talão
+// chegam 2000 px em JPEG, que dá umas centenas de kB. Se o browser não a
+// conseguir abrir (um HEIC fora do Safari, por exemplo) segue tal como está.
+async function shrinkReceiptImage(file) {
+  if (!file.type.startsWith("image/")) return file;
+  let img = null, url = null;
+  try {
+    if (window.createImageBitmap) img = await createImageBitmap(file);
+    else {
+      url = URL.createObjectURL(file);
+      img = await new Promise((ok, ko) => {
+        const i = new Image();
+        i.onload = () => ok(i);
+        i.onerror = ko;
+        i.src = url;
+      });
+    }
+    const w0 = img.width, h0 = img.height;
+    const scale = Math.min(1, RECEIPT_MAX_PX / Math.max(w0, h0));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(w0 * scale));
+    canvas.height = Math.max(1, Math.round(h0 * scale));
+    const g = canvas.getContext("2d");
+    // um PNG com transparência ficava com o fundo preto em JPEG
+    g.fillStyle = "#fff";
+    g.fillRect(0, 0, canvas.width, canvas.height);
+    g.drawImage(img, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise(ok => canvas.toBlob(ok, "image/jpeg", 0.82));
+    return blob && blob.size < file.size ? blob : file;
+  } catch (_) {
+    return file;
+  } finally {
+    img?.close?.();
+    if (url) URL.revokeObjectURL(url);
+  }
+}
+
+// Envia a fatura e devolve o caminho onde ficou. A despesa tem de existir
+// já: é por ela que o servidor decide se se pode escrever ali.
+async function uploadReceipt(groupId, expenseId, file) {
+  const blob = await shrinkReceiptImage(file);
+  if (blob.size > RECEIPT_MAX_BYTES) throw new Error("o ficheiro passa dos 10 MB");
+  const type = blob.type || file.type;
+  const path = `${groupId}/${expenseId}/fatura-${Date.now()}.${RECEIPT_EXT[type] || "jpg"}`;
+  const { error } = await sb.storage.from(RECEIPT_BUCKET)
+    .upload(path, blob, { contentType: type, cacheControl: "31536000", upsert: false });
+  if (error) throw error;
+  return path;
+}
+
+// Apaga o ficheiro. Não trava nada se falhar: o pior que fica é um ficheiro
+// perdido no bucket, sem despesa a apontar para ele.
+async function removeReceipt(path) {
+  if (!path || !sb) return;
+  const { error } = await sb.storage.from(RECEIPT_BUCKET).remove([path]);
+  if (error) console.warn("fatura:", error.message);
+}
+
+// Link assinado (1 hora), guardado uns minutos para reabrir a mesma fatura
+// sem voltar a pedir outro
+const receiptUrls = new Map();
+async function receiptUrl(path) {
+  const hit = receiptUrls.get(path);
+  if (hit && hit.until > Date.now()) return hit.url;
+  const { data, error } = await sb.storage.from(RECEIPT_BUCKET).createSignedUrl(path, 3600);
+  if (error) throw error;
+  receiptUrls.set(path, { url: data.signedUrl, until: Date.now() + 50 * 60 * 1000 });
+  return data.signedUrl;
 }
 
 // ---------------------------------------------------------------- helpers
@@ -284,6 +391,7 @@ const UI_ICONS = {
   repeat: '<path d="M17 3l3 3-3 3"/><path d="M4 11V9a3 3 0 0 1 3-3h13"/><path d="M7 21l-3-3 3-3"/><path d="M20 13v2a3 3 0 0 1-3 3H4"/>',
   eye: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="2.6"/>',
   edit: '<path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16z"/><path d="m13.5 6.5 4 4"/>',
+  clip: '<path d="m20.5 11.5-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.8 1.8 0 0 1-2.6-2.6l7.9-7.9"/>',
 };
 function uiIco(name, cls = "") {
   return `<svg class="ico ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
@@ -1934,18 +2042,22 @@ function renderExpensesTab($c, ctx) {
     : `${arr.slice(0, -1).join(", ")} e ${arr[arr.length - 1]}`;
   const cur = group.currency;
 
+  // a minha parte e o que paguei numa despesa (em cêntimos)
+  const myShare = (x) => !myMember ? 0 : x.expense_shares.filter(s => s.member_id === myMember.id)
+    .reduce((a, s) => a + toCents(s.amount), 0);
+  const myPaid = (x) => !myMember ? 0 : x.expense_payers.filter(p => p.member_id === myMember.id)
+    .reduce((a, p) => a + toCents(p.amount), 0);
+
   // efeito líquido da despesa no utilizador: o que pagou menos a sua parte
   const myImpact = (x) => {
     if (!myMember) return "";
-    const share = x.expense_shares.filter(s => s.member_id === myMember.id)
-      .reduce((a, s) => a + toCents(s.amount), 0);
+    const share = myShare(x);
     // «cada um pagou o seu» não mexe no saldo: mostra-se só o que coube ao
     // próprio, a cinzento e sem sinal — é o que gastou, não o que deve
     if (x.split_mode === "own") return share > 0
       ? `<span class="my-impact neutral" title="A tua parte (só registo, não mexe no saldo)">a tua parte ${fmtMoney(share, cur)}</span>`
       : "";
-    const paid = x.expense_payers.filter(p => p.member_id === myMember.id)
-      .reduce((a, p) => a + toCents(p.amount), 0);
+    const paid = myPaid(x);
     const net = paid - share;
     if (net === 0 && paid === 0) return "";
     return `<span class="my-impact ${net >= 0 ? "positive" : "negative"}">
@@ -1992,17 +2104,27 @@ function renderExpensesTab($c, ctx) {
     return `${wd.charAt(0).toUpperCase()}${wd.slice(1)}, ${fmtDiaMes(d)}${yr}`;
   };
 
-  // filtros da lista: categoria (chips), texto e intervalo de datas.
-  // Os totais dos chips são calculados sobre o recorte de texto/datas,
-  // por isso mostram quanto foi em cada categoria nesse recorte.
+  // filtros da lista: categoria (chips), texto, intervalo de datas e as
+  // despesas que me tocam. Os totais dos chips são calculados sobre o
+  // recorte dos outros filtros, por isso mostram quanto foi em cada
+  // categoria nesse recorte.
   const catKey = (x) => (x.category && catOf(x.category)) ? x.category : "none";
   const hasCats = expenses.some(x => catKey(x) !== "none");
-  const filter = { cat: null, q: "", from: "", to: "" };
-  const searching = () => !!(filter.q.trim() || filter.from || filter.to);
+  // As que me tocam só se escolhem quando se sabe quem sou (no link
+  // público, depois do «Quem és tu?»):
+  //  «Onde entro» — tenho parte nela ou paguei-a;
+  //  «A liquidar» — mexe no meu saldo: o que paguei não bate com a minha
+  //  parte. «Cada um pagou o seu» entra na primeira e nunca na segunda.
+  const filter = { cat: null, q: "", from: "", to: "", who: "" };
+  const imIn = (x) => myShare(x) > 0 || myPaid(x) > 0;
+  const toSettle = (x) => x.split_mode !== "own" && myPaid(x) !== myShare(x);
+  const searching = () => !!(filter.q.trim() || filter.from || filter.to || filter.who);
   const matches = (x) =>
     (!filter.q.trim() || catNorm(x.description).includes(catNorm(filter.q.trim())))
     && (!filter.from || x.expense_date >= filter.from)
-    && (!filter.to || x.expense_date <= filter.to);
+    && (!filter.to || x.expense_date <= filter.to)
+    && (filter.who !== "in" || imIn(x))
+    && (filter.who !== "settle" || toSettle(x));
 
   // aviso do que há por ver — conta o grupo todo, não o recorte dos
   // filtros: um movimento novo com data antiga fica lá em baixo na lista
@@ -2041,6 +2163,14 @@ function renderExpensesTab($c, ctx) {
         ${ctx.canWrite ? `<button type="button" class="tool-btn" id="btn-import"
           aria-label="Colar vários movimentos" title="Colar vários movimentos">${uiIco("clipboard")}</button>` : ""}
       </div>
+      ${myMember ? `
+      <div class="xp-seg sm who-seg" role="group" aria-label="Que despesas mostrar">
+        <button type="button" class="on" data-who="" aria-pressed="true">Todas</button>
+        <button type="button" data-who="in" aria-pressed="false"
+          title="Despesas em que tens parte ou que pagaste">Onde entro</button>
+        <button type="button" data-who="settle" aria-pressed="false"
+          title="Despesas que mexem no teu saldo (fica de fora o «cada um pagou o seu»)">A liquidar</button>
+      </div>` : ""}
       <div class="date-range hidden" id="f-dates">
         <div class="field"><label for="f-from">De</label><input type="date" id="f-from" /></div>
         <div class="field"><label for="f-to">Até</label><input type="date" id="f-to" /></div>
@@ -2137,7 +2267,8 @@ function renderExpensesTab($c, ctx) {
           <div class="item-main">
             <span class="item-title-line">
               <span class="item-title">${esc(x.description)}</span>${freshBadge}${x.recurring_id
-                ? `<span class="badge linked" title="Despesa recorrente">${uiIco("repeat")}</span>` : ""}
+                ? `<span class="badge linked" title="Despesa recorrente">${uiIco("repeat")}</span>` : ""}${x.receipt_path
+                ? `<span class="badge linked" title="Tem fatura">${uiIco("clip")}</span>` : ""}
             </span>
             <span class="item-sub">${x.expense_time ? `${x.expense_time.slice(0, 5)} · ` : ""}${esc(whoPaid(x))} · ${nShares} pessoa${nShares === 1 ? "" : "s"}</span>
             ${catLine}
@@ -2188,6 +2319,16 @@ function renderExpensesTab($c, ctx) {
     // com o painel fechado — para o filtro nunca ficar "escondido" sem se notar
     const syncDatesBtn = () => $datesBtn.classList.toggle("active", !!(filter.from || filter.to));
     $q.oninput = () => { filter.q = $q.value; drawList(); };
+    $c.querySelectorAll("[data-who]").forEach(b => {
+      b.onclick = () => {
+        filter.who = b.dataset.who;
+        $c.querySelectorAll("[data-who]").forEach(o => {
+          o.classList.toggle("on", o === b);
+          o.setAttribute("aria-pressed", String(o === b));
+        });
+        drawList();
+      };
+    });
     $from.onchange = () => { filter.from = $from.value; syncDatesBtn(); drawList(); };
     $to.onchange = () => { filter.to = $to.value; syncDatesBtn(); drawList(); };
     $datesBtn.onclick = () => $dates.classList.toggle("hidden");
@@ -2332,7 +2473,14 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     startDate: existing && isRecurringRecord ? existing.start_date : today,
     endDate: existing && isRecurringRecord ? (existing.end_date || "") : "",
     active: existing && isRecurringRecord ? !!existing.active : true,
+    // fatura: a que já está gravada (caminho no bucket), a que se escolheu
+    // agora e ainda não subiu, e se a gravada é para tirar. Só sobe ao
+    // gravar — a despesa tem de existir primeiro.
+    receiptPath: (!isRecurringRecord && existing?.receipt_path) || null,
+    receiptFile: null,
+    receiptDrop: false,
   };
+  let receiptPreview = null; // object URL da imagem escolhida, para a prévia
 
   // partes da fatura por categoria com valor > 0 (modo repartido)
   const catEntries = () => state.catSplit
@@ -2491,16 +2639,47 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     if (isOccurrence) {
       if (!confirm("Apagar esta ocorrência? Faz parte de uma despesa recorrente e pode voltar a ser lançada automaticamente. "
         + "Para parar de vez, apaga ou pausa a série nas Definições.")) return;
+      await removeReceipt(existing.receipt_path);
       const { error } = await sb.from("expenses").delete().eq("id", existing.id);
       if (error) return toast(error.message, true);
       toast("Ocorrência apagada");
       return refresh();
     }
     if (!confirm("Apagar esta despesa?")) return;
+    // a fatura sai primeiro: sem a despesa, o servidor já não deixa apagá-la
+    await removeReceipt(existing.receipt_path);
     const { error } = await sb.from("expenses").delete().eq("id", existing.id);
     if (error) return toast(error.message, true);
     toast("Despesa apagada");
     refresh();
+  }
+
+  // Fatura: sobe depois de a despesa estar gravada (é ela que dá licença
+  // para escrever naquela pasta do bucket) e só então se aponta a despesa
+  // para o ficheiro. A antiga sai no fim, quando já não é precisa. Devolve
+  // false se alguma coisa falhou — a despesa em si já ficou gravada.
+  async function saveReceipt(expenseId) {
+    const old = state.receiptPath;
+    const drop = state.receiptDrop && !!old;
+    if (!state.receiptFile && !drop) return true;
+    let path = null;
+    if (state.receiptFile) {
+      try {
+        path = await uploadReceipt(group.id, expenseId, state.receiptFile);
+      } catch (e) {
+        toast(`Despesa gravada, mas a fatura não foi enviada: ${e.message || e}`, true);
+        return false;
+      }
+    }
+    const { error } = await sb.from("expenses").update({ receipt_path: path }).eq("id", expenseId);
+    if (error) {
+      await removeReceipt(path);
+      toast(/receipt_path/i.test(error.message)
+        ? "Fatura não gravada — corre o schema.sql mais recente no Supabase" : error.message, true);
+      return false;
+    }
+    if (old && old !== path) await removeReceipt(old);
+    return true;
   }
 
   // Validar e gravar. As validações que falham levam o utilizador ao
@@ -2629,7 +2808,7 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
 
       if (catId) learnCategory(desc, catId);
       try { await sb.rpc("generate_due_recurring"); } catch (_) { /* schema sem RPC */ }
-      toast("Despesa convertida em recorrente");
+      if (await saveReceipt(existing.id)) toast("Despesa convertida em recorrente");
       return refresh();
     }
 
@@ -2779,7 +2958,7 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     // «cada um pagou o seu» não deixa ninguém a dever nada: não há de que avisar
     if (!existing && !own) notifyExpenseAdded(group, members, desc, state.totalCents, payerRows, shareRows);
 
-    toast(existing ? "Despesa atualizada" : "Despesa adicionada");
+    if (await saveReceipt(expenseId)) toast(existing ? "Despesa atualizada" : "Despesa adicionada");
     refresh();
   }
 
@@ -2806,6 +2985,9 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     trash: '<path d="M4 7h16"/><path d="M9.5 7V5.2A1.2 1.2 0 0 1 10.7 4h2.6a1.2 1.2 0 0 1 1.2 1.2V7"/><path d="M6.5 7 7.6 20h8.8L17.5 7"/>',
     eye: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="2.6"/>',
   edit: '<path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16z"/><path d="m13.5 6.5 4 4"/>',
+    clip: UI_ICONS.clip,
+    doc: UI_ICONS.doc,
+    camera: '<path d="M4.5 7.5h3l1.6-2.5h5.8l1.6 2.5h3A1.5 1.5 0 0 1 21 9v9.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5V9a1.5 1.5 0 0 1 1.5-1.5Z"/><circle cx="12" cy="13.3" r="3.6"/>',
   };
   const ico = (n, cls = "") =>
     `<svg class="xp-ico ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -2818,7 +3000,7 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
   let folhaScroll = 0;   // mantém o scroll do painel entre redesenhos
   const FOLHA_TITULO = {
     pagou: "Quem pagou", divide: "Como se divide",
-    cat: "Categoria", repetir: "Repetição",
+    cat: "Categoria", repetir: "Repetição", fatura: "Fatura",
   };
   function onEsc(e) {
     // fecha o pop-up antes de o Escape chegar ao modal e fechar tudo
@@ -3004,6 +3186,15 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     const repTxt = isOccurrence ? "Parte de uma série"
       : state.recurring ? `Todo o mês, dia ${state.dayOfMonth}` : "Uma vez";
 
+    // a fatura é da despesa: um molde recorrente não tem (ao converter uma
+    // despesa, a despesa fica — e a fatura com ela)
+    const comFatura = !isRecurringRecord && !(state.recurring && !converting);
+    const temFatura = !!state.receiptFile || (!!state.receiptPath && !state.receiptDrop);
+    const fatPdf = state.receiptFile ? receiptIsPdf(state.receiptFile.type) : receiptIsPdf(state.receiptPath);
+    const fatTxt = !temFatura ? "Nenhuma"
+      : state.receiptFile ? (fatPdf ? "PDF por enviar" : "Imagem por enviar")
+      : (fatPdf ? "PDF anexado" : "Imagem anexada");
+
     const linha = (alvo, icone, k, v, ok, off) => `
       <button type="button" class="xp-row ${ok ? "" : "warn"}" ${off || readOnly ? "disabled" : `data-folha="${alvo}"`}>
         ${ico(icone, "xp-row-ico")}
@@ -3041,6 +3232,7 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
         ${linha("divide", "users", "Divisão", esc(divTxt), own || okDivide, own)}
         ${linha("cat", "tag", "Categoria", esc(catTxt), okCat)}
         ${linha("repetir", "repeat", "Repete-se", esc(repTxt), true, isOccurrence)}
+        ${comFatura ? linha("fatura", "clip", "Fatura", esc(fatTxt), true) : ""}
       </div>
       ${previa}`;
 
@@ -3210,7 +3402,32 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
             <small>Lançada no dia marcado (ajustado ao último dia nos meses mais curtos).</small></span>
         </label>` : ""}`;
 
-    const CORPOS = { pagou: corpoPagou, divide: corpoDivide, cat: corpoCat, repetir: corpoRepetir };
+    // os campos de ficheiro ficam por cima dos botões (transparentes): no iOS
+    // um <input type=file> escondido nem sempre abre pelo <label>
+    const fatBtn = (icone, txt, accept, extra = "") => `
+      <label class="xp-fat-btn">
+        ${ico(icone)}<span>${txt}</span>
+        <input class="xp-fat-in" type="file" accept="${accept}" ${extra} data-fatura aria-label="${txt}" />
+      </label>`;
+    const corpoFatura = () => !temFatura ? `
+      <p class="xp-folha-sub">Fotografa o talão ou junta o PDF da fatura. Fica com a despesa, à vista de quem está no grupo.</p>
+      <div class="xp-fat-acoes">
+        ${fatBtn("camera", "Tirar fotografia", "image/*", 'capture="environment"')}
+        ${fatBtn("clip", "Escolher ficheiro", "image/*,application/pdf")}
+      </div>
+      <p class="xp-nota">Imagem ou PDF, até 10 MB. As fotografias são reduzidas antes de seguir.</p>` : `
+      ${state.receiptFile ? `<p class="xp-folha-sub">Segue quando gravares a despesa.</p>` : ""}
+      <div class="xp-fat-prev">
+        ${fatPdf
+          ? `<div class="xp-fat-doc">${ico("doc")}<span>${esc(state.receiptFile?.name || "Fatura em PDF")}</span></div>`
+          : `<img id="x-fat-img" alt="Fatura" ${state.receiptFile && receiptPreview ? `src="${receiptPreview}"` : ""} />`}
+      </div>
+      <div class="xp-fat-acoes">
+        ${fatBtn("clip", "Trocar", "image/*,application/pdf")}
+        <button type="button" class="xp-fat-btn del" id="x-fat-del">${ico("trash")}<span>Remover</span></button>
+      </div>`;
+
+    const CORPOS = { pagou: corpoPagou, divide: corpoDivide, cat: corpoCat, repetir: corpoRepetir, fatura: corpoFatura };
 
     const popup = folha ? `
       <div class="xp-scrim" id="x-scrim">
@@ -3346,6 +3563,38 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
         if ($s) $s.textContent = state.time || "—";
       };
     }
+    // fatura: escolher, trocar ou tirar (só sobe ao gravar)
+    slot.querySelectorAll("[data-fatura]").forEach(inp => {
+      inp.onchange = () => {
+        const f = inp.files?.[0];
+        if (!f) return;
+        if (!receiptFileOk(f)) return toast("A fatura tem de ser uma imagem (JPG, PNG, WebP, HEIC) ou um PDF", true);
+        if (receiptIsPdf(f.type) && f.size > RECEIPT_MAX_BYTES) return toast("O PDF passa dos 10 MB", true);
+        if (receiptPreview) URL.revokeObjectURL(receiptPreview);
+        receiptPreview = f.type.startsWith("image/") ? URL.createObjectURL(f) : null;
+        state.receiptFile = f;
+        draw();
+      };
+    });
+    slot.querySelector("#x-fat-del")?.addEventListener("click", () => {
+      if (receiptPreview) URL.revokeObjectURL(receiptPreview);
+      receiptPreview = null;
+      state.receiptFile = null;
+      state.receiptDrop = !!state.receiptPath;
+      draw();
+    });
+    // a gravada mostra-se pelo link assinado (o bucket é privado)
+    const $fatImg = slot.querySelector("#x-fat-img");
+    if ($fatImg) {
+      // uma imagem que o browser não sabe mostrar (HEIC fora do Safari)
+      $fatImg.onerror = () => {
+        $fatImg.outerHTML = `<div class="xp-fat-doc">${ico("doc")}<span>${esc(state.receiptFile?.name || "Imagem anexada")}</span></div>`;
+      };
+      if (!state.receiptFile && state.receiptPath) receiptUrl(state.receiptPath)
+        .then(url => { if ($fatImg.isConnected) $fatImg.src = url; })
+        .catch(() => { $fatImg.alt = "Não foi possível abrir a fatura"; });
+    }
+
     const $dom = slot.querySelector("#x-dom");
     if ($dom) $dom.onchange = () => {
       state.dayOfMonth = Math.min(31, Math.max(1, parseInt($dom.value, 10) || 1));
@@ -5843,6 +6092,14 @@ function renderSettingsTab($c, ctx) {
 
   document.getElementById("btn-del-group").onclick = async () => {
     if (!confirm(`Apagar o grupo «${group.name}» e TODAS as despesas? Não há volta atrás.`)) return;
+    // as faturas saem antes: apagado o grupo, já não há despesa que dê
+    // licença para mexer nelas (num grupo em histórico o servidor não deixa
+    // e ficam no bucket)
+    const faturas = ctx.expenses.map(x => x.receipt_path).filter(Boolean);
+    if (faturas.length) {
+      const { error: fErr } = await sb.storage.from(RECEIPT_BUCKET).remove(faturas);
+      if (fErr) console.warn("faturas:", fErr.message);
+    }
     const { error } = await sb.from("groups").delete().eq("id", group.id);
     if (error) return toast(error.message, true);
     toast("Grupo apagado");

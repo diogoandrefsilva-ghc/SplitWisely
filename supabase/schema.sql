@@ -1517,6 +1517,125 @@ $$;
 revoke all on function splitwisely.public_group_view(text) from public;
 grant execute on function splitwisely.public_group_view(text) to anon, authenticated;
 
+-- ============================================================
+-- FATURA DA DESPESA (anexo)
+-- Cada despesa pode levar um ficheiro — a fotografia do talão ou o PDF da
+-- fatura. O ficheiro vive no Supabase Storage, no bucket PRIVADO
+-- `splitwisely-faturas`, em <group_id>/<expense_id>/<ficheiro>; a despesa
+-- guarda só o caminho (expenses.receipt_path, null = sem fatura). A app
+-- reduz as fotografias antes de as enviar (~2000 px, JPEG), por isso o
+-- limite de 10 MB é sobretudo para os PDFs.
+--
+-- QUEM VÊ O QUÊ (policies em storage.objects, mais abaixo):
+--   • ver/descarregar: quem tem acesso ao grupo da despesa (qualquer role,
+--     como a própria despesa);
+--   • enviar/trocar/apagar: quem pode escrever a despesa
+--     (can_write_expense — 'write_all', ou 'write_own' nas que criou, e
+--     nunca num grupo em histórico).
+-- O caminho tem de bater certo com a despesa: o 1.º segmento é o grupo e o
+-- 2.º a despesa. Um caminho torto não dá acesso a nada — e o check em
+-- expenses impede que uma despesa aponte para o ficheiro de outra.
+-- Fica DE FORA do link público: a RPC public_group_view não devolve o
+-- caminho e o role anon não lê o bucket.
+-- O bucket vive no schema `storage`, partilhado com as outras apps do
+-- projeto: tudo aqui fica preso ao bucket_id desta app.
+-- (Re-correr este ficheiro é seguro.)
+-- ============================================================
+alter table splitwisely.expenses
+  add column if not exists receipt_path text;
+
+alter table splitwisely.expenses
+  drop constraint if exists expenses_receipt_path_check;
+alter table splitwisely.expenses
+  add constraint expenses_receipt_path_check
+  check (receipt_path is null
+         or receipt_path like group_id::text || '/' || id::text || '/%');
+
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('splitwisely-faturas', 'splitwisely-faturas', false, 10485760,
+        array['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif',
+              'application/pdf'])
+on conflict (id) do update
+  set public = false,
+      file_size_limit = excluded.file_size_limit,
+      allowed_mime_types = excluded.allowed_mime_types;
+
+-- A despesa a que um ficheiro pertence: <group_id>/<expense_id>/<ficheiro>,
+-- e só se o grupo do caminho for mesmo o da despesa. null em qualquer
+-- outro caso (caminho com outro formato, uuid inválido, despesa de outro
+-- grupo ou que não existe).
+create or replace function splitwisely.receipt_expense(p_name text)
+returns uuid
+language plpgsql stable security definer
+set search_path = splitwisely
+as $$
+declare
+  v_parts text[] := string_to_array(p_name, '/');
+  v_eid uuid;
+begin
+  if coalesce(array_length(v_parts, 1), 0) <> 3 or v_parts[3] = '' then
+    return null;
+  end if;
+  begin
+    v_eid := v_parts[2]::uuid;
+  exception when invalid_text_representation then
+    return null;
+  end;
+  return (select e.id from expenses e
+           where e.id = v_eid and e.group_id::text = v_parts[1]);
+end;
+$$;
+
+-- Pode ver o ficheiro: tem acesso ao grupo da despesa.
+create or replace function splitwisely.receipt_readable(p_name text)
+returns boolean
+language sql stable security definer
+set search_path = splitwisely
+as $$
+  select splitwisely.can_use()
+     and coalesce(splitwisely.has_group_access(
+           splitwisely.expense_group(splitwisely.receipt_expense(p_name))), false);
+$$;
+
+-- Pode enviar/trocar/apagar o ficheiro: pode escrever a despesa.
+create or replace function splitwisely.receipt_writable(p_name text)
+returns boolean
+language sql stable security definer
+set search_path = splitwisely
+as $$
+  select splitwisely.can_use()
+     and coalesce(splitwisely.can_write_expense(splitwisely.receipt_expense(p_name)), false);
+$$;
+
+revoke all on function splitwisely.receipt_expense(text) from public, anon;
+revoke all on function splitwisely.receipt_readable(text) from public, anon;
+revoke all on function splitwisely.receipt_writable(text) from public, anon;
+grant execute on function splitwisely.receipt_expense(text) to authenticated;
+grant execute on function splitwisely.receipt_readable(text) to authenticated;
+grant execute on function splitwisely.receipt_writable(text) to authenticated;
+
+-- escrita separada por comando (ver regra 1 na secção de RLS lá em cima)
+drop policy if exists "splitwisely_faturas_select" on storage.objects;
+create policy "splitwisely_faturas_select" on storage.objects
+  for select to authenticated
+  using (bucket_id = 'splitwisely-faturas' and splitwisely.receipt_readable(name));
+
+drop policy if exists "splitwisely_faturas_insert" on storage.objects;
+create policy "splitwisely_faturas_insert" on storage.objects
+  for insert to authenticated
+  with check (bucket_id = 'splitwisely-faturas' and splitwisely.receipt_writable(name));
+
+drop policy if exists "splitwisely_faturas_update" on storage.objects;
+create policy "splitwisely_faturas_update" on storage.objects
+  for update to authenticated
+  using (bucket_id = 'splitwisely-faturas' and splitwisely.receipt_writable(name))
+  with check (bucket_id = 'splitwisely-faturas' and splitwisely.receipt_writable(name));
+
+drop policy if exists "splitwisely_faturas_delete" on storage.objects;
+create policy "splitwisely_faturas_delete" on storage.objects
+  for delete to authenticated
+  using (bucket_id = 'splitwisely-faturas' and splitwisely.receipt_writable(name));
+
 notify pgrst, 'reload schema';
 
 -- ============================================================
