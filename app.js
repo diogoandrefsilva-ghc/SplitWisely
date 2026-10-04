@@ -4308,9 +4308,9 @@ function renderBalancesTab($c, ctx) {
       byMonth.set(ym, (byMonth.get(ym) || 0) + toCents(x.amount));
     }
     let chart = "";
-    if (byMonth.size >= 2) {
-      const keys = [...byMonth.keys()].sort();
-      const months = [];
+    const keys = [...byMonth.keys()].sort();
+    const months = [];
+    if (keys.length) {
       let [y, mo] = keys[0].split("-").map(Number);
       const [ey, emo] = keys[keys.length - 1].split("-").map(Number);
       while (y < ey || (y === ey && mo <= emo)) {
@@ -4318,6 +4318,12 @@ function renderBalancesTab($c, ctx) {
         months.push([ym, byMonth.get(ym) || 0]);
         if (++mo > 12) { mo = 1; y++; }
       }
+    }
+    // o gráfico só vale a pena num grupo que gasta ao longo do tempo: pelo
+    // menos 3 meses seguidos com despesas (um jantar ou uma viagem não chega)
+    let run = 0, bestRun = 0;
+    for (const [, c] of months) { run = c ? run + 1 : 0; bestRun = Math.max(bestRun, run); }
+    if (bestRun >= 3) {
       const bars = months.slice(-12); // no máximo o último ano de barras
       const max = Math.max(...bars.map(b => b[1]), 1);
       const multiYear = new Set(bars.map(([ym]) => ym.slice(0, 4))).size > 1;
