@@ -53,6 +53,31 @@ function openModal() {
   document.addEventListener("keydown", modalKey);
   return $modal.querySelector(".modal-card");
 }
+// Painel que sobe de baixo, fora do formulário (ex.: «Quem és tu?» do link
+// público). Usa o mesmo $modal: fecha com o closeModal, no route() e no
+// Escape como os outros pop-ups. Devolve o corpo do painel para preencher.
+function openSheet(title) {
+  closeModal();
+  $modal = document.createElement("div");
+  $modal.className = "xp-scrim";
+  $modal.innerHTML = `
+    <div class="xp-folha entra" role="dialog" aria-modal="true" aria-label="${esc(title)}">
+      <div class="xp-folha-h">
+        <span class="xp-grab"></span>
+        <div class="xp-folha-t">
+          <h3>${esc(title)}</h3>
+          <button type="button" class="xp-folha-ok">Fechar</button>
+        </div>
+      </div>
+      <div class="xp-folha-b"></div>
+    </div>`;
+  document.body.appendChild($modal);
+  document.body.classList.add("modal-open");
+  $modal.addEventListener("click", (e) => { if (e.target === $modal) closeModal(); });
+  $modal.querySelector(".xp-folha-ok").onclick = closeModal;
+  document.addEventListener("keydown", modalKey);
+  return $modal.querySelector(".xp-folha-b");
+}
 function openRecurringModal(ctx, rec) {
   renderExpenseForm(openModal(), ctx, rec, closeModal, { recurring: true, backLabel: "Fechar" });
 }
@@ -243,6 +268,7 @@ const UI_ICONS = {
   check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
   x: '<path d="M6 6l12 12M18 6 6 18"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
+  filter: '<path d="M4 6.5h16M7 12h10M10 17.5h4"/>',
   calendar: '<rect x="3.5" y="5" width="17" height="15" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/>',
   clipboard: '<path d="M9 4h6v3H9z"/><path d="M15 5.5h2.5A1.5 1.5 0 0 1 19 7v12a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 5 19V7a1.5 1.5 0 0 1 1.5-1.5H9"/><path d="M8.5 12h7"/><path d="M8.5 15.5h4.5"/>',
   receipt: '<path d="M6 3.5h12a1 1 0 0 1 1 1v16l-2.5-1.5-2.5 1.5-2-1.5-2 1.5-2.5-1.5L5 20.5v-16a1 1 0 0 1 1-1z"/><path d="M9 8.5h6M9 12h6"/>',
@@ -1671,21 +1697,33 @@ function fitGroupDesc() {
 }
 window.addEventListener("resize", fitGroupDesc);
 
-// Barra de baixo dentro do grupo: Despesas · (+) · Saldos. O «+» lança uma
-// despesa nova em qualquer separador (só aparece a quem pode escrever).
-function groupNavHtml(base, tab, withAdd, addDisabled) {
+// Barra de baixo dentro do grupo: Despesas · (meio) · Saldos. No meio vai o
+// «+» que lança uma despesa nova em qualquer separador (só a quem pode
+// escrever) ou, no link público, o «Quem és tu?» (publicMeBtnHtml).
+function groupNavHtml(base, tab, center = "") {
   const item = (id, icon, label) => `
     <a href="${base}/${id}" class="${tab === id ? "on" : ""}" ${tab === id ? `aria-current="page"` : ""}>
       ${uiIco(icon)}<span>${label}</span></a>`;
   return `
     <nav class="bottom-nav" aria-label="Separadores do grupo">
-      <div class="bn-inner ${withAdd ? "" : "no-add"}">
+      <div class="bn-inner ${center ? "" : "no-add"}">
         ${item("despesas", "receipt", "Despesas")}
-        ${withAdd ? `<button type="button" class="bn-add" id="btn-add-expense" aria-label="Nova despesa"
-          title="Nova despesa" ${addDisabled ? "disabled" : ""}>${uiIco("plus")}</button>` : ""}
+        ${center}
         ${item("saldos", "scale", "Saldos")}
       </div>
     </nav>`;
+}
+function addExpenseBtnHtml(disabled) {
+  return `<button type="button" class="bn-add" id="btn-add-expense" aria-label="Nova despesa"
+    title="Nova despesa" ${disabled ? "disabled" : ""}>${uiIco("plus")}</button>`;
+}
+
+// Botão dos filtros da lista de despesas, no cabeçalho: os filtros vivem
+// recolhidos (ver renderExpensesTab) e este botão abre-os e fecha-os.
+function filtersBtnHtml() {
+  return `<button type="button" class="hero-btn round filters-btn" id="btn-filters"
+    aria-label="Pesquisar e filtrar" title="Pesquisar e filtrar" aria-expanded="false"
+    aria-controls="f-panel">${uiIco("filter")}</button>`;
 }
 
 async function renderGroup(groupId, tab) {
@@ -1728,15 +1766,17 @@ async function renderGroup(groupId, tab) {
   const ctx = { group, members, expenses, payments, paymentsReady, recurring, recurringReady, isOwner, myMember, myRole, canWrite, archived, lastSeen: groupSeen.ts };
 
   // as Definições abrem pela roda dentada do cabeçalho; Despesas e Saldos
-  // vivem na barra de baixo, ao alcance do polegar
+  // vivem na barra de baixo, ao alcance do polegar. Nas Despesas, os filtros
+  // abrem pelo botão ao lado da roda dentada.
   const back = `<a class="hero-btn back" href="#/">${uiIco("back")} Grupos</a>`;
-  const actions = `<a class="hero-btn round ${tab === "definicoes" ? "on" : ""}" href="#/g/${group.id}/definicoes"
+  const actions = `${tab === "despesas" && expenses.length ? filtersBtnHtml() : ""}
+    <a class="hero-btn round ${tab === "definicoes" ? "on" : ""}" href="#/g/${group.id}/definicoes"
     aria-label="Definições do grupo" title="Definições do grupo" ${tab === "definicoes" ? `aria-current="page"` : ""}>${uiIco("gear")}</a>`;
   $app.innerHTML = `
     ${groupHeroHtml(bundle, myMember, { shell: `data-group-shell="${group.id}"`, back, actions, compact: tab !== "despesas" })}
     ${isArchived ? `<p class="archived-note">Este grupo está em <strong>histórico</strong> — os dados estão bloqueados. ${isOwner ? "Reativa-o nas <strong>Definições</strong> para voltar a lançar despesas." : "Só o criador o pode reativar."}</p>` : ""}
     <div id="tab-content"></div>
-    ${groupNavHtml(`#/g/${group.id}`, tab, canWrite, members.length === 0)}`;
+    ${groupNavHtml(`#/g/${group.id}`, tab, canWrite ? addExpenseBtnHtml(members.length === 0) : "")}`;
   fitGroupDesc();
   const $add = document.getElementById("btn-add-expense");
   if ($add) $add.onclick = () => openExpenseModal(ctx, null);
@@ -1771,6 +1811,41 @@ function setPublicMe(token, memberId) {
   } catch (_) { /* modo privado: fica só para esta visita */ }
 }
 
+// No meio da barra de baixo (onde no grupo normal está o «+»): o avatar de
+// quem se escolheu, com o nome por baixo — ou, por escolher, a silhueta.
+function publicMeBtnHtml(members, me) {
+  const curto = nomesCurtos(members);
+  return `
+    <button type="button" class="bn-me" id="btn-pub-me"
+      aria-label="${me ? `Quem és tu? Escolhido: ${esc(me.name)}` : "Quem és tu?"}" aria-haspopup="dialog">
+      <span class="bn-me-disc">${me ? avatarHtml(me.name) : uiIco("user")}</span>
+      <span class="bn-me-lbl">${me ? esc(curto(me.name)) : "Quem és tu?"}</span>
+    </button>`;
+}
+
+// Lista de pessoas do grupo num painel que sobe de baixo; tocar num nome
+// escolhe-o (e volta a desenhar a vista com o saldo dessa pessoa).
+function openPublicMeSheet(token, members, me) {
+  const $b = openSheet("Quem és tu?");
+  $b.innerHTML = `
+    <p class="xp-folha-sub">Escolhe o teu nome para veres o teu saldo e a tua parte em cada despesa.
+      Fica guardado só neste browser.</p>
+    <div class="xp-people pub-me-list">
+      ${members.map(m => `
+        <div class="xp-p ${m.id === me?.id ? "on" : ""}">
+          <button type="button" class="xp-p-hit" data-me="${m.id}" aria-pressed="${m.id === me?.id}">
+            ${avatarHtml(m.name)}
+            <span class="xp-p-n">${esc(m.name)}</span>
+            <span class="xp-p-c">${m.id === me?.id ? uiIco("check", "xp-ico") : ""}</span>
+          </button>
+        </div>`).join("")}
+    </div>
+    ${me ? `<button type="button" class="xp-link" data-me="">Não estou na lista</button>` : ""}`;
+  $b.querySelectorAll("[data-me]").forEach(btn => {
+    btn.onclick = () => { setPublicMe(token, btn.dataset.me); route(); };
+  });
+}
+
 // "2026-10-10T17:32:00+00:00" -> "10 out 2026, 18:32" (hora local; como o
 // fmtDiaMes, o mês curto escreve-se à mão — o pt-PT dava "10/10/2026")
 function fmtDateTime(ts) {
@@ -1797,9 +1872,13 @@ async function renderPublicGroup(token, tab) {
     if (bundle?.status === "ok") publicCache = { token, data: bundle };
   }
 
-  // sem sessão, a barra de topo fica só com um «Entrar» para quem tem conta
+  // sem sessão, a barra de topo fica com um «Entrar» para quem tem conta — e,
+  // nas Despesas, com o botão dos filtros, que não tem cabeçalho onde morar
+  // (sem o «Grupos» de voltar, era uma linha inteira só para ele)
+  const withFilters = bundle?.status === "ok" && tab === "despesas" && bundle.expenses.length > 0;
   if (!session) {
-    $topbarUser.innerHTML = `<button class="secondary small" id="btn-pub-login">Entrar</button>`;
+    $topbarUser.innerHTML = `${withFilters ? filtersBtnHtml() : ""}
+      <button class="secondary small" id="btn-pub-login">Entrar</button>`;
     document.getElementById("btn-pub-login").onclick = () => { location.hash = "#/"; };
   }
 
@@ -1825,24 +1904,14 @@ async function renderPublicGroup(token, tab) {
     ${groupHeroHtml(bundle, myMember, {
       shell: `data-public-shell="${token}"`,
       back: session ? `<a class="hero-btn back" href="#/">${uiIco("back")} Grupos</a>` : "",
+      actions: session && withFilters ? filtersBtnHtml() : "",
       compact: tab === "saldos",
     })}
-    <p class="public-note">${uiIco("eye")}
-      <span>Link público, só de consulta — válido até <strong>${esc(fmtDateTime(bundle.expires_at))}</strong>.</span></p>
-    ${members.length ? `
-    <div class="public-me">
-      <label for="pub-me">Quem és tu?</label>
-      <select id="pub-me">
-        <option value="">Escolhe o teu nome</option>
-        ${members.map(m =>
-          `<option value="${m.id}" ${m.id === myMember?.id ? "selected" : ""}>${esc(m.name)}</option>`).join("")}
-      </select>
-    </div>` : ""}
     <div id="tab-content"></div>
-    ${groupNavHtml(`#/p/${token}`, tab, false, true)}`;
+    ${groupNavHtml(`#/p/${token}`, tab, members.length ? publicMeBtnHtml(members, myMember) : "")}`;
   fitGroupDesc();
-  const $me = document.getElementById("pub-me");
-  if ($me) $me.onchange = () => { setPublicMe(token, $me.value); route(); };
+  const $me = document.getElementById("btn-pub-me");
+  if ($me) $me.onclick = () => openPublicMeSheet(token, members, myMember);
 
   // contexto só de leitura: sem escrita, sem carimbo de «visto», sem moldes
   const ctx = {
@@ -1945,8 +2014,10 @@ function renderExpensesTab($c, ctx) {
 
   // o shell (filtros) desenha-se uma única vez — só a lista, os chips de
   // categoria e a linha de resultados voltam a desenhar-se, para o input
-  // não perder o foco. A despesa nova abre pelo «+» da barra de baixo; a
-  // consulta abre em pop-up.
+  // não perder o foco. Os filtros ficam recolhidos para a lista ter o ecrã
+  // todo: abrem pelo botão do cabeçalho (filtersBtnHtml), e a linha de
+  // resultados fica à vista mesmo com eles fechados. A despesa nova abre
+  // pelo «+» da barra de baixo; a consulta abre em pop-up.
   $c.innerHTML = `
     ${members.length === 0
       ? `<div class="card"><p class="empty">${ctx.publicView
@@ -1959,7 +2030,7 @@ function renderExpensesTab($c, ctx) {
       ${ctx.canWrite ? `<button type="button" class="secondary" id="btn-import">${uiIco("clipboard")} Colar movimentos</button>` : ""}
     </div>`) : `
     ${freshNote}
-    <div class="exp-tools" id="expense-filters">
+    <div class="exp-tools hidden" id="f-panel">
       <div class="filter-bar">
         <label class="search-box">
           ${uiIco("search", "search-ico")}
@@ -1976,8 +2047,8 @@ function renderExpensesTab($c, ctx) {
         <button type="button" class="secondary small" id="f-clear">Limpar</button>
       </div>
       ${hasCats ? `<div class="cat-strip in-filters" id="cat-strip"></div>` : ""}
-      <p class="filter-result hidden" id="f-result"></p>
     </div>
+    <p class="filter-result hidden" id="f-result"></p>
     <div class="card exp-card">
       <div id="expense-list"></div>
     </div>`}`;
@@ -1985,6 +2056,8 @@ function renderExpensesTab($c, ctx) {
   const $list = $c.querySelector("#expense-list");
   const $result = $c.querySelector("#f-result");
   const $catStrip = $c.querySelector("#cat-strip");
+  const $panel = $c.querySelector("#f-panel");
+  const $fBtn = document.getElementById("btn-filters");
 
   function drawList() {
     if (!$list) return; // grupo ainda sem despesas
@@ -2027,11 +2100,14 @@ function renderExpensesTab($c, ctx) {
       : toCents(x.amount);
     const totalShown = shown.reduce((a, x) => a + centsOf(x), 0);
     // com filtros ativos, a linha por baixo dos filtros diz o que está à vista
+    // (e o botão do cabeçalho leva um ponto, para o filtro nunca ficar
+    // escondido com o painel fechado)
     if ($result) {
       $result.classList.toggle("hidden", !filtered);
       if (filtered) $result.textContent =
         `${shown.length} despesa${shown.length === 1 ? "" : "s"} · ${fmtMoney(totalShown, cur)}`;
     }
+    $fBtn?.classList.toggle("has-filter", filtered);
 
     // total de cada dia (do que está à vista), para o cabeçalho do dia
     const dayTotals = new Map();
@@ -2085,6 +2161,20 @@ function renderExpensesTab($c, ctx) {
 
   const $impBtn = $c.querySelector("#btn-import");
   if ($impBtn) $impBtn.onclick = () => openImportModal(ctx);
+
+  // abrir/fechar os filtros (sem o botão no cabeçalho, ficam à vista)
+  if ($panel) {
+    if (!$fBtn) $panel.classList.remove("hidden");
+    else $fBtn.onclick = () => {
+      const open = !$panel.classList.toggle("hidden");
+      $fBtn.classList.toggle("on", open);
+      $fBtn.setAttribute("aria-expanded", String(open));
+      // no link público o botão vive na barra de topo, que fica sempre à
+      // vista: aberto a meio da lista, sobe até aos filtros
+      const topbarH = document.querySelector(".topbar")?.offsetHeight || 0;
+      if (open && $panel.getBoundingClientRect().top < topbarH) window.scrollTo({ top: 0, behavior: "smooth" });
+    };
+  }
 
   // pesquisa por descrição e intervalo de datas (os filtros só existem
   // quando há despesas)
