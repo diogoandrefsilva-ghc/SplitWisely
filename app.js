@@ -4035,7 +4035,7 @@ function renderBalancesTab($c, ctx) {
     </li>`;
   };
 
-  // ---- Quem deve a quem: uma barra por pessoa, para os dois lados de um
+  // ---- Quem deve / quem recebe: uma barra por pessoa, para os dois lados de um
   // eixo (à esquerda quem deve, à direita quem recebe), na mesma escala.
   // Tocar numa linha mostra a quem deve / de quem recebe.
   const maxNeg = Math.max(0, ...members.map(m => -balance[m.id]));
@@ -4068,7 +4068,7 @@ function renderBalancesTab($c, ctx) {
   const byBalance = [...members].sort((a, b) => balance[b.id] - balance[a.id]);
   const barsCard = members.length === 0 ? "" : `
     <div class="card">
-      <div class="card-title-row"><h2>Quem deve a quem</h2><span class="muted bb-legend">deve · recebe</span></div>
+      <div class="card-title-row"><h2>Quem deve / quem recebe</h2><span class="muted bb-legend">deve · recebe</span></div>
       <ul class="list bal-bars">${byBalance.map(barRow).join("")}</ul>
     </div>`;
 
@@ -4149,8 +4149,8 @@ function renderBalancesTab($c, ctx) {
 
   $c.innerHTML = `
     ${resumoCard}
-    ${barsCard}
     ${card("Como acertar", "acertos", acertosMine, acertosOthers, otherSettles.length, "Ver acertos entre os outros", "", acertosSub)}
+    ${barsCard}
     ${card("Pagamentos", "pagamentos", pagMine, pagOthers, otherPayments.length, "Ver pagamentos dos outros", pagAction)}`;
 
   // abrir/fechar a parte "dos outros" de cada cartão
