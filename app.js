@@ -893,6 +893,45 @@ function expenseCatSplits(x) {
   return [{ cat: (x.category && catOf(x.category)) ? x.category : "none", cents: toCents(x.amount) }];
 }
 
+// A parte exata (cêntimos fracionários) de um membro numa despesa, repartida
+// pelas categorias (Map cat -> cêntimos). Com divisão por categoria conta o
+// valor de cada categoria em que participa ÷ nº de participantes (o mesmo
+// critério de exactShareCents); senão, a sua parte total distribui-se pelas
+// partes da fatura na proporção do valor de cada uma. Soma sempre o mesmo
+// que exactShareCents(x).get(memberId).
+function memberCatShareCents(x, memberId) {
+  const out = new Map();
+  const add = (cat, v) => {
+    const k = catOf(cat) ? cat : "none";
+    out.set(k, (out.get(k) || 0) + v);
+  };
+  const catShares = x.expense_category_shares || [];
+  const cats = x.expense_categories || [];
+  if (catShares.length && cats.length) {
+    const catTotal = new Map(cats.map(c => [c.category, toCents(c.amount)]));
+    const partsByCat = new Map();
+    for (const r of catShares) {
+      if (!partsByCat.has(r.category)) partsByCat.set(r.category, []);
+      partsByCat.get(r.category).push(r.member_id);
+    }
+    let used = false;
+    for (const [cat, ids] of partsByCat) {
+      const amt = catTotal.get(cat);
+      if (amt == null || ids.length === 0) continue;
+      used = true;
+      if (ids.includes(memberId)) add(cat, amt / ids.length);
+    }
+    if (used) return out;
+  }
+  const mine = exactShareCents(x).get(memberId) || 0;
+  if (!mine) return out;
+  const splits = expenseCatSplits(x);
+  const tot = splits.reduce((a, s) => a + s.cents, 0);
+  if (tot <= 0) { add(splits[0].cat, mine); return out; }
+  for (const s of splits) add(s.cat, mine * s.cents / tot);
+  return out;
+}
+
 // Ícone da despesa nas listas: o da categoria principal, com um contador
 // por cima quando a fatura está repartida por várias
 function expenseCatIconHtml(x, extra = "") {
@@ -4591,6 +4630,22 @@ function renderBalancesTab($c, ctx) {
   const acertosSub = settlements.length
     ? `${settlements.length} pagamento${settlements.length === 1 ? "" : "s"} e ficam todos em dia` : "";
 
+  // ---- Por categoria ---- (o quadro do relatório): o total do grupo em
+  // cada categoria ou só a minha parte. Só aparece se houver despesas com
+  // categoria — com tudo em «Sem categoria» não diz nada.
+  const hasCats = expenses.some(x => expenseCatSplits(x).some(s => s.cat !== "none"));
+  let catView = "group";
+  const catsCard = !hasCats ? "" : `
+    <div class="card">
+      <div class="card-title-row"><h2>Por categoria</h2></div>
+      ${myMember ? `
+      <div class="xp-seg sm who-seg" role="group" aria-label="Totais por categoria">
+        <button type="button" class="on" data-catview="group" aria-pressed="true">Do grupo</button>
+        <button type="button" data-catview="me" aria-pressed="false">A minha parte</button>
+      </div>` : ""}
+      <div id="balance-cats"></div>
+    </div>`;
+
   // ---- Pagamentos ----
   const pagAction = paymentsReady && ctx.canWrite
     ? `<button type="button" class="pill-btn" id="btn-add-payment">${uiIco("plus")} Registar</button>` : "";
@@ -4609,6 +4664,7 @@ function renderBalancesTab($c, ctx) {
   $c.innerHTML = `
     ${resumoCard}
     ${card("Como acertar", "acertos", acertosMine, acertosOthers, otherSettles.length, "Ver acertos entre os outros", "", acertosSub)}
+    ${catsCard}
     ${barsCard}
     ${card("Pagamentos", "pagamentos", pagMine, pagOthers, otherPayments.length, "Ver pagamentos dos outros", pagAction)}`;
 
@@ -4730,7 +4786,85 @@ function renderBalancesTab($c, ctx) {
         ? `<p class="empty">Sem despesas ${active ? "neste período" : "ainda"}.</p>`
         : `<p class="muted quota-hint">Quota por pessoa — a parte das despesas que coube a cada um.</p>${rows}`;
     }
+
+    drawCats(xs, share, active);
   }
+
+  // ---- por categoria: o total do grupo (cada parte de uma fatura repartida
+  // na sua categoria) ou a minha parte, distribuída pelas mesmas categorias.
+  // Segue o período do resumo, como as quotas.
+  const $cats = $c.querySelector("#balance-cats");
+  function drawCats(xs, share, active) {
+    if (!$cats) return;
+    const mine = catView === "me" && !!myMember;
+    const byCat = new Map(); // cat -> { cents, n }
+    if (mine) {
+      const exactCat = new Map();
+      const nCat = new Map();
+      for (const x of xs) for (const [cat, v] of memberCatShareCents(x, myMember.id)) {
+        if (v <= 0) continue;
+        exactCat.set(cat, (exactCat.get(cat) || 0) + v);
+        nCat.set(cat, (nCat.get(cat) || 0) + 1);
+      }
+      // arredonda uma vez no fim e acerta o cêntimo que sobre na maior
+      // categoria, para o total bater com «A tua quota» lá em cima
+      const rounded = roundPreservingSum(exactCat);
+      const diff = (share[myMember.id] || 0) - [...rounded.values()].reduce((a, b) => a + b, 0);
+      if (diff && rounded.size) {
+        const top = [...rounded.entries()].sort((a, b) => b[1] - a[1])[0][0];
+        rounded.set(top, rounded.get(top) + diff);
+      }
+      for (const [cat, cents] of rounded) byCat.set(cat, { cents, n: nCat.get(cat) });
+    } else {
+      for (const x of xs) for (const s of expenseCatSplits(x)) {
+        const e = byCat.get(s.cat) || { cents: 0, n: 0 };
+        e.cents += s.cents;
+        e.n += 1;
+        byCat.set(s.cat, e);
+      }
+    }
+    const cats = [...byCat.entries()].filter(([, e]) => e.cents > 0).sort((a, b) => b[1].cents - a[1].cents);
+    const total = cats.reduce((a, [, e]) => a + e.cents, 0);
+    const pct = (c) => total > 0 ? Math.round(c / total * 100) : 0;
+    const periodo = active
+      ? ` · ${period.from ? fmtDate(period.from) : "início"} → ${period.to ? fmtDate(period.to) : "hoje"}` : "";
+
+    if (cats.length === 0) {
+      $cats.innerHTML = `<p class="empty">${mine
+        ? `Não tens parte em despesas ${active ? "neste período" : "ainda"}.`
+        : `Sem despesas ${active ? "neste período" : "ainda"}.`}</p>`;
+      return;
+    }
+    $cats.innerHTML = `
+      <p class="card-sub">${mine ? "A tua parte" : "Total do grupo"}: <strong>${fmtMoney(total, cur)}</strong>${periodo}</p>
+      ${cats.map(([id, e]) => {
+        const c = catOf(id);
+        return `<div class="quota-row cat-row">
+          ${catIconHtml(id === "none" ? null : id)}
+          <div class="quota-main">
+            <div class="quota-top">
+              <span class="quota-name">${esc(c ? c.label : "Sem categoria")}</span>
+              <span class="quota-amt">${fmtMoney(e.cents, cur)}</span>
+            </div>
+            <div class="quota-bar"><div class="quota-fill" style="width:${pct(e.cents)}%"></div></div>
+            <div class="quota-foot">
+              <span>${pct(e.cents)}% ${mine ? "da tua parte" : "do total"}</span>
+              <span>${e.n} despesa${e.n === 1 ? "" : "s"}</span>
+            </div>
+          </div>
+        </div>`;
+      }).join("")}`;
+  }
+  $c.querySelectorAll("[data-catview]").forEach(b => {
+    b.onclick = () => {
+      catView = b.dataset.catview;
+      $c.querySelectorAll("[data-catview]").forEach(o => {
+        o.classList.toggle("on", o === b);
+        o.setAttribute("aria-pressed", String(o === b));
+      });
+      drawSummary();
+    };
+  });
 
   const $bpToggle = $c.querySelector("#bp-toggle");
   const $bpRange = $c.querySelector("#bp-range");

@@ -709,6 +709,9 @@ body:has(.bottom-nav) .toast { bottom: calc(var(--nav-h) + 1rem + env(safe-area-
   background: var(--bar-pos);
 }
 .quota-foot { display: flex; justify-content: space-between; gap: .6rem; font-size: .72rem; color: var(--muted); }
+/* totais por categoria (Saldos): as linhas das quotas com o azulejo da
+   categoria no lugar do avatar, do mesmo tamanho */
+.cat-row .cat-ico { width: 34px; height: 34px; border-radius: 11px; font-size: 1.05rem; }
 
 /* ================================================================ cabeçalho cobalto (hero) */
 /* Cola-se à topbar (mesmo cobalto) e vai até às margens do ecrã; o padrão
