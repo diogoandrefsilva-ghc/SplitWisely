@@ -802,7 +802,7 @@ function renderLogin() {
   $app.innerHTML = `
     <div class="card login-box" style="max-width:460px;margin:2rem auto;">
       <div class="brand-big">
-        <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="currentColor"/></svg></span>
+        <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M10.6 2.6a8.4 8.4 0 0 0 0 16.8z" fill="currentColor"/><path d="M13.4 5.6a8.4 8.4 0 0 1 0 16.8z" fill="currentColor" opacity=".55"/></svg></span>
         <h1>SplitWisely</h1>
       </div>
       <p class="muted">Grupos, eventos e despesas partilhadas — quem pagou o quê e quem deve a quem.</p>
@@ -1510,15 +1510,21 @@ async function renderGroups() {
 
 // ---------------------------------------------------------------- vista: grupo
 // Cabeçalho cobalto do grupo (vista normal e link público): voltar e ações
-// em cima; nome, descrição e quem está no grupo; por baixo o saldo de «quem
-// está a ver» (só quando é membro — um criador que não participa, ou o link
-// público sem nome escolhido, não têm saldo) e o total gasto no grupo.
+// em cima; nome e descrição; por baixo o saldo de «quem está a ver» e, à
+// direita, a quem deve (só quando deve). Quem não tem saldo — um criador que
+// não participa, ou o link público sem nome escolhido — vê o total gasto.
 // `compact` tira os números: nos Saldos já estão em grande no 1.º cartão.
 function groupHeroHtml(bundle, myMember, { shell, back = "", actions = "", compact = false }) {
   const { group, members, expenses, payments } = bundle;
   const cur = group.currency;
   const total = expenses.reduce((a, x) => a + toCents(x.amount), 0);
-  const myBal = myMember ? (groupBalancesCents(members, expenses, payments).get(myMember.id) ?? 0) : null;
+  const balances = groupBalancesCents(members, expenses, payments);
+  const myBal = myMember ? (balances.get(myMember.id) ?? 0) : null;
+  // a quem devo (as mesmas sugestões de acerto dos Saldos); a receber, nada
+  const curto = nomesCurtos(members);
+  const owe = myBal < 0
+    ? settlementsFor(members, Object.fromEntries(balances)).filter(s => s.from.id === myMember.id)
+    : [];
   return `
     <section class="hero group-hero ${compact ? "compact" : ""}" ${shell}>
       ${back || actions ? `<div class="hero-bar">${back}<span class="hero-actions">${actions}</span></div>` : ""}
@@ -1527,23 +1533,43 @@ function groupHeroHtml(bundle, myMember, { shell, back = "", actions = "", compa
         ${cur !== "EUR" ? `<span class="hero-badge">${esc(cur)}</span>` : ""}
         ${group.archived ? `<span class="hero-badge">${uiIco("archive")} Histórico</span>` : ""}
       </div>
-      <div class="gh-sub">
-        <span class="gh-desc">${esc(group.description || "")}</span>
-        ${members.length ? avatarStackHtml(members.map(m => m.name), 5, "xs") : ""}
-      </div>
+      ${group.description ? `<p class="gh-desc">${esc(group.description)}</p>` : ""}
       ${compact ? "" : `<div class="gh-stats">
         ${myMember ? `
         <div class="gh-stat">
           <span>O teu saldo</span>
           <strong class="gh-bal">${myBal === 0 ? "Em dia" : (myBal > 0 ? "+" : "−") + fmtMoney(Math.abs(myBal), cur)}</strong>
-        </div>` : ""}
-        <div class="gh-stat gh-total">
+        </div>
+        ${owe.length ? `<div class="gh-stat gh-right gh-owe">
+          <span>Deves a</span>
+          ${(owe.length > 2 ? owe.slice(0, 1) : owe).map(s =>
+            `<strong><b>${esc(curto(s.to.name))}</b> ${fmtMoney(s.cents, cur)}</strong>`).join("")}
+          ${owe.length > 2 ? `<strong>+ ${owe.length - 1} pessoas</strong>` : ""}
+        </div>` : ""}` : `
+        <div class="gh-stat gh-right">
           <span>Total do grupo</span>
           <strong>${fmtMoney(total, cur)}</strong>
-        </div>
+        </div>`}
       </div>`}
     </section>`;
 }
+
+// A descrição do grupo fica numa só linha: se não couber, a letra encolhe
+// até um mínimo; só aí (descrições mesmo longas) volta a partir em duas.
+const GH_DESC_MAX = 15, GH_DESC_MIN = 11; // px
+function fitGroupDesc() {
+  const el = document.querySelector(".gh-desc");
+  if (!el) return;
+  el.classList.remove("wrap");
+  let size = GH_DESC_MAX;
+  el.style.fontSize = size + "px";
+  while (el.scrollWidth > el.clientWidth && size > GH_DESC_MIN) {
+    size -= 0.5;
+    el.style.fontSize = size + "px";
+  }
+  if (el.scrollWidth > el.clientWidth) el.classList.add("wrap");
+}
+window.addEventListener("resize", fitGroupDesc);
 
 // Barra de baixo dentro do grupo: Despesas · (+) · Saldos. O «+» lança uma
 // despesa nova em qualquer separador (só aparece a quem pode escrever).
@@ -1611,6 +1637,7 @@ async function renderGroup(groupId, tab) {
     ${isArchived ? `<p class="archived-note">Este grupo está em <strong>histórico</strong> — os dados estão bloqueados. ${isOwner ? "Reativa-o nas <strong>Definições</strong> para voltar a lançar despesas." : "Só o criador o pode reativar."}</p>` : ""}
     <div id="tab-content"></div>
     ${groupNavHtml(`#/g/${group.id}`, tab, canWrite, members.length === 0)}`;
+  fitGroupDesc();
   const $add = document.getElementById("btn-add-expense");
   if ($add) $add.onclick = () => openExpenseModal(ctx, null);
 
@@ -1713,6 +1740,7 @@ async function renderPublicGroup(token, tab) {
     </div>` : ""}
     <div id="tab-content"></div>
     ${groupNavHtml(`#/p/${token}`, tab, false, true)}`;
+  fitGroupDesc();
   const $me = document.getElementById("pub-me");
   if ($me) $me.onchange = () => { setPublicMe(token, $me.value); route(); };
 
