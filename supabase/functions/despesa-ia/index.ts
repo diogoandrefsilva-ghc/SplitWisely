@@ -282,6 +282,9 @@ async function registarIaUso(
       headers: { ...iaHeaders, Prefer: "return=minimal" },
       body: JSON.stringify({
         app: "splitwisely", funcao: FUNCAO, estado, modelo,
+        // A funcionalidade é o `modo` (despesa/grupo/alterar): o painel de custos
+        // (AI-API-Control) conta o custo médio de cada uma.
+        funcionalidade: (detalhe.modo as string | undefined) ?? null,
         pesquisa_web: false,
         tokens_entrada: usage?.promptTokenCount ?? null,
         tokens_saida: usage?.candidatesTokenCount ?? null,
