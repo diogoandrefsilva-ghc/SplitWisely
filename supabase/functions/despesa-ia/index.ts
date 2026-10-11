@@ -23,8 +23,8 @@
 // Mensagem de voz (`audio`, base64, + `audio_mime`): o Gemini ouve-a como se
 // fosse o texto e devolve também `transcricao` (o que ouviu), que a app põe
 // na caixa de texto — assim as correções seguintes já vão só com texto.
-// O áudio conta ~32 tokens por segundo, a um preço por token próprio: o custo
-// estimado usa `ia_uso.precos.eur_audio_1m` (ou o de entrada, se não houver).
+// O áudio conta ~32 tokens por segundo (dentro dos tokens de entrada); o
+// registo guarda-os também à parte, em `detalhe.tokens_audio`.
 //
 // As PESSOAS identificam-se sempre pelo NOME (nunca por ids): a app faz a
 // correspondência com os membros, e um nome que não bata com nenhum passa a
@@ -270,8 +270,7 @@ type Usage = {
 const tokensAudio = (u: Usage | null) =>
   (u?.promptTokensDetails ?? []).filter((d) => d?.modality === "AUDIO").reduce((a, d) => a + (d.tokenCount ?? 0), 0);
 
-// Custo pela tabela ia_uso.precos (linha do modelo, ou a de recurso "*"). Os
-// tokens de áudio da entrada pagam-se a eur_audio_1m (quando a coluna existe).
+// Custo pela tabela ia_uso.precos (linha do modelo, ou a de recurso "*").
 async function custoEstimado(modelo: string | null, u: Usage | null): Promise<number | null> {
   if (!modelo || !u) return null;
   try {
@@ -283,9 +282,7 @@ async function custoEstimado(modelo: string | null, u: Usage | null): Promise<nu
     const rows = await r.json();
     const p = rows.find((x: any) => x.modelo === modelo) ?? rows.find((x: any) => x.modelo === "*");
     if (!p) return null;
-    const aud = tokensAudio(u);
-    const ent = ((u.promptTokenCount ?? 0) - aud) * Number(p.eur_entrada_1m)
-      + aud * Number(p.eur_audio_1m ?? p.eur_entrada_1m);
+    const ent = (u.promptTokenCount ?? 0) * Number(p.eur_entrada_1m);
     const sai = (u.candidatesTokenCount ?? 0) * Number(p.eur_saida_1m);
     const pen = (u.thoughtsTokenCount ?? 0) * Number(p.eur_pensamento_1m ?? p.eur_saida_1m);
     return Math.round(((ent + sai + pen) / 1_000_000) * 1e6) / 1e6;

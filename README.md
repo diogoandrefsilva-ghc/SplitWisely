@@ -122,9 +122,6 @@ Sem este passo a app funciona à mesma — o ✨ e o «Despesa com IA» mostram 
 2. Publica a function: `supabase functions deploy despesa-ia` (com o *verify JWT* ligado).
 3. O registo das chamadas vai para o schema `ia_uso` (tabelas `registos` e `precos`), partilhado
    pelas apps do projeto; sem ele a function responde na mesma, só não fica rasto.
-4. O áudio das mensagens de voz tem preço próprio por token. Para o custo estimado o contar bem:
-   `alter table ia_uso.precos add column if not exists eur_audio_1m numeric;` e preencher a linha
-   de cada modelo (sem a coluna, ou com ela vazia, o áudio conta ao preço de entrada do texto).
 
 ### 8. Instalar no telemóvel
 
