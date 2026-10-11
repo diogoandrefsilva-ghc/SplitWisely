@@ -2737,6 +2737,26 @@ button.soft:hover { filter: none; background: var(--chip-pos-bg); }
   text-decoration: none;
 }
 .xv-fat-link .ico { width: 20px; height: 20px; }
+/* registo: quem lançou a despesa, como e quando (e a última alteração) */
+.xv-reg-ico {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--chip-zero-bg);
+  color: var(--muted);
+}
+.xv-reg-ico .ico { width: 16px; height: 16px; }
+.xv-reg-txt { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: .1rem; }
+.xv-reg-t { font-weight: 500; }
+.xv-reg-t strong { font-weight: 700; }
+.xv-reg-s { color: var(--muted); font-size: .85rem; }
+.xv-reg-como .ico { width: 14px; height: 14px; display: inline-block; vertical-align: -2px; margin-right: .2rem; }
+.xv-reg-como.ia { color: var(--primary-ink); font-weight: 600; }
+.xv-reg-como.ia .ico,
+.badge.ia .ico { color: var(--gold-accent); }
 
 /* fatura no formulário: dois botões grandes (fotografar / escolher) com o
    campo de ficheiro por cima, invisível — como o «Outra» das datas */

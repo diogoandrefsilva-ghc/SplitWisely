@@ -346,8 +346,8 @@ def main():
 
     # -------- expandir para as tabelas reais --------
     w("  -- ---- despesas ----")
-    w("  insert into splitwisely.expenses (id, group_id, description, amount, expense_date, split_mode, category)")
-    w("    select id, g_id, descr, cost, edate, 'exact', category from _mig where kind = 'expense';")
+    w("  insert into splitwisely.expenses (id, group_id, description, amount, expense_date, split_mode, category, source)")
+    w("    select id, g_id, descr, cost, edate, 'exact', category, 'splitwise' from _mig where kind = 'expense';")
     w("")
     w("  -- ---- quem pagou (um pagador por despesa, o custo todo) ----")
     w("  insert into splitwisely.expense_payers (expense_id, member_id, amount)")

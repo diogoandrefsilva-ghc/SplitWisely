@@ -984,9 +984,9 @@ begin
         new_id := null;
         insert into expenses (group_id, description, amount, expense_date,
                               split_mode, category, created_by,
-                              recurring_id, recurring_period)
+                              recurring_id, recurring_period, source)
         values (r.group_id, r.description, r.amount, occ,
-                r.split_mode, r.category, r.created_by, r.id, m)
+                r.split_mode, r.category, r.created_by, r.id, m, 'recurring')
         on conflict (recurring_id, recurring_period) where recurring_id is not null
         do nothing
         returning id into new_id;
@@ -1488,7 +1488,14 @@ begin
                'id', e.id, 'description', e.description, 'amount', e.amount,
                'expense_date', e.expense_date, 'split_mode', e.split_mode,
                'category', e.category, 'recurring_id', e.recurring_id,
-               'created_at', e.created_at,
+               'created_at', e.created_at, 'updated_at', e.updated_at,
+               'source', e.source,
+               -- quem registou / alterou, como MEMBRO do grupo (o link não
+               -- mostra contas): null quando a conta não é membro
+               'created_member', (select m.id from group_members m
+                                   where m.group_id = e.group_id and m.user_id = e.created_by),
+               'updated_member', (select m.id from group_members m
+                                   where m.group_id = e.group_id and m.user_id = e.updated_by),
                'expense_payers', coalesce((
                  select jsonb_agg(jsonb_build_object('member_id', p.member_id, 'amount', p.amount))
                  from expense_payers p where p.expense_id = e.id), '[]'::jsonb),
@@ -1635,6 +1642,54 @@ drop policy if exists "splitwisely_faturas_delete" on storage.objects;
 create policy "splitwisely_faturas_delete" on storage.objects
   for delete to authenticated
   using (bucket_id = 'splitwisely-faturas' and splitwisely.receipt_writable(name));
+
+-- ============================================================
+-- COMO FOI REGISTADA A DESPESA
+-- A consulta da despesa diz quem a registou (created_by), quando
+-- (created_at) e por que caminho entrou (expenses.source):
+--   'manual'    formulário da despesa, preenchido à mão
+--   'ai'        «Despesa com IA» — texto ou foto lidos pela IA e
+--               confirmados no resumo (mesmo que retocados no formulário
+--               antes de gravar)
+--   'import'    importação de movimentos de texto colado
+--   'recurring' gerada por uma despesa recorrente (generate_due_recurring)
+--   'splitwise' migração do Splitwise (migrate_splitwise.py)
+--   null        registada antes de existir esta coluna: não se sabe
+-- A app escreve-a ao inserir e nunca a muda ao editar — diz como a despesa
+-- nasceu; quem mexeu depois está em updated_by/updated_at.
+--
+-- O backfill corre UMA só vez, quando a coluna nasce, e só preenche o que
+-- se sabe ao certo: as ocorrências das recorrentes (as criadas depois do
+-- molde — uma despesa avulsa convertida em recorrente nasceu antes dele e
+-- fica de fora) e, das restantes, as que não têm autor, que só entram pelo
+-- SQL Editor (a migração do Splitwise — também as que depois passaram a
+-- recorrentes). O trigger do updated_at fica desligado durante o backfill:
+-- senão a lista acendia todas as despesas como «alteradas».
+-- ============================================================
+do $$
+begin
+  if not exists (
+    select 1 from information_schema.columns
+    where table_schema = 'splitwisely'
+      and table_name = 'expenses'
+      and column_name = 'source'
+  ) then
+    alter table splitwisely.expenses add column source text;
+    alter table splitwisely.expenses disable trigger trg_touch_expense;
+    update splitwisely.expenses e set source = 'recurring'
+      from splitwisely.recurring_expenses r
+     where r.id = e.recurring_id and e.created_at >= r.created_at;
+    update splitwisely.expenses set source = 'splitwise'
+     where source is null and created_by is null;
+    alter table splitwisely.expenses enable trigger trg_touch_expense;
+  end if;
+end $$;
+
+alter table splitwisely.expenses
+  drop constraint if exists expenses_source_check;
+alter table splitwisely.expenses
+  add constraint expenses_source_check
+  check (source is null or source in ('manual', 'ai', 'import', 'recurring', 'splitwise'));
 
 notify pgrst, 'reload schema';
 

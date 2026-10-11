@@ -137,6 +137,7 @@ function renderExpenseView(slot, ctx, x) {
     : "";
   const catTxt = cats.length === 1 ? `${catOf(cats[0].cat).icon} ${catOf(cats[0].cat).label}` : "";
   const hora = x.expense_time ? ` · ${x.expense_time.slice(0, 5)}` : "";
+  const registo = expenseRegistoHtml(ctx, x, curto);
 
   slot.innerHTML = `
     <div class="expense-detail xp">
@@ -160,6 +161,7 @@ function renderExpenseView(slot, ctx, x) {
         ${x.receipt_path ? `
         <h3 class="xv-h">Fatura</h3>
         <div class="xv-fatura" id="xv-fat"><span class="muted">A abrir a fatura…</span></div>` : ""}
+        ${registo}
       </div>
       ${canEdit ? `
       <footer class="xp-foot ai-foot">
@@ -200,6 +202,72 @@ function renderExpenseView(slot, ctx, x) {
   slot.querySelector("#xv-edit")?.addEventListener("click", editar);
   slot.querySelector("#xv-ai")?.addEventListener("click", () => alterarIA(view));
 }
+// Como nasceu a despesa (expenses.source no schema.sql). Sem origem — as
+// despesas de antes de ela se guardar — a consulta diz só quem e quando.
+const EXPENSE_SOURCES = {
+  manual: { txt: "à mão" },
+  ai: { txt: "com IA", ico: "sparkle" },
+  import: { txt: "importada de texto colado", ico: "clipboard" },
+  recurring: { txt: "automática, pela despesa recorrente", ico: "repeat" },
+  splitwise: { txt: "importada do Splitwise" },
+};
+// Uma alteração conta a partir daqui: gravar a despesa escreve logo a seguir
+// os pagadores, as quotas e a fatura, e cada uma dessas escritas também
+// carimba o updated_at (ver touch_expense_parent no schema.sql).
+const EXPENSE_EDIT_GAP_MS = 2 * 60 * 1000;
+
+// Secção «Registo» da consulta: quem registou a despesa, como e quando — e
+// quem lhe mexeu por último, se foi mexida depois. Com sessão, o autor é a
+// conta (created_by) e o nome vem do membro ligado a ela; no link público a
+// RPC já o dá como membro (created_member), porque não devolve contas.
+function expenseRegistoHtml(ctx, x, curto) {
+  const { group, members, myMember } = ctx;
+  const uid = session?.user.id;
+  const pessoa = (userId, memberId) => {
+    const m = memberId ? members.find(mm => mm.id === memberId)
+      : userId ? members.find(mm => mm.user_id && mm.user_id === userId) : null;
+    if ((uid && userId === uid) || (m && myMember && m.id === myMember.id))
+      return { txt: "ti", nome: m?.name || myMember?.name || profile?.full_name || "?" };
+    if (m) return { txt: curto(m.name), nome: m.name };
+    if (userId && userId === group.created_by) return { txt: "quem criou o grupo", nome: null };
+    return null;
+  };
+  // no link público só se sabe quem foi se a RPC já o devolver (schema
+  // por atualizar: fica só o «quando»)
+  const sabeAutor = ctx.publicView ? "created_member" in x : "created_by" in x;
+  const linha = (who, titulo, sub) => `
+    <li class="xv-li">
+      ${who?.nome ? avatarHtml(who.nome, "sm") : `<span class="xv-reg-ico">${uiIco("user")}</span>`}
+      <span class="xv-reg-txt">
+        <span class="xv-reg-t">${titulo}</span>
+        <span class="xv-reg-s">${sub}</span>
+      </span>
+    </li>`;
+
+  const origem = EXPENSE_SOURCES[x.source] || null;
+  const autor = pessoa(x.created_by, x.created_member);
+  const criada = x.created_at ? esc(fmtDateTime(x.created_at)) : "";
+  let titulo;
+  if (x.source === "splitwise") titulo = "Importada do Splitwise";
+  else if (autor) titulo = `Registada por <strong>${esc(autor.txt)}</strong>`;
+  else if (sabeAutor && (x.created_by || x.created_member === null)) titulo = "Registada por alguém que não é membro do grupo";
+  else titulo = "Registada";
+  const comoTxt = origem && x.source !== "splitwise"
+    ? `<span class="xv-reg-como${x.source === "ai" ? " ia" : ""}">${origem.ico ? uiIco(origem.ico) : ""}${esc(origem.txt)}</span>`
+    : "";
+  const linhas = [linha(x.source === "splitwise" ? null : autor, titulo,
+    [comoTxt, criada].filter(Boolean).join(" · "))];
+
+  const editada = x.updated_at && x.created_at
+    && Date.parse(x.updated_at) - Date.parse(x.created_at) > EXPENSE_EDIT_GAP_MS;
+  if (editada) {
+    const quem = pessoa(x.updated_by, x.updated_member);
+    linhas.push(linha(quem, quem ? `Alterada por <strong>${esc(quem.txt)}</strong>` : "Alterada",
+      esc(fmtDateTime(x.updated_at))));
+  }
+  return `<h3 class="xv-h">Registo</h3><ul class="xv-list">${linhas.join("")}</ul>`;
+}
+
 function openImportModal(ctx) {
   // o parser vive num ficheiro à parte: sem ele (versão em cache a meio de
   // uma atualização) não se abre o ecrã em vez de rebentar a meio
@@ -2343,7 +2411,8 @@ function renderExpensesTab($c, ctx) {
           <div class="item-main">
             <span class="item-title-line">
               <span class="item-title">${esc(x.description)}</span>${freshBadge}${x.recurring_id
-                ? `<span class="badge linked" title="Despesa recorrente">${uiIco("repeat")}</span>` : ""}${x.receipt_path
+                ? `<span class="badge linked" title="Despesa recorrente">${uiIco("repeat")}</span>` : ""}${x.source === "ai"
+                ? `<span class="badge linked ia" title="Registada com IA">${uiIco("sparkle")}</span>` : ""}${x.receipt_path
                 ? `<span class="badge linked" title="Tem fatura">${uiIco("clip")}</span>` : ""}
             </span>
             <span class="item-sub">${x.expense_time ? `${x.expense_time.slice(0, 5)} · ` : ""}${esc(whoPaid(x))}${porTodos ? "" : ` · ${nShares} pessoa${nShares === 1 ? "" : "s"}`}</span>
@@ -2972,11 +3041,20 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
       split_mode: catDividing() ? "exact" : state.mode,
       category: catId,
     };
+    // como nasceu a despesa (expenses.source no schema.sql): à mão, ou com a
+    // IA quando o formulário veio preenchido por ela. Só ao criar — editar
+    // não muda a origem.
+    if (!existing) payload.source = opts.source || "manual";
 
     // schema antigo sem as colunas split_mode/category: grava na mesma
     // sem esses campos (o PostgREST acusa uma coluna em falta de cada vez)
     const stripMissingCol = (error) => {
       if (!error) return false;
+      // a origem é só informativa: sem a coluna grava-se calado
+      if (/\bsource\b/i.test(error.message) && "source" in payload) {
+        delete payload.source;
+        return true;
+      }
       if (/split_mode/i.test(error.message) && "split_mode" in payload) {
         toast("Modo de divisão não gravado — corre o schema.sql mais recente no Supabase", true);
         delete payload.split_mode;
@@ -4151,12 +4229,13 @@ async function aiInsertExpense(ctx, pre, createdAt) {
     expense_time: "time" in pre ? (pre.time || null) : new Date().toTimeString().slice(0, 5),
     split_mode: pre.mode,
     category: pre.category || null,
+    source: "ai",
   };
   if (createdAt) payload.created_at = createdAt;
   // schema antigo sem alguma das colunas: grava sem ela
   const semColuna = (error) => {
     if (!error) return false;
-    for (const col of ["split_mode", "expense_time", "category"]) {
+    for (const col of ["split_mode", "expense_time", "category", "source"]) {
       if (new RegExp(col, "i").test(error.message) && col in payload) { delete payload[col]; return true; }
     }
     return false;
@@ -4428,6 +4507,7 @@ function renderAiExpense(slot, opts) {
       autoSave,
       backLabel: "Voltar",
       onSaved,
+      source: "ai",
     });
   }
 
@@ -4961,14 +5041,16 @@ function renderImportForm(slot, ctx, onClose) {
       expense_date: m.data,
       split_mode: state.mode,
       category: m.cat,
+      source: "import",
     };
     // repetição exata dentro do mesmo lote: afasta-se o carimbo de criação
     // para não bater no índice anti-duplicado do servidor (ver gravarTudo)
     if (createdAt) payload.created_at = createdAt;
 
-    // schema antigo sem split_mode/category: grava sem esses campos
+    // schema antigo sem split_mode/category/source: grava sem esses campos
     const semColuna = (error) => {
       if (!error) return false;
+      if (/\bsource\b/i.test(error.message) && "source" in payload) { delete payload.source; return true; }
       if (/split_mode/i.test(error.message) && "split_mode" in payload) { delete payload.split_mode; return true; }
       if (/category/i.test(error.message) && "category" in payload) { delete payload.category; return true; }
       return false;
