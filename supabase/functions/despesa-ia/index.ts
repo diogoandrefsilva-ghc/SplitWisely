@@ -1,7 +1,7 @@
 // supabase/functions/despesa-ia/index.ts
-// SplitWisely — Lê uma despesa descrita por palavras (e, se vier, a fotografia
-// do talão) com o Gemini e devolve-a em JSON, pronta para a app mostrar no
-// ecrã de confirmação. Nada é gravado aqui: quem grava é sempre a app, depois
+// SplitWisely — Lê uma despesa descrita por palavras (e, se vierem, a
+// fotografia do talão e/ou uma mensagem de voz) com o Gemini e devolve-a em
+// JSON, pronta para a app mostrar no ecrã de confirmação. Nada é gravado aqui: quem grava é sempre a app, depois
 // de a pessoa ver (e, se quiser, corrigir) o que a IA percebeu.
 //
 // Três modos:
@@ -19,6 +19,12 @@
 // Correção («re-prompt»): com `anterior` (a resposta anterior, já em JSON) e
 // `correcao` (o que a pessoa quer mudar), a IA parte da resposta anterior e só
 // mexe no que a correção pede. Sem eles, é uma leitura de raiz.
+//
+// Mensagem de voz (`audio`, base64, + `audio_mime`): o Gemini ouve-a como se
+// fosse o texto e devolve também `transcricao` (o que ouviu), que a app põe
+// na caixa de texto — assim as correções seguintes já vão só com texto.
+// O áudio conta ~32 tokens por segundo, a um preço por token próprio: o custo
+// estimado usa `ia_uso.precos.eur_audio_1m` (ou o de entrada, se não houver).
 //
 // As PESSOAS identificam-se sempre pelo NOME (nunca por ids): a app faz a
 // correspondência com os membros, e um nome que não bata com nenhum passa a
@@ -100,17 +106,23 @@ const DESPESA = `{"descricao": string,
    "divisao": "normal"|"iguais"|"valores",
    "participantes": [{"nome": string, "valor": number|null}],
    "duvidas": [string]}`;
-const FORMA = (modo: string) => modo === "alterar" ? DESPESA : `{${modo === "grupo" ? `
+// Com mensagem de voz, a resposta traz também "transcricao" (fica de fora da
+// despesa: a app tira-a antes de usar a resposta).
+const FORMA = (modo: string, audio: boolean) => {
+  const t = audio ? `\n "transcricao": string,` : "";
+  if (modo === "alterar") return audio ? DESPESA.replace("{", `{${t}\n   `) : DESPESA;
+  return `{${t}${modo === "grupo" ? `
  "grupo": {"existente": string|null, "nome": string|null},
  "pessoas": [string],` : ""}
  "despesas": [${DESPESA}],
  "duvidas": [string]
 }`;
+};
 
 function montarPrompt(p: {
   modo: string; texto: string; hoje: string; hora: string; eu: string; moeda: string;
   cats: Cat[]; membros: string[]; divisaoNormal: string; grupoNome: string;
-  grupos: GrupoExistente[]; conhecidos: string[]; temImagem: boolean;
+  grupos: GrupoExistente[]; conhecidos: string[]; temImagem: boolean; temAudio: boolean;
   anterior: unknown; correcao: string; atual: unknown;
 }): string {
   const grupoModo = p.modo === "grupo";
@@ -164,11 +176,13 @@ COMPLETA já alterada, com esta forma exata (a mesma de cima):`
 
   const base = `És o assistente da app SplitWisely (despesas partilhadas, Portugal).
 Quem escreve é "${p.eu}". Hoje é ${p.hoje}${p.hora ? `, ${p.hora}` : ""}. Moeda: ${p.moeda}.
-${p.temImagem ? "Vem também uma imagem/PDF (talão, fatura, print): usa-a para o valor, a data, a hora e a descrição (nome da loja/restaurante), e o texto para quem pagou e como se divide.\n" : ""}
+${p.temImagem ? `Vem também uma imagem/PDF (talão, fatura, print): usa-a para o valor, a data, a hora e a descrição (nome da loja/restaurante), e o ${p.temAudio ? "texto e a gravação" : "texto"} para quem pagou e como se divide.\n` : ""}${p.temAudio ? "Vem também uma gravação de voz de quem escreve: o que diz nela vale como texto escrito por essa pessoa (junta-se ao texto escrito, se houver). Um nome que soe parecido com o de uma pessoa listada abaixo é essa pessoa.\n" : ""}
 ${tarefa}
-${FORMA(p.modo)}
+${FORMA(p.modo, p.temAudio)}
 
-Regras:
+Regras:${p.temAudio ? `
+- "transcricao": o que a pessoa diz na gravação, tal e qual, em texto corrido
+  e com os nomes escritos como na lista (só a fala, sem comentários).` : ""}
 ${pessoasRegra}${variasRegra}${alterar ? `
 - Muda SÓ o que o texto pede. Tudo o resto fica EXATAMENTE como na despesa
   atual (mesmos valores, mesmas pessoas, mesma data). Se mudar o valor total
@@ -204,11 +218,12 @@ ${p.cats.map((c) => `  · ${c.id} — ${c.label}`).join("\n")}
 - Não inventes valores: na dúvida, null e uma linha em "duvidas".
 Responde só com o JSON.`;
 
+  const semTexto = p.temAudio ? "(sem texto escrito — está tudo na gravação)" : "(sem texto — lê tudo da imagem)";
   if (p.anterior && p.correcao) {
     return `${base}
 
 ${alterar ? "O que a pessoa pediu para mudar" : "Texto original de quem escreve"}:
-"""${p.texto || "(sem texto — só a imagem)"}"""
+"""${p.texto || semTexto}"""
 
 Já tinhas respondido isto:
 ${JSON.stringify(p.anterior)}
@@ -222,7 +237,7 @@ como estava na resposta anterior.`;
   return `${base}
 
 ${alterar ? "O que a pessoa quer mudar" : "Texto de quem escreve"}:
-"""${p.texto || "(sem texto — lê tudo da imagem)"}"""`;
+"""${p.texto || semTexto}"""`;
 }
 
 // ---------------------------------------------------------------- acesso
@@ -248,9 +263,15 @@ const iaHeaders = {
   "Accept-Profile": "ia_uso", "Content-Profile": "ia_uso",
   "Content-Type": "application/json",
 };
-type Usage = { promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number; totalTokenCount?: number };
+type Usage = {
+  promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number; totalTokenCount?: number;
+  promptTokensDetails?: { modality?: string; tokenCount?: number }[];
+};
+const tokensAudio = (u: Usage | null) =>
+  (u?.promptTokensDetails ?? []).filter((d) => d?.modality === "AUDIO").reduce((a, d) => a + (d.tokenCount ?? 0), 0);
 
-// Custo pela tabela ia_uso.precos (linha do modelo, ou a de recurso "*").
+// Custo pela tabela ia_uso.precos (linha do modelo, ou a de recurso "*"). Os
+// tokens de áudio da entrada pagam-se a eur_audio_1m (quando a coluna existe).
 async function custoEstimado(modelo: string | null, u: Usage | null): Promise<number | null> {
   if (!modelo || !u) return null;
   try {
@@ -262,7 +283,9 @@ async function custoEstimado(modelo: string | null, u: Usage | null): Promise<nu
     const rows = await r.json();
     const p = rows.find((x: any) => x.modelo === modelo) ?? rows.find((x: any) => x.modelo === "*");
     if (!p) return null;
-    const ent = (u.promptTokenCount ?? 0) * Number(p.eur_entrada_1m);
+    const aud = tokensAudio(u);
+    const ent = ((u.promptTokenCount ?? 0) - aud) * Number(p.eur_entrada_1m)
+      + aud * Number(p.eur_audio_1m ?? p.eur_entrada_1m);
     const sai = (u.candidatesTokenCount ?? 0) * Number(p.eur_saida_1m);
     const pen = (u.thoughtsTokenCount ?? 0) * Number(p.eur_pensamento_1m ?? p.eur_saida_1m);
     return Math.round(((ent + sai + pen) / 1_000_000) * 1e6) / 1e6;
@@ -323,7 +346,10 @@ Deno.serve(async (req) => {
     const texto = String(b.texto ?? "").trim().slice(0, 2000);
     const image = typeof b.image === "string" && b.image ? b.image : null;
     if (image && image.length > 8_000_000) return json({ error: "a imagem é demasiado grande" }, 400);
-    if (!texto && !image) return json({ error: "escreve a despesa ou junta uma imagem" }, 400);
+    const audio = typeof b.audio === "string" && b.audio ? b.audio : null;
+    if (audio && audio.length > 4_500_000) return json({ error: "a gravação é demasiado grande" }, 400);
+    const audioMime = /^audio\/[\w.+-]+$/.test(limpa(b.audio_mime, 40)) ? limpa(b.audio_mime, 40) : "audio/webm";
+    if (!texto && !image && !audio) return json({ error: "escreve a despesa, grava-a ou junta uma imagem" }, 400);
     const anterior = b.anterior && typeof b.anterior === "object" ? b.anterior : null;
     const correcao = limpa(b.correcao, 600);
     const cats = lerCategorias(b.categorias);
@@ -343,17 +369,21 @@ Deno.serve(async (req) => {
       grupoNome: limpa(b.grupo_nome, 60),
       grupos: lerGrupos(b.grupos),
       conhecidos: listaTextos(b.conhecidos, 80, 60),
-      temImagem: !!image,
+      temImagem: !!image, temAudio: !!audio,
       anterior, correcao, atual,
     });
     detalhe = {
       modo, correcao: !!(anterior && correcao), imagem: !!image,
       ...(image ? { mime: limpa(b.mime, 40) } : {}),
+      audio: !!audio,
+      ...(audio ? { audio_mime: audioMime, audio_seg: Number(b.audio_seg) || null } : {}),
+      ditado: b.ditado === true,
       chars_texto: texto.length, membros: membros.length,
     };
 
     const parts: unknown[] = [];
     if (image) parts.push({ inline_data: { mime_type: limpa(b.mime, 40) || "image/jpeg", data: image } });
+    if (audio) parts.push({ inline_data: { mime_type: audioMime, data: audio } });
     parts.push({ text: prompt });
 
     const ctrl = new AbortController();
@@ -430,6 +460,7 @@ Deno.serve(async (req) => {
     const lista = modo === "alterar" ? [parsed] : parsed.despesas;
     await registarIaUso("ok", quem, modelo, Date.now() - inicio, {
       ...detalhe,
+      ...(audio ? { tokens_audio: tokensAudio(usage) } : {}),
       despesas: lista.length,
       valor: lista.reduce((a: number, d: any) => a + (typeof d?.valor === "number" ? d.valor : 0), 0),
     }, usage);

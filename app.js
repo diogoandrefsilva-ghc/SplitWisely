@@ -479,6 +479,8 @@ const UI_ICONS = {
   clip: '<path d="m20.5 11.5-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.8 1.8 0 0 1-2.6-2.6l7.9-7.9"/>',
   sparkle: '<path d="M12 3.5l1.9 5.1 5.1 1.9-5.1 1.9-1.9 5.1-1.9-5.1L5 10.5l5.1-1.9z"/><path d="M18.5 15.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z"/>',
   camera: '<path d="M4.5 7.5h3l1.6-2.5h5.8l1.6 2.5h3A1.5 1.5 0 0 1 21 9v9.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5V9a1.5 1.5 0 0 1 1.5-1.5Z"/><circle cx="12" cy="13.3" r="3.6"/>',
+  mic: '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/>',
+  wave: '<path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4"/>',
 };
 function uiIco(name, cls = "") {
   return `<svg class="ico ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
@@ -3987,18 +3989,43 @@ function aiMatchMember(name, members) {
     || one(members.filter(m => aiNorm(m.name).startsWith(n) || n.startsWith(aiNorm(m.name))));
 }
 
+const aiBlobToBase64 = blob => new Promise((ok, ko) => {
+  const r = new FileReader();
+  r.onload = () => ok(String(r.result).split(",")[1] || "");
+  r.onerror = () => ko(r.error);
+  r.readAsDataURL(blob);
+});
+
 // imagem reduzida como a da fatura (~2000 px JPEG); PDF segue tal e qual
 async function aiFileToBase64(file) {
   const blob = await shrinkReceiptImage(file);
   if (blob.size > AI_MAX_BYTES) throw new Error("O ficheiro é demasiado grande para a IA (máx. 6 MB)");
-  const image = await new Promise((ok, ko) => {
-    const r = new FileReader();
-    r.onload = () => ok(String(r.result).split(",")[1] || "");
-    r.onerror = () => ko(r.error);
-    r.readAsDataURL(blob);
-  });
-  return { image, mime: blob.type || file.type || "image/jpeg" };
+  return { image: await aiBlobToBase64(blob), mime: blob.type || file.type || "image/jpeg" };
 }
+
+// Falar em vez de escrever, de duas maneiras (pensadas para poderem vir a
+// ser de pacotes diferentes):
+//   · Ditar     o reconhecimento de voz do próprio browser passa a fala a
+//               texto, na caixa; à IA só chega texto (não custa mais nada).
+//   · Gravar    a mensagem de voz segue como áudio para o Gemini, que a ouve
+//               já com os nomes do grupo e as categorias à frente (acerta
+//               mais nos nomes). Custa ~32 tokens por segundo de áudio. A IA
+//               devolve também a transcrição, que passa para a caixa: as
+//               correções e o «Recomeçar» seguem depois só com texto.
+// Cada uma só aparece se o browser a suportar (o microfone do teclado do
+// telemóvel funciona sempre, como ditado).
+const AI_AUDIO_MAX_S = 60;
+const AI_AUDIO_MAX_BYTES = 3 * 1024 * 1024;
+const aiDitadoApi = () => window.SpeechRecognition || window.webkitSpeechRecognition || null;
+const aiPodeGravar = () => !!(navigator.mediaDevices?.getUserMedia && window.MediaRecorder);
+// Chrome/Android gravam webm (opus), o Safari mp4 (AAC): o Gemini aceita os dois
+function aiAudioMime() {
+  for (const t of ["audio/webm;codecs=opus", "audio/mp4", "audio/ogg;codecs=opus", "audio/webm"]) {
+    try { if (MediaRecorder.isTypeSupported(t)) return t; } catch (_) { /* segue */ }
+  }
+  return "";
+}
+const fmtSeg = s => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 
 async function aiInvoke(body) {
   const { data, error } = await sb.functions.invoke(AI_FN, { body });
@@ -4271,6 +4298,9 @@ function renderAiExpense(slot, opts) {
     fase: "texto",          // texto | lendo | resumo
     texto: "",
     file: null, preview: null,
+    audio: null,            // mensagem de voz gravada: { blob, seg, url }
+    voz: null,              // a ouvir agora: { tipo: "ditar" | "gravar", rec, … }
+    ditado: false,          // o texto veio (também) do ditado — só para o registo
     erro: "",
     // a última resposta da IA (vai como `anterior` na correção): no modo
     // «alterar» é a despesa; nos outros { grupo, pessoas, despesas, duvidas }
@@ -4306,15 +4336,135 @@ function renderAiExpense(slot, opts) {
   }
 
   const voltar = () => {
+    pararVoz(true);
+    tirarAudio();
     if (st.preview) URL.revokeObjectURL(st.preview);
     if (st.feitas) return terminar();
     (opts.onBack || opts.onClose)();
   };
 
+  // ------------------------------------------------------------ voz
+  function tirarAudio() {
+    if (st.audio) URL.revokeObjectURL(st.audio.url);
+    st.audio = null;
+  }
+  // cancelar: larga o que se estava a ouvir (sair do ecrã); senão o ditado
+  // fica com o que já escreveu e a gravação passa a mensagem de voz
+  function pararVoz(cancelar = false) {
+    const v = st.voz;
+    if (!v) return;
+    if (cancelar || v.tipo === "ditar") {
+      st.voz = null;
+      v.cancelada = cancelar;
+      clearInterval(v.timer);
+      v.stream?.getTracks().forEach(t => t.stop());
+    }
+    try { cancelar && v.tipo === "ditar" ? v.rec.abort() : v.rec.stop(); } catch (_) { /* já parou */ }
+  }
+
+  function ditar() {
+    if (st.voz) return pararVoz();
+    const Api = aiDitadoApi();
+    let rec;
+    try { rec = new Api(); } catch (_) { return toast("O ditado não está disponível aqui — usa o microfone do teclado", true); }
+    rec.lang = "pt-PT";
+    rec.continuous = true;
+    rec.interimResults = true;
+    const antes = st.texto.trim();
+    const v = { tipo: "ditar", rec, erro: "" };
+    rec.onresult = (e) => {
+      if (st.voz !== v) return;
+      const finais = [];
+      let meio = "";
+      for (const r of e.results) {
+        const t = String(r[0]?.transcript || "").trim();
+        if (!t) continue;
+        if (!r.isFinal) { meio = t; continue; }
+        // o Chrome no Android repete em cada resultado novo o que já disse
+        const ult = finais[finais.length - 1];
+        if (ult && t.toLowerCase().startsWith(ult.toLowerCase())) finais[finais.length - 1] = t;
+        else finais.push(t);
+      }
+      st.texto = [antes, ...finais, meio].filter(Boolean).join(" ").slice(0, 2000);
+      st.ditado = true;
+      const $t = slot.querySelector("#ai-texto");
+      if ($t) $t.value = st.texto;
+    };
+    rec.onerror = (e) => {
+      if (e.error === "no-speech" || e.error === "aborted") return;
+      v.erro = e.error === "not-allowed" || e.error === "service-not-allowed"
+        ? "O ditado não está disponível aqui — usa o microfone do teclado"
+        : "O ditado falhou — tenta outra vez (ou usa o microfone do teclado)";
+    };
+    rec.onend = () => {
+      clearInterval(v.timer);
+      if (st.voz === v) st.voz = null;
+      if (v.erro) toast(v.erro, true);
+      if (slot.isConnected && st.fase === "texto") draw();
+    };
+    try { rec.start(); } catch (_) { return toast("O ditado não está disponível aqui — usa o microfone do teclado", true); }
+    st.voz = v;
+    // o pop-up pode fechar por fora (tocar ao lado, Escape): larga o microfone
+    v.timer = setInterval(() => { if (!slot.isConnected) pararVoz(true); }, 500);
+    draw();
+  }
+
+  let aPedirMic = false;     // o pedido de acesso ao microfone ainda não respondeu
+  async function gravar() {
+    if (st.voz) return pararVoz();
+    if (aPedirMic) return;
+    aPedirMic = true;
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+    } catch (e) {
+      return toast(e?.name === "NotAllowedError"
+        ? "Sem acesso ao microfone — autoriza-o nas definições do browser"
+        : "Não foi possível usar o microfone", true);
+    } finally {
+      aPedirMic = false;
+    }
+    const mime = aiAudioMime();
+    let rec;
+    try { rec = new MediaRecorder(stream, { ...(mime ? { mimeType: mime } : {}), audioBitsPerSecond: 32000 }); }
+    catch (_) { rec = new MediaRecorder(stream); }
+    const v = { tipo: "gravar", rec, stream, chunks: [], t0: Date.now(), lerDepois: false };
+    rec.ondataavailable = (e) => { if (e.data?.size) v.chunks.push(e.data); };
+    rec.onstop = () => {
+      clearInterval(v.timer);
+      stream.getTracks().forEach(t => t.stop());
+      if (st.voz === v) st.voz = null;
+      if (v.cancelada) return;
+      const seg = Math.round((Date.now() - v.t0) / 1000);
+      const blob = new Blob(v.chunks, { type: rec.mimeType || mime || "audio/webm" });
+      if (seg < 1 || !blob.size) toast("A gravação ficou vazia — toca, fala, e toca outra vez para parar", true);
+      else if (blob.size > AI_AUDIO_MAX_BYTES) toast("A gravação ficou grande demais — tenta uma mais curta", true);
+      else {
+        tirarAudio();
+        st.audio = { blob, seg, url: URL.createObjectURL(blob) };
+        if (v.lerDepois) return ler();
+      }
+      if (slot.isConnected && st.fase === "texto") draw();
+    };
+    rec.start();
+    st.voz = v;
+    v.timer = setInterval(() => {
+      if (!slot.isConnected) return pararVoz(true);
+      const s = Math.floor((Date.now() - v.t0) / 1000);
+      if (s >= AI_AUDIO_MAX_S) return pararVoz();
+      const $t = slot.querySelector("#ai-rec-t");
+      if ($t) $t.textContent = fmtSeg(s);
+    }, 250);
+    draw();
+  }
+
   // ------------------------------------------------------------ chamar a IA
   async function ler({ corrigir = false } = {}) {
-    if (!st.texto.trim() && !st.file) {
-      st.erro = alterar ? "Diz o que queres mudar." : "Escreve a despesa ou junta uma fotografia.";
+    // «Ler com IA» a meio de uma gravação: acaba-a e lê-a logo
+    if (st.voz?.tipo === "gravar") { st.voz.lerDepois = true; return pararVoz(); }
+    pararVoz();
+    if (!st.texto.trim() && !st.file && !st.audio) {
+      st.erro = alterar ? "Diz o que queres mudar." : "Escreve (ou grava) a despesa, ou junta uma fotografia.";
       return draw();
     }
     if (corrigir && !st.correcao.trim()) return;
@@ -4344,14 +4494,29 @@ function renderAiExpense(slot, opts) {
         body.conhecidos = c.book.slice(0, 80).map(p => p.name);
       }
       if (st.file) Object.assign(body, await aiFileToBase64(st.file));
+      if (st.audio) {
+        body.audio = await aiBlobToBase64(st.audio.blob);
+        body.audio_mime = st.audio.blob.type.split(";")[0] || "audio/webm";
+        body.audio_seg = st.audio.seg;
+      }
+      if (st.ditado) body.ditado = true;
       if (corrigir && st.res) { body.anterior = st.res; body.correcao = st.correcao.trim(); }
       let res = await aiInvoke(body);
+      // o que a IA ouviu na mensagem de voz (não faz parte da despesa)
+      const ouvido = typeof res.transcricao === "string" ? res.transcricao.trim() : "";
+      delete res.transcricao;
       // resposta à moda antiga (a despesa solta no topo): embrulha-se
       if (!alterar && !Array.isArray(res.despesas)) {
         const { grupo, pessoas, ...d } = res;
         res = { grupo, pessoas, despesas: [d], duvidas: [] };
       }
       if (!despesasDe(res).length) throw new Error("A IA não encontrou nenhuma despesa no texto");
+      // a mensagem de voz passa a texto: o «Recomeçar» mostra-a e as
+      // correções já não voltam a mandar (e a pagar) o áudio
+      if (st.audio && ouvido) {
+        st.texto = [st.texto.trim(), ouvido].filter(Boolean).join("\n").slice(0, 2000);
+        tirarAudio();
+      }
       st.res = res;
       st.correcao = "";
       if (!inGroup && !st.criado) await escolherAlvo(res);
@@ -4606,7 +4771,7 @@ function renderAiExpense(slot, opts) {
         <div class="xp ai">
           ${cabecalho(`<p class="ai-lead">${uiIco("sparkle")} ${alterar ? "A aplicar a alteração…" : "A ler a despesa…"}</p>`)}
           <div class="xp-body ai-lendo"><div class="spinner" role="status" aria-label="A ler"></div>
-            <p class="muted">${st.file ? "A olhar para a imagem e para o texto." : alterar ? "A ver o que muda." : "A perceber quem pagou e como se divide."}</p></div>
+            <p class="muted">${st.audio ? (st.file ? "A olhar para a imagem e a ouvir a mensagem." : "A ouvir a mensagem de voz.") : st.file ? "A olhar para a imagem e para o texto." : alterar ? "A ver o que muda." : "A perceber quem pagou e como se divide."}</p></div>
         </div>`;
       slot.querySelector("#ai-back").onclick = voltar;
       return;
@@ -4627,16 +4792,37 @@ function renderAiExpense(slot, opts) {
     const lead = alterar
       ? `Diz o que queres mudar em <strong>${esc(alterar.description)}</strong> (${esc(fmtMoney(toCents(alterar.amount), opts.ctx.group.currency))}).`
       : `Diz por palavras tuas o que foi, quanto, quem pagou e por quem se divide — podem ser várias despesas de uma vez${inGroup ? "" : ", e a IA cria o grupo"}. Podes juntar a foto do talão.`;
+    const voz = st.voz?.tipo;
+    const ditarHtml = aiDitadoApi() ? `
+      <button type="button" class="ai-ditar ${voz === "ditar" ? "on" : ""}" id="ai-ditar" ${voz === "gravar" ? "disabled" : ""}
+        aria-label="${voz === "ditar" ? "Parar o ditado" : "Ditar: passa a fala a texto"}">
+        ${voz === "ditar" ? `<span class="ai-rec-dot"></span> A ouvir… parar` : `${uiIco("mic")} Ditar`}</button>` : "";
+    const audioHtml = st.audio ? `
+      <div class="ai-anexo-f ai-audio-f">
+        ${uiIco("wave")}
+        <span>Mensagem de voz · ${fmtSeg(st.audio.seg)}</span>
+        <button type="button" class="link-btn" id="ai-audio-ouvir">Ouvir</button>
+        <button type="button" class="link-btn" id="ai-audio-del">Tirar</button>
+      </div>`
+      : voz === "gravar" ? `
+      <button type="button" class="ai-anexo-btn ai-voz-btn on" id="ai-gravar">
+        <span class="ai-rec-dot"></span> A gravar <span id="ai-rec-t">${fmtSeg(Math.floor((Date.now() - st.voz.t0) / 1000))}</span> · toca para parar</button>`
+      : aiPodeGravar() ? `
+      <button type="button" class="ai-anexo-btn ai-voz-btn" id="ai-gravar" ${voz ? "disabled" : ""}>${uiIco("wave")} Gravar mensagem de voz</button>` : "";
     slot.innerHTML = `
       <div class="xp ai">
         ${cabecalho(`<p class="ai-lead">${lead}</p>`)}
         <div class="xp-body">
-          <textarea id="ai-texto" class="ai-texto" rows="5" maxlength="2000"
-            placeholder="Ex.: ${esc(exemplos[0])}">${esc(st.texto)}</textarea>
+          <div class="ai-texto-wrap">
+            <textarea id="ai-texto" class="ai-texto" rows="5" maxlength="2000"
+              placeholder="Ex.: ${esc(exemplos[0])}">${esc(st.texto)}</textarea>
+            ${ditarHtml}
+          </div>
           ${alterar ? `<div class="ai-exemplos chips">
             ${exemplos.map((e, i) => `<button type="button" class="ai-ex" data-ex="${i}">${esc(e)}</button>`).join("")}
           </div>` : ""}
           <div class="ai-anexo">
+            ${audioHtml}
             ${st.file ? `
               <div class="ai-anexo-f">
                 ${st.preview ? `<img src="${st.preview}" alt="" />` : uiIco("doc")}
@@ -4652,14 +4838,21 @@ function renderAiExpense(slot, opts) {
           <p class="ai-nota muted">Nada fica gravado sem confirmares no passo seguinte.</p>
         </div>
         <footer class="xp-foot">
-          <button class="xp-cta" id="ai-ler">${uiIco("sparkle")} ${alterar ? "Alterar com IA" : "Ler com IA"}</button>
+          <button class="xp-cta" id="ai-ler">${uiIco("sparkle")} ${voz === "gravar" ? "Parar e ler com IA" : alterar ? "Alterar com IA" : "Ler com IA"}</button>
         </footer>
       </div>`;
     slot.querySelector("#ai-back").onclick = voltar;
     const $t = slot.querySelector("#ai-texto");
     $t.oninput = () => { st.texto = $t.value; };
     $t.onkeydown = (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) ler(); };
-    setTimeout(() => $t.focus(), 50);
+    // a ouvir, o teclado só atrapalhava
+    if (!voz && !st.audio) setTimeout(() => $t.focus(), 50);
+    slot.querySelector("#ai-ditar")?.addEventListener("click", ditar);
+    slot.querySelector("#ai-gravar")?.addEventListener("click", gravar);
+    slot.querySelector("#ai-audio-ouvir")?.addEventListener("click", () => {
+      new Audio(st.audio.url).play().catch(() => toast("Não foi possível tocar a gravação", true));
+    });
+    slot.querySelector("#ai-audio-del")?.addEventListener("click", () => { tirarAudio(); draw(); });
     slot.querySelectorAll("[data-ex]").forEach(b => b.onclick = () => {
       st.texto = exemplos[+b.dataset.ex]; $t.value = st.texto; $t.focus();
     });

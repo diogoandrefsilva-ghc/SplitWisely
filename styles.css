@@ -3057,8 +3057,48 @@ button.outline.ai-home-btn .ico { color: var(--gold-accent); }
 }
 .ai-anexo-btn:hover { background: var(--primary-soft); }
 .ai-anexo-btn .ico { width: 18px; height: 18px; }
+/* voz: «Ditar» dentro da caixa de texto, «Gravar mensagem de voz» nos anexos */
+.ai-texto-wrap { position: relative; }
+.ai-texto-wrap:has(.ai-ditar) .ai-texto { padding-bottom: 2.9rem; }
+.ai-ditar {
+  position: absolute;
+  right: .55rem;
+  bottom: .55rem;
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+  min-height: 34px;
+  padding: .3rem .75rem;
+  border-radius: 999px;
+  background: var(--primary-soft);
+  color: var(--primary-ink);
+  font-size: .82rem;
+  font-weight: 650;
+  box-shadow: none;
+}
+.ai-ditar .ico { width: 16px; height: 16px; vertical-align: 0; }
+.ai-ditar:hover { filter: none; background: var(--primary-soft); }
+.ai-ditar.on, .ai-voz-btn.on { background: var(--primary); color: #fff; border-color: var(--primary); }
+.ai-ditar:disabled, .ai-voz-btn:disabled { opacity: .45; cursor: default; }
+.ai-voz-btn { flex-basis: 100%; background: none; box-shadow: none; font: inherit; font-size: .88rem; font-weight: 650; }
+.ai-voz-btn:hover { filter: none; }
+.ai-voz-btn.on:hover { background: var(--primary); }
+#ai-rec-t { font-variant-numeric: tabular-nums; }
+.ai-rec-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #ff5a4f;
+  box-shadow: 0 0 0 3px rgba(255, 90, 79, .3);
+  animation: ai-rec 1.1s ease-in-out infinite;
+  flex: none;
+}
+@keyframes ai-rec { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .ai-rec-dot { animation: none; } }
+.ai-audio-f .link-btn { flex: none; }
+
 .ai-anexo-f {
-  flex: 1;
+  flex: 1 1 100%;
   display: flex;
   align-items: center;
   gap: .65rem;
