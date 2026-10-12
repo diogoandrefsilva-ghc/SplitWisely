@@ -450,6 +450,24 @@ function nomesCurtos(members) {
   return n => map.get(String(n || "?").trim()) ?? words(n)[0];
 }
 
+// «Quem pagou» (formulário da despesa e importação): por cima da lista de
+// pessoas, a legenda à esquerda e o interruptor «Pagaram vários» à direita.
+// Desligado, a lista escolhe uma pessoa só — a que pagou tudo.
+// Com uma pessoa só no grupo não há interruptor: fica a legenda.
+function switchVariosHtml(legenda, ligado, comSwitch = true) {
+  return `
+    <div class="xp-folha-act xp-varios">
+      <span class="xp-folha-sub">${esc(legenda)}</span>
+      ${comSwitch ? `<label class="xp-varios-l">
+        <span>Pagaram vários</span>
+        <span class="switch">
+          <input type="checkbox" id="x-varios" ${ligado ? "checked" : ""} />
+          <span class="switch-track"><span class="switch-thumb"></span></span>
+        </span>
+      </label>` : ""}
+    </div>`;
+}
+
 // Ícones da interface (traço, herdam a cor). O emoji fica só nas
 // categorias, onde é conteúdo.
 const UI_ICONS = {
@@ -2209,14 +2227,17 @@ function renderExpensesTab($c, ctx) {
   };
 
   // quem pagou, como se diz: «Ana pagou», «Pagaste tu», «Tu e Ana pagaram»
+  // (HTML já escapado). Quando estou entre quem pagou, a frase vai na cor
+  // da marca: na lista, as despesas que paguei distinguem-se à primeira
+  // vista sem mais nada na linha.
   const whoPaid = (x) => {
     if (x.split_mode === "own") return "Cada um pagou o seu";
     const ids = x.expense_payers.map(p => p.member_id);
     const mine = !!myMember && ids.includes(myMember.id);
     const others = ids.filter(id => id !== myMember?.id).map(nameOf);
-    if (mine && others.length === 0) return "Pagaste tu";
-    if (mine) return `Tu e ${juntar(others)} pagaram`;
-    return `${juntar(others)} ${others.length === 1 ? "pagou" : "pagaram"}`;
+    if (mine) return `<span class="paid-by-me">${others.length === 0
+      ? "Pagaste tu" : `Tu e ${esc(juntar(others))} pagaram`}</span>`;
+    return `${esc(juntar(others))} ${others.length === 1 ? "pagou" : "pagaram"}`;
   };
 
   // movimentos por ver desde a última consulta a este grupo (ctx.lastSeen —
@@ -2417,7 +2438,7 @@ function renderExpensesTab($c, ctx) {
                 ? `<span class="badge linked ia" title="Registada com IA">${uiIco("sparkle")}</span>` : ""}${x.receipt_path
                 ? `<span class="badge linked" title="Tem fatura">${uiIco("clip")}</span>` : ""}
             </span>
-            <span class="item-sub">${x.expense_time ? `${x.expense_time.slice(0, 5)} · ` : ""}${esc(whoPaid(x))}${porTodos ? "" : ` · ${nShares} pessoa${nShares === 1 ? "" : "s"}`}</span>
+            <span class="item-sub">${x.expense_time ? `${x.expense_time.slice(0, 5)} · ` : ""}${whoPaid(x)}${porTodos ? "" : ` · ${nShares} pessoa${nShares === 1 ? "" : "s"}`}</span>
             ${catLine}
           </div>
           <div class="item-end">
@@ -2719,6 +2740,10 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
   }
   if (!existing || exOwn) distributePayersEqually();
   if (pre?.payerAmounts) state.payerAmounts = { ...pre.payerAmounts };
+  // «Pagaram vários» desligado: tocar numa pessoa faz dela quem pagou a
+  // conta toda. Ligado, juntam-se pagadores e acerta-se quanto pôs cada um.
+  // Abre ligado quando a despesa já vem com mais do que um pagador.
+  state.variosPag = state.payers.size > 1;
 
   // Ao mexer numa despesa já gravada (juntar um pagador ou alguém à
   // divisão, mudar o total), o normal era recalcular tudo — e perdiam-se
@@ -3462,7 +3487,8 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
       </div>` : `
       ${aviso(okPaid || state.totalCents === 0, `${fmtMoney(paidSum, cur)} de ${fmtMoney(state.totalCents, cur)} atribuídos`)}
       ${segPagou}
-      <p class="xp-folha-sub">Toca em quem pôs o dinheiro. Podem ser várias pessoas.</p>
+      ${switchVariosHtml(state.variosPag ? "Toca em quem pôs dinheiro" : "Quem pagou a conta toda",
+        state.variosPag, members.length > 1)}
       <div class="xp-people">
         ${members.map(m => pessoa(m, {
           on: state.payers.has(m.id),
@@ -3869,6 +3895,12 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     slot.querySelectorAll("[data-payer]").forEach(b => {
       b.onclick = () => {
         const id = b.dataset.payer;
+        // uma pessoa só: quem se toca passa a ter pago a conta toda
+        if (!state.variosPag) {
+          state.payers = new Set([id]);
+          distributePayersEqually();
+          return draw();
+        }
         const sai = state.payers.has(id);
         const alternar = () => { sai ? state.payers.delete(id) : state.payers.add(id); };
         // juntar alguém mexe em quem já pagava; tirar mexe se ficar alguém
@@ -3886,6 +3918,18 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
       inp.onchange = () => { state.payerAmounts[inp.dataset.payerAmount] = toCents(inp.value); draw(); };
     });
     slot.querySelector("#x-dist-payers")?.addEventListener("click", () => { distributePayersEqually(); draw(); });
+    // desligar «Pagaram vários» com vários escolhidos: fica quem pôs mais
+    // (no empate, o primeiro da lista), agora com a conta toda
+    slot.querySelector("#x-varios")?.addEventListener("change", (e) => {
+      state.variosPag = e.target.checked;
+      if (!state.variosPag && state.payers.size > 1) {
+        const fica = members.map(m => m.id).filter(id => state.payers.has(id))
+          .sort((a, b) => (state.payerAmounts[b] || 0) - (state.payerAmounts[a] || 0))[0];
+        state.payers = new Set([fica]);
+        distributePayersEqually();
+      }
+      draw();
+    });
 
     slot.querySelectorAll("[data-mode]").forEach(b => {
       b.onclick = () => { state.mode = b.dataset.mode; state.divMode = state.mode; draw(); };
@@ -5138,6 +5182,7 @@ function renderImportForm(slot, ctx, onClose) {
     dialeto: null,
     movs: [],
     payers: new Set([myMember ? myMember.id : members[0].id]),
+    variosPag: false,       // «Pagaram vários» (ver switchVariosHtml)
     mode: useWeights ? "weights" : "equal",
     participants: new Set(useWeights
       ? members.filter(m => Number(m.default_weight) > 0).map(m => m.id)
@@ -5410,8 +5455,10 @@ function renderImportForm(slot, ctx, onClose) {
 
   function corpoPagou() {
     return `
-      <p class="xp-folha-sub">Vale para os ${state.movs.length} movimentos. Com mais do que
-        uma pessoa, cada despesa fica dividida em partes iguais entre elas.</p>
+      <p class="xp-folha-sub">Vale para os ${state.movs.length} movimentos.${state.variosPag
+        ? " Com mais do que uma pessoa, cada despesa fica dividida em partes iguais entre elas." : ""}</p>
+      ${switchVariosHtml(state.variosPag ? "Toca em quem pagou" : "Quem pagou a conta toda",
+        state.variosPag, members.length > 1)}
       <div class="xp-people">
         ${members.map(m => {
           const on = state.payers.has(m.id);
@@ -5711,9 +5758,17 @@ function renderImportForm(slot, ctx, onClose) {
     slot.querySelectorAll("[data-payer]").forEach(b => {
       b.onclick = () => {
         const id = b.dataset.payer;
-        state.payers.has(id) ? state.payers.delete(id) : state.payers.add(id);
+        if (!state.variosPag) state.payers = new Set([id]);
+        else state.payers.has(id) ? state.payers.delete(id) : state.payers.add(id);
         desenhar();
       };
+    });
+    // desligar «Pagaram vários» com vários escolhidos: fica o primeiro da lista
+    slot.querySelector("#x-varios")?.addEventListener("change", (e) => {
+      state.variosPag = e.target.checked;
+      if (!state.variosPag && state.payers.size > 1)
+        state.payers = new Set([members.find(m => state.payers.has(m.id)).id]);
+      desenhar();
     });
     slot.querySelectorAll("[data-mode]").forEach(b => {
       b.onclick = () => { state.mode = b.dataset.mode; desenhar(); };
