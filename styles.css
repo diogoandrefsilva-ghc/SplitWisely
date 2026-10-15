@@ -1178,6 +1178,8 @@ details.hint p { margin: .4rem 0 0; font-size: .8rem; color: var(--muted); line-
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* lista de despesas: «Pagaste tu» na cor da marca, para as minhas saltarem à vista */
+.item-sub .paid-by-me { color: var(--primary-ink); font-weight: 650; }
 /* fatura repartida: categorias + valor por baixo do subtítulo, miudinho */
 .item-cats {
   display: flex;
@@ -2439,6 +2441,20 @@ button.soft:hover { filter: none; background: var(--chip-pos-bg); }
 .xp-folha-b > .xp-seg + .xp-folha-sub { margin-top: 1rem; }
 .xp-folha-act > span { display: flex; gap: .9rem; flex: none; }
 .xp-folha-b > .xp-link { margin-top: .6rem; }
+/* «Pagaram vários»: legenda à esquerda, interruptor à direita */
+.xp-folha-act.xp-varios { align-items: center; margin-bottom: .45rem; }
+.xp-folha-sub + .xp-folha-act.xp-varios { margin-top: 0; }
+.xp-varios > .xp-folha-sub { flex: 1 1 auto; min-width: 0; }
+.xp-varios-l {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: .55rem;
+  font-size: .85rem;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+}
 /* pergunta «recalcular ou manter?»: por cima do painel que estiver aberto */
 .xp-ask-scrim { z-index: 80; align-items: center; padding: 1.15rem; }
 .xp-ask {
