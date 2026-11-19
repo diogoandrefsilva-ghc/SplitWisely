@@ -3386,6 +3386,7 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     if (own) divTxt = "Não se divide";
     else if (catDividing()) divTxt = "Por categoria";
     else if (idsDiv.length === 0) divTxt = "Por escolher";
+    else if (idsDiv.length === 1 && members.length > 1) divTxt = `Tudo de ${curto(nameOf(idsDiv[0]))}`;
     else if (state.mode === "weights") {
       const r = dois ? proporcao(state.weights[idsDiv[0]] || 0, state.weights[idsDiv[1]] || 0) : null;
       divTxt = r ? `Proporção ${r}` : "Por proporção";
@@ -3424,7 +3425,8 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
       // quanto pagou cada um não se sabe nem interessa: fica só o registo
       if (idsDiv.length) previaTxt = "Fica só o registo — <strong>não mexe nos saldos</strong>";
     } else if (idsDiv.length && state.totalCents > 0) {
-      previaTxt = iguais ? `<strong>${fmtMoney(vals[0], cur)}</strong> cada`
+      previaTxt = idsDiv.length === 1 ? `${esc(curto(nameOf(idsDiv[0])))} fica com <strong>${fmtMoney(vals[0], cur)}</strong>`
+        : iguais ? `<strong>${fmtMoney(vals[0], cur)}</strong> cada`
         : idsDiv.length <= 3
           // com duas ou três pessoas cabe dizer quanto fica a cada uma
           ? idsDiv.map(id => `${esc(curto(nameOf(id)))} <strong>${fmtMoney(shares[id] || 0, cur)}</strong>`).join(" · ")
@@ -3502,6 +3504,9 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
       </div>
       ${multiPayers ? `<button type="button" class="xp-link" id="x-dist-payers">Dividir o total igualmente pelos pagadores</button>` : ""}`;
 
+    // os dois que entram, quando são só dois (a outra parte acerta sozinha)
+    const parIds = members.filter(m => state.participants.has(m.id)).map(m => m.id);
+    const par = parIds.length === 2 ? parIds : null;
     const corpoDivide = () => catDividing() ? `
       ${aviso(semGente.length === 0, `Falta escolher quem participa em: ${esc(semGente.join(", "))}`)}
       <label class="xp-check">
@@ -3534,6 +3539,16 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
         ${useWeights ? `<button type="button" class="${state.mode === "weights" ? "on" : ""}" data-mode="weights">Proporção</button>` : ""}
         <button type="button" class="${state.mode === "exact" ? "on" : ""}" data-mode="exact">Exatos</button>
       </div>
+      ${members.length > 1 ? `
+        <div class="xp-folha-act">
+          <span class="xp-folha-sub">A conta toda é de</span>
+        </div>
+        <div class="xp-chips xp-sozinho">
+          ${members.map(m => {
+            const so = state.participants.size === 1 && state.participants.has(m.id);
+            return `<button type="button" class="xp-chip ${so ? "on" : ""}" data-sozinho="${m.id}" aria-pressed="${so}">${esc(curto(m.name))}</button>`;
+          }).join("")}
+        </div>` : ""}
       <div class="xp-folha-act">
         <span class="xp-folha-sub">Quem entra nesta despesa</span>
         <span>
@@ -3545,7 +3560,14 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
         ${members.map(m => {
           const on = state.participants.has(m.id);
           let input = "";
-          if (on && state.mode === "weights") {
+          if (on && state.mode === "weights" && par) {
+            // só duas pessoas: a proporção vai em percentagem e a outra
+            // fica sempre com o resto até 100
+            const soma = par.reduce((a, id) => a + (Number(state.weights[id]) || 0), 0);
+            const pct = soma > 0 ? Math.round((Number(state.weights[m.id]) || 0) / soma * 100) : 50;
+            input = `<span class="xp-p-pct"><input class="xp-p-in" type="number" inputmode="numeric" step="1" min="0" max="100"
+              data-pct="${m.id}" value="${pct}" /><span>%</span></span>`;
+          } else if (on && state.mode === "weights") {
             input = `<input class="xp-p-in" type="number" inputmode="decimal" step="0.1" min="0"
               data-weight="${m.id}" value="${state.weights[m.id] ?? 0}" />`;
           } else if (on && state.mode === "exact") {
@@ -3969,11 +3991,50 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
       });
     });
     slot.querySelector("#x-part-none")?.addEventListener("click", () => { state.participants.clear(); draw(); });
+    // «A conta toda é de»: um toque deixa só essa pessoa na divisão
+    slot.querySelectorAll("[data-sozinho]").forEach(b => {
+      b.onclick = () => {
+        const id = b.dataset.sozinho;
+        state.participants = new Set([id]);
+        // sozinha, o modo não interessa: em partes iguais fica com tudo
+        state.mode = state.divMode = "equal";
+        draw();
+      };
+    });
     slot.querySelectorAll("[data-weight]").forEach(inp => {
       inp.onchange = () => { state.weights[inp.dataset.weight] = parseFloat(inp.value) || 0; draw(); };
     });
+    // duas pessoas: o que uma perde a outra ganha — em percentagem ou em
+    // valores exatos. O campo da outra acerta-se logo enquanto se escreve.
+    const outro = id => par && par.find(x => x !== id);
+    slot.querySelectorAll("[data-pct]").forEach(inp => {
+      const aplicar = () => {
+        const id = inp.dataset.pct, o = outro(id);
+        const v = Math.min(100, Math.max(0, Math.round(parseFloat(inp.value) || 0)));
+        state.weights[id] = v;
+        if (o) {
+          state.weights[o] = 100 - v;
+          const $o = slot.querySelector(`[data-pct="${o}"]`);
+          if ($o) $o.value = 100 - v;
+        }
+        return v;
+      };
+      inp.oninput = () => { if (inp.value !== "") aplicar(); };
+      inp.onchange = () => { aplicar(); draw(); };
+    });
     slot.querySelectorAll("[data-exact]").forEach(inp => {
-      inp.onchange = () => { state.exact[inp.dataset.exact] = toCents(inp.value); draw(); };
+      const aplicar = () => {
+        const id = inp.dataset.exact, o = outro(id);
+        const v = Math.min(state.totalCents, Math.max(0, toCents(inp.value)));
+        state.exact[id] = o ? v : toCents(inp.value);
+        if (o && state.totalCents > 0) {
+          state.exact[o] = state.totalCents - v;
+          const $o = slot.querySelector(`[data-exact="${o}"]`);
+          if ($o) $o.value = ((state.totalCents - v) / 100).toFixed(2);
+        }
+      };
+      inp.oninput = () => { if (inp.value !== "") aplicar(); };
+      inp.onchange = () => { aplicar(); draw(); };
     });
   }
 

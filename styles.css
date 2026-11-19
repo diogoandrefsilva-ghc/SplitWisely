@@ -2533,6 +2533,8 @@ button.soft:hover { filter: none; background: var(--chip-pos-bg); }
 }
 .xp-p-c .xp-ico { width: 13px; height: 13px; stroke-width: 3; }
 .xp-p-in { flex: none; width: 86px; height: 40px; text-align: right; border-radius: 10px; font-variant-numeric: tabular-nums; }
+.xp-p-pct { flex: none; display: inline-flex; align-items: center; gap: .25rem; color: var(--muted); font-weight: 600; }
+.xp-p-pct .xp-p-in { width: 64px; }
 
 /* categorias: ícone num disco, sem moldura */
 .xp-cats {
@@ -2609,6 +2611,9 @@ button.soft:hover { filter: none; background: var(--chip-pos-bg); }
   margin: 0;
 }
 .xp-chip input { display: none; }
+button.xp-chip { border: 0; box-shadow: none; font: inherit; font-size: .82rem; }
+button.xp-chip.on { box-shadow: inset 0 0 0 1px var(--primary); }
+.xp-sozinho { margin-top: .35rem; }
 .xp-chip.on { background: var(--chip-pos-bg); color: var(--primary-ink); font-weight: 650; box-shadow: inset 0 0 0 1px var(--primary); }
 
 /* opções com caixa de seleção */
