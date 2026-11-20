@@ -2691,6 +2691,9 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     }
     const ids = members.filter(m => state.participants.has(m.id)).map(m => m.id);
     if (ids.length === 0) return {};
+    // sozinha, fica com a conta toda — a proporção ou o valor exato que tinha
+    // ficam guardados para quando voltar a entrar mais alguém
+    if (ids.length === 1) return { [ids[0]]: state.totalCents };
     if (state.mode === "exact") {
       return Object.fromEntries(ids.map(id => [id, state.exact[id] || 0]));
     }
@@ -3559,8 +3562,11 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
       <div class="xp-people">
         ${members.map(m => {
           const on = state.participants.has(m.id);
+          // sozinha na divisão fica com tudo: não há proporção nem valor a pôr
+          const so = on && state.participants.size === 1;
           let input = "";
-          if (on && state.mode === "weights" && par) {
+          if (so) input = "";
+          else if (on && state.mode === "weights" && par) {
             // só duas pessoas: a proporção vai em percentagem e a outra
             // fica sempre com o resto até 100
             const soma = par.reduce((a, id) => a + (Number(state.weights[id]) || 0), 0);
@@ -3576,7 +3582,7 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
           }
           return pessoa(m, {
             on, attr: `data-part="${m.id}"`, input,
-            val: on && state.mode !== "exact" ? fmtMoney(shares[m.id] || 0, cur) : "",
+            val: on && (so || state.mode !== "exact") ? fmtMoney(shares[m.id] || 0, cur) : "",
           });
         }).join("")}
       </div>
@@ -5310,7 +5316,8 @@ function renderImportForm(slot, ctx, onClose) {
   // ------------------------------------------------- quotas de cada linha
 
   const participantes = () => members.filter(m => state.participants.has(m.id));
-  const pesoDe = m => state.mode === "weights" ? (Number(state.weights[m.id]) || 0) : 1;
+  // sozinha nos movimentos fica com tudo, seja qual for a proporção guardada
+  const pesoDe = m => state.mode === "weights" && participantes().length > 1 ? (Number(state.weights[m.id]) || 0) : 1;
 
   function quotasDe(cents) {
     const ps = participantes();
@@ -5554,7 +5561,7 @@ function renderImportForm(slot, ctx, onClose) {
       <div class="xp-people">
         ${members.map(m => {
           const on = state.participants.has(m.id);
-          const input = on && state.mode === "weights"
+          const input = on && state.mode === "weights" && state.participants.size > 1
             ? `<input class="xp-p-in" type="number" inputmode="decimal" step="0.1" min="0"
                 data-weight="${m.id}" value="${state.weights[m.id] ?? 0}" />` : "";
           const val = on ? `${((quotas[m.id] || 0) / 100).toFixed(0)}%` : "";
