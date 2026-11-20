@@ -159,7 +159,7 @@ function renderExpenseView(slot, ctx, x) {
         <ul class="xv-list">${shares.map(p => pessoa(p.member_id, toCents(p.amount))).join("")}</ul>
         ${catLine ? `<h3 class="xv-h">Categorias</h3>${catLine}` : ""}
         ${x.receipt_path ? `
-        <h3 class="xv-h">Fatura</h3>
+        <h3 class="xv-h">${isFaturaIa(x.receipt_path) ? `Fatura fictícia <span class="muted">· montada pela IA com os itens</span>` : "Fatura"}</h3>
         <div class="xv-fatura" id="xv-fat"><span class="muted">A abrir a fatura…</span></div>` : ""}
         ${registo}
       </div>
@@ -333,10 +333,13 @@ async function shrinkReceiptImage(file) {
 // Envia a fatura e devolve o caminho onde ficou. A despesa tem de existir
 // já: é por ela que o servidor decide se se pode escrever ali.
 async function uploadReceipt(groupId, expenseId, file) {
-  const blob = await shrinkReceiptImage(file);
+  // a fatura fictícia (ver aiFaturaFicticia) já vem do tamanho certo, e em
+  // JPEG o texto ficava borrado
+  const gerada = isFaturaIa(file.name);
+  const blob = gerada ? file : await shrinkReceiptImage(file);
   if (blob.size > RECEIPT_MAX_BYTES) throw new Error("o ficheiro passa dos 10 MB");
   const type = blob.type || file.type;
-  const path = `${groupId}/${expenseId}/fatura-${Date.now()}.${RECEIPT_EXT[type] || "jpg"}`;
+  const path = `${groupId}/${expenseId}/${gerada ? FAT_IA : "fatura"}-${Date.now()}.${RECEIPT_EXT[type] || "jpg"}`;
   const { error } = await sb.storage.from(RECEIPT_BUCKET)
     .upload(path, blob, { contentType: type, cacheControl: "31536000", upsert: false });
   if (error) throw error;
@@ -3408,7 +3411,9 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
     const comFatura = !isRecurringRecord && !(state.recurring && !converting);
     const temFatura = !!state.receiptFile || (!!state.receiptPath && !state.receiptDrop);
     const fatPdf = state.receiptFile ? receiptIsPdf(state.receiptFile.type) : receiptIsPdf(state.receiptPath);
+    const fatIa = state.receiptFile ? isFaturaIa(state.receiptFile.name) : isFaturaIa(state.receiptPath);
     const fatTxt = !temFatura ? "Nenhuma"
+      : fatIa ? (state.receiptFile ? "Fatura fictícia por enviar" : "Fatura fictícia")
       : state.receiptFile ? (fatPdf ? "PDF por enviar" : "Imagem por enviar")
       : (fatPdf ? "PDF anexado" : "Imagem anexada");
 
@@ -3659,6 +3664,7 @@ function renderExpenseForm(slot, ctx, existing, onClose, opts = {}) {
       </div>
       <p class="xp-nota">Imagem ou PDF, até 10 MB. As fotografias são reduzidas antes de seguir.</p>` : `
       ${state.receiptFile ? `<p class="xp-folha-sub">Segue quando gravares a despesa.</p>` : ""}
+      ${fatIa ? `<p class="xp-nota">Montada pela IA com os itens de cada um. Se mudares os valores aqui, ela não acompanha — remove-a ou troca-a pelo talão.</p>` : ""}
       <div class="xp-fat-prev">
         ${fatPdf
           ? `<div class="xp-fat-doc">${ico("doc")}<span>${esc(state.receiptFile?.name || "Fatura em PDF")}</span></div>`
@@ -4156,13 +4162,88 @@ async function aiInvoke(body) {
   return data.resultado;
 }
 
+// Itens («eu comi o bitoque de 12, a Ana a francesinha de 14, o vinho foi
+// a meias»): a IA só lista as coisas, o preço de cada uma e quem a
+// consumiu — as contas fazem-se aqui, ao cêntimo, que é onde não falham.
+//   · cada item reparte-se em partes iguais por quem o consumiu; um item
+//     sem pessoas é de todos os que entram na despesa;
+//   · um item sem preço («o resto») fica com o que falta para o total;
+//   · se os itens não somarem o total dito (gorjeta, serviço, desconto), a
+//     diferença reparte-se na proporção do que cada um consumiu — e avisa-se.
+// Devolve null sem itens; senão { itens, shares, total, ajuste, porItens,
+// avisos }. `porItens` diz se a divisão sai mesmo dos itens (há pelo menos
+// um que não é de todos); se forem todos partilhados, a divisão é a normal
+// e os itens servem só para a fatura fictícia.
+function aiItens(raw, members, baseIds, totalCents, cur, desconhecidos) {
+  const lista = (Array.isArray(raw) ? raw : []).filter(it => it && typeof it === "object").slice(0, 60);
+  if (!lista.length) return null;
+  const avisos = [];
+  const cents = v => (v === null || v === undefined || v === "" || !isFinite(Number(v))) ? null : Math.round(Number(v) * 100);
+  const itens = lista.map(it => {
+    // quem não é do grupo fica de fora (o aviso diz quem); um item só dessas
+    // pessoas passa a ser de todos — e diz-se qual
+    const ids = [], fora = [];
+    for (const p of Array.isArray(it.pessoas) ? it.pessoas : []) {
+      const nome = typeof p === "string" ? p : p?.nome;
+      const m = aiMatchMember(nome, members);
+      if (!m) { if (nome) fora.push(String(nome)); continue; }
+      if (!ids.includes(m.id)) ids.push(m.id);
+    }
+    const desc = String(it.descricao || "").trim().slice(0, 80) || "Item";
+    if (fora.length && !ids.length) {
+      avisos.push(`«${desc}» era de ${fora.map(n => `«${n}»`).join(" e ")}, que não ${fora.length > 1 ? "são" : "é"} do grupo — ficou repartido por todos.`);
+    } else fora.forEach(n => desconhecidos.add(n));
+    return { desc, cents: cents(it.valor), ids };
+  });
+
+  // «o resto»: o que falta para o total, repartido pelos itens sem preço
+  const conhecidos = itens.filter(i => i.cents != null).reduce((a, i) => a + i.cents, 0);
+  const semPreco = itens.filter(i => i.cents == null);
+  if (semPreco.length) {
+    const resto = totalCents - conhecidos;
+    if (totalCents > 0 && resto >= 0) {
+      const partes = splitByWeights(resto, semPreco.map(() => 1));
+      semPreco.forEach((i, k) => { i.cents = partes[k]; i.resto = true; });
+    } else {
+      semPreco.forEach(i => { i.cents = 0; });
+      avisos.push(`Falta o preço de ${semPreco.map(i => `«${i.desc}»`).join(", ")} — ficou a 0.`);
+    }
+  }
+
+  const todos = [...new Set([...baseIds, ...itens.flatMap(i => i.ids)])];
+  const mesmo = ids => ids.length === todos.length && todos.every(id => ids.includes(id));
+  const shares = {};
+  for (const i of itens) {
+    i.todos = !i.ids.length || mesmo(i.ids);
+    i.quem = i.ids.length ? i.ids : todos;
+    const partes = splitByWeights(i.cents, i.quem.map(() => 1));
+    i.quem.forEach((id, k) => { shares[id] = (shares[id] || 0) + partes[k]; });
+  }
+  const soma = itens.reduce((a, i) => a + i.cents, 0);
+  const total = totalCents > 0 ? totalCents : Math.max(0, soma);
+  let ajuste = 0;
+  const comParte = todos.filter(id => (shares[id] || 0) > 0);
+  if (totalCents > 0 && soma > 0 && soma !== totalCents && comParte.length) {
+    ajuste = totalCents - soma;
+    const partes = splitByWeights(Math.abs(ajuste), comParte.map(id => shares[id]));
+    comParte.forEach((id, k) => { shares[id] += Math.sign(ajuste) * partes[k]; });
+    avisos.push(`Os itens somam ${fmtMoney(soma, cur)} e o total é ${fmtMoney(totalCents, cur)}: a diferença (${fmtMoney(ajuste, cur)}) ficou repartida na proporção do que cada um consumiu.`);
+  }
+  const ok = Object.values(shares).every(c => c >= 0)
+    && Object.values(shares).reduce((a, c) => a + c, 0) === total;
+  return {
+    itens, shares, total, ajuste, avisos,
+    porItens: ok && total > 0 && itens.some(i => !i.todos),
+  };
+}
+
 // Converte a resposta da IA no pré-preenchimento do formulário de despesa
 // (os mesmos campos do state de renderExpenseForm). `members` pode ser de um
 // grupo que ainda não existe (ids provisórios) — o resumo mostra-se igual.
 function aiPlan(r, members, group, meId) {
   const avisos = [];
   const cents = v => (v === null || v === undefined || v === "" || !isFinite(Number(v))) ? null : Math.round(Number(v) * 100);
-  const totalCents = Math.max(0, cents(r.valor) || 0);
+  let totalCents = Math.max(0, cents(r.valor) || 0);
   const desconhecidos = new Set();
   const resolve = (list) => {
     const ids = [], amounts = {};
@@ -4183,6 +4264,13 @@ function aiPlan(r, members, group, meId) {
     : members.map(m => m.id);
   const fallbackPayer = meId || members[0]?.id;
 
+  const own = r.pagamento === "cada_um";
+  const part = resolve(r.participantes);
+  // o que cada um consumiu: dá o total quando só se disseram os itens
+  const it = aiItens(r.itens, members, part.ids.length ? part.ids : defaultParts,
+    totalCents, group.currency || "EUR", desconhecidos);
+  if (it && !totalCents) totalCents = it.total;
+
   const plan = {
     desc: String(r.descricao || "").trim().slice(0, 120),
     totalCents,
@@ -4194,9 +4282,13 @@ function aiPlan(r, members, group, meId) {
   };
   if (/^\d{2}:\d{2}$/.test(r.hora || "")) plan.time = r.hora;
   else if (plan.date && plan.date !== new Date().toISOString().slice(0, 10)) plan.time = ""; // hora de agora não serve noutro dia
-
-  const own = r.pagamento === "cada_um";
-  const part = resolve(r.participantes);
+  if (it) {
+    // o que vai para a fatura fictícia (e para o resumo)
+    plan.itens = it.itens.map(i => ({ desc: i.desc, cents: i.cents, ids: i.quem, todos: i.todos, resto: !!i.resto }));
+    plan.ajuste = it.ajuste;
+    plan.porItens = it.porItens && !own;
+    avisos.push(...it.avisos);
+  }
 
   // ---- quem pagou
   if (!own) {
@@ -4223,7 +4315,18 @@ function aiPlan(r, members, group, meId) {
   // ---- divisão
   if (own) {
     plan.mode = "own";
-    plan.participants = part.ids.length ? part.ids : members.map(m => m.id);
+    plan.participants = part.ids.length ? part.ids
+      : it ? members.filter(m => it.shares[m.id] > 0).map(m => m.id) : members.map(m => m.id);
+  } else if (plan.porItens) {
+    // cada um paga o que consumiu: valores exatos, já ao cêntimo
+    plan.mode = "exact";
+    plan.participants = members.filter(m => it.shares[m.id] > 0).map(m => m.id);
+    plan.exact = Object.fromEntries(plan.participants.map(id => [id, it.shares[id]]));
+  } else if (it && r.divisao === "itens") {
+    // itens todos partilhados: partes iguais entre quem entrou
+    plan.mode = "equal";
+    plan.participants = members.filter(m => it.shares[m.id] > 0).map(m => m.id);
+    if (!plan.participants.length) plan.participants = defaultParts;
   } else if (r.divisao === "valores" && part.ids.length) {
     const vals = part.ids.map(id => part.amounts[id]);
     if (vals.every(v => v != null) && vals.reduce((a, b) => a + b, 0) === totalCents) {
@@ -4262,6 +4365,229 @@ function aiPlanShares(plan, members) {
   return Object.fromEntries(ids.map((id, i) => [id, parts[i]]));
 }
 
+// ------------------------------------------- fatura fictícia (itens)
+// Quando a despesa vem com itens por pessoa, a app desenha uma «fatura»
+// com eles — o que se consumiu e quanto, a parte de cada um (com o detalhe
+// de onde vem), quem pagou e quem fica a dever a quem — e anexa-a à
+// despesa como fatura, para todos no grupo poderem conferir as contas.
+// Diz bem à vista que é fictícia e não tem valor fiscal. É uma imagem PNG
+// feita num canvas, com as cores fixas de papel (não segue o tema).
+// O nome do ficheiro começa por «fatura-ia», que é o que a distingue de
+// uma fotografia a sério (não é reduzida ao enviar e a consulta diz que é
+// fictícia).
+const FAT_IA = "fatura-ia";
+const isFaturaIa = s => /(^|\/)fatura-ia[-.]/.test(String(s || ""));
+// só vale a pena com itens que expliquem alguma coisa
+const aiTemFatura = plan => !!plan?.itens?.length && (plan.porItens || plan.itens.length >= 2);
+
+async function aiFaturaFicticia(plan, members, group, nomeGrupo) {
+  const cur = group.currency || "EUR";
+  const curto = nomesCurtos(members);
+  const nome = id => curto(members.find(m => m.id === id)?.name || "?");
+  const lista = arr => arr.length <= 1 ? arr.join("") : `${arr.slice(0, -1).join(", ")} e ${arr[arr.length - 1]}`;
+  const din = c => fmtMoney(c, cur);
+  const shares = aiPlanShares(plan, members);
+  const own = plan.mode === "own";
+
+  try {
+    await Promise.all([
+      document.fonts.load("400 16px Figtree"), document.fonts.load("700 16px Figtree"),
+      document.fonts.load("700 16px 'Bricolage Grotesque'"),
+    ]);
+  } catch (_) { /* desenha com a letra do sistema */ }
+
+  const INK = "#0e1a3a", MUTED = "#5b6785", BRAND = "#2140c8", LINE = "#c9cfdf", STAMP = "#b4462f";
+  const F = (w, px, disp) => `${w} ${px}px ${disp ? "'Bricolage Grotesque', " : ""}Figtree, system-ui, -apple-system, sans-serif`;
+  const W = 560, PAD = 36, M = 10, DENTE = 16, INNER = W - PAD * 2;
+
+  // 1.ª passagem: mede e guarda o que desenhar; 2.ª: desenha
+  const med = document.createElement("canvas").getContext("2d");
+  const largura = (t, font) => { med.font = font; return med.measureText(t).width; };
+  const partir = (t, font, max) => {
+    const out = [];
+    let linha = "";
+    for (const w of String(t).split(/\s+/).filter(Boolean)) {
+      const tenta = linha ? `${linha} ${w}` : w;
+      if (!linha || largura(tenta, font) <= max) linha = tenta;
+      else { out.push(linha); linha = w; }
+    }
+    if (linha) out.push(linha);
+    return out.length ? out : [""];
+  };
+  const ops = [];
+  let y = DENTE + 26;
+  const texto = (t, font, px, cor, { alinhar = "left", recuo = 0, lh = 1.38, max = INNER - recuo, espacado = 0 } = {}) => {
+    for (const l of partir(t, font, max)) {
+      const yy = y;
+      ops.push(g => {
+        g.font = font; g.fillStyle = cor; g.textAlign = alinhar;
+        if ("letterSpacing" in g) g.letterSpacing = `${espacado}px`;
+        g.fillText(l, alinhar === "center" ? W / 2 : alinhar === "right" ? W - PAD : PAD + recuo, yy);
+        if ("letterSpacing" in g) g.letterSpacing = "0px";
+      });
+      y += px * lh;
+    }
+  };
+  // descrição à esquerda (parte em linhas) e o valor à direita, na 1.ª linha
+  const linha = (esq, dir, px, { peso = 600, cor = INK, disp = false } = {}) => {
+    const fE = F(peso, px, disp), fD = F(700, px, disp);
+    const wd = largura(dir, fD);
+    const yy = y;
+    ops.push(g => { g.font = fD; g.fillStyle = cor; g.textAlign = "right"; g.fillText(dir, W - PAD, yy); });
+    texto(esq, fE, px, cor, { max: INNER - wd - 16 });
+  };
+  const sub = (t, recuo = 14) => texto(t, F(400, 13), 13, MUTED, { recuo, lh: 1.4 });
+  const rotulo = t => { texto(t.toUpperCase(), F(700, 11), 11, MUTED, { espacado: 1.6, lh: 1.9 }); };
+  const espaco = px => { y += px; };
+  const corte = () => {
+    espaco(10);
+    const yy = y;
+    ops.push(g => {
+      g.save(); g.strokeStyle = LINE; g.lineWidth = 1.2; g.setLineDash([5, 5]);
+      g.beginPath(); g.moveTo(PAD, yy + .5); g.lineTo(W - PAD, yy + .5); g.stroke(); g.restore();
+    });
+    espaco(18);
+  };
+
+  // ---- cabeçalho
+  texto("SPLITWISELY", F(800, 12), 12, BRAND, { espacado: 2.4, lh: 1.9 });
+  const yCarimbo = y;
+  texto("Fatura fictícia", F(700, 28, true), 28, INK, { lh: 1.2, max: INNER - 150 });
+  espaco(4);
+  texto("Montada pela IA a partir do que foi dito ao registar a despesa.", F(400, 13), 13, MUTED, { lh: 1.4, max: INNER - 140 });
+  corte();
+  texto(plan.desc || "Despesa", F(700, 18), 18, INK, { lh: 1.3 });
+  const hoje = new Date().toISOString().slice(0, 10);
+  sub([fmtDate(plan.date || hoje) + (plan.time ? ` · ${plan.time}` : ""),
+    nomeGrupo ? `grupo «${nomeGrupo}»` : ""].filter(Boolean).join(" · "), 0);
+  corte();
+
+  // ---- itens
+  rotulo("Itens");
+  espaco(2);
+  for (const it of plan.itens) {
+    linha(it.desc, din(it.cents), 15);
+    const cada = it.ids.length > 1 && it.cents ? ` · ${din(Math.round(it.cents / it.ids.length))} cada` : "";
+    const quem = it.ids.length === 1 ? nome(it.ids[0])
+      : it.todos ? `${it.ids.length === 2 ? "a meias" : `entre todos (${it.ids.length})`}${cada}`
+      : `${lista(it.ids.map(nome))}${cada}`;
+    sub(it.resto ? `${quem} · o que faltava para o total` : quem);
+    espaco(5);
+  }
+  if (plan.ajuste) {
+    linha(plan.ajuste > 0 ? "Diferença para o total" : "Desconto", `${plan.ajuste > 0 ? "+" : "−"}${din(Math.abs(plan.ajuste))}`, 15);
+    sub("na proporção do que cada um consumiu");
+    espaco(5);
+  }
+  corte();
+  linha("Total", din(plan.totalCents), 22, { peso: 700, disp: true });
+  corte();
+
+  // ---- por pessoa: a parte de cada um e de onde vem
+  rotulo(own ? "Consumo de cada um" : "Parte de cada um");
+  espaco(2);
+  const ids = plan.participants.filter(id => (shares[id] || 0) > 0);
+  for (const id of ids) {
+    linha(nome(id), din(shares[id]), 15);
+    if (plan.porItens || own) {
+      const partes = [];
+      let soma = 0;
+      for (const it of plan.itens) {
+        const k = it.ids.indexOf(id);
+        if (k < 0 || !it.cents) continue;
+        const c = splitByWeights(it.cents, it.ids.map(() => 1))[k];
+        soma += c;
+        partes.push(`${it.desc}${it.ids.length > 1 ? ` (1/${it.ids.length})` : ""} ${din(c)}`);
+      }
+      const resto = shares[id] - soma;
+      if (resto && plan.ajuste) partes.push(`${plan.ajuste > 0 ? "diferença" : "desconto"} ${resto > 0 ? "+" : "−"}${din(Math.abs(resto))}`);
+      if (partes.length) sub(partes.join(" · "));
+    }
+    espaco(5);
+  }
+  corte();
+
+  // ---- quem pagou e as contas que ficam
+  if (own) {
+    rotulo("Pagamento");
+    texto("Cada um pagou o seu — não fica nada por acertar.", F(500, 14), 14, INK);
+  } else {
+    rotulo(plan.payers.length > 1 ? "Pagaram" : "Pagou");
+    espaco(2);
+    for (const id of plan.payers) { linha(nome(id), din(plan.payerAmounts[id] || 0), 15); espaco(3); }
+    corte();
+    rotulo("Contas desta despesa");
+    espaco(2);
+    const pagou = id => plan.payers.includes(id) ? (plan.payerAmounts[id] || 0) : 0;
+    const todos = [...new Set([...plan.payers, ...ids])];
+    const frases = [];
+    if (plan.payers.length === 1) {
+      const p = plan.payers[0];
+      for (const id of ids) if (id !== p) frases.push(`${nome(id)} deve ${din(shares[id])} a ${nome(p)}`);
+    } else {
+      for (const id of todos) {
+        const saldo = pagou(id) - (shares[id] || 0);
+        if (saldo > 0) frases.push(`${nome(id)} fica a receber ${din(saldo)}`);
+        else if (saldo < 0) frases.push(`${nome(id)} fica a dever ${din(-saldo)}`);
+      }
+    }
+    if (!frases.length) frases.push("Não fica nada por acertar.");
+    for (const f of frases) { texto(f, F(500, 14), 14, INK, { lh: 1.5 }); }
+  }
+  corte();
+
+  // ---- rodapé
+  const agora = new Date();
+  texto(`Gerada pela SplitWisely a ${agora.toLocaleDateString("pt-PT", { day: "numeric", month: "short", year: "numeric" })}, ${agora.toTimeString().slice(0, 5)}.`,
+    F(400, 12), 12, MUTED, { alinhar: "center", lh: 1.45 });
+  texto("Serve só para conferir as contas: não é uma fatura e não tem valor fiscal.",
+    F(600, 12), 12, MUTED, { alinhar: "center", lh: 1.45 });
+  const H = Math.ceil(y + 18 + DENTE);
+
+  // ---- 2.ª passagem
+  const S = Math.max(1, Math.min(2, 3600 / (H + 2 * M)));
+  const cv = document.createElement("canvas");
+  cv.width = Math.round((W + 2 * M) * S);
+  cv.height = Math.round((H + 2 * M) * S);
+  const g = cv.getContext("2d");
+  g.scale(S, S);
+  g.translate(M, M);
+  g.textBaseline = "top";
+  // o papel, com o picotado em cima e em baixo
+  const dentes = Math.round(W / DENTE);
+  const passo = W / dentes;
+  g.beginPath();
+  g.moveTo(0, DENTE / 2);
+  for (let i = 0; i < dentes; i++) { g.lineTo(i * passo + passo / 2, 0); g.lineTo((i + 1) * passo, DENTE / 2); }
+  g.lineTo(W, H - DENTE / 2);
+  for (let i = dentes; i > 0; i--) { g.lineTo(i * passo - passo / 2, H); g.lineTo((i - 1) * passo, H - DENTE / 2); }
+  g.closePath();
+  g.save();
+  g.shadowColor = "rgba(14, 26, 58, .18)"; g.shadowBlur = 8; g.shadowOffsetY = 2;
+  g.fillStyle = "#ffffff"; g.fill();
+  g.restore();
+  for (const op of ops) op(g);
+  // carimbo «sem valor fiscal»
+  g.save();
+  g.translate(W - PAD - 60, yCarimbo + 10);
+  g.rotate(-8 * Math.PI / 180);
+  g.globalAlpha = .85;
+  g.strokeStyle = STAMP; g.fillStyle = STAMP; g.lineWidth = 2;
+  g.beginPath();
+  if (g.roundRect) g.roundRect(-64, -21, 128, 42, 7); else g.rect(-64, -21, 128, 42);
+  g.stroke();
+  g.textAlign = "center";
+  g.font = F(800, 11);
+  if ("letterSpacing" in g) g.letterSpacing = "1.4px";
+  g.fillText("SEM VALOR", 0, -13);
+  g.fillText("FISCAL", 0, 2);
+  g.restore();
+
+  const blob = await new Promise(ok => cv.toBlob(ok, "image/png"));
+  if (!blob) throw new Error("Não foi possível montar a fatura fictícia");
+  return new File([blob], `${FAT_IA}-${Date.now()}.png`, { type: "image/png" });
+}
+
 // Contexto de grupo igual ao de renderGroup (permissões incluídas)
 function aiGroupCtx(bundle) {
   const { group, members } = bundle;
@@ -4291,6 +4617,7 @@ function aiExpenseToAtual(x, members) {
     participantes: (x.expense_shares || [])
       .filter(s => toCents(s.amount) > 0 || own)
       .map(s => ({ nome: nome(s.member_id), valor: exact ? toCents(s.amount) / 100 : null })),
+    itens: [],
     duvidas: [],
   };
 }
@@ -4393,7 +4720,19 @@ async function aiInsertExpense(ctx, pre, createdAt) {
     return { erro: (i1.error || i2.error).message };
   }
   if (pre.category) learnCategory(pre.desc, pre.category);
-  return { payerRows: own ? [] : payerRows, shareRows: own ? [] : shareRows };
+  // a fatura (fictícia, num lote) não trava a despesa: se falhar, avisa-se
+  let semFatura = false;
+  if (pre.receiptFile) {
+    try {
+      const path = await uploadReceipt(group.id, data.id, pre.receiptFile);
+      const up = await sb.from("expenses").update({ receipt_path: path }).eq("id", data.id);
+      if (up.error) { await removeReceipt(path); semFatura = true; }
+    } catch (e) {
+      console.warn("fatura:", e?.message || e);
+      semFatura = true;
+    }
+  }
+  return { payerRows: own ? [] : payerRows, shareRows: own ? [] : shareRows, semFatura };
 }
 
 // opts: { ctx } dentro de um grupo; sem ctx é a despesa solta da página
@@ -4424,6 +4763,7 @@ function renderAiExpense(slot, opts) {
     alvo: null,             // { tipo: "novo", nome, pessoas: [{ id, name, email, me }] } | { tipo: "existente", ctx }
     criado: null,           // { ctx, idMap } depois de o grupo novo ser criado
     ocupado: false,
+    fatUrls: [],
   };
   const despesasDe = res => alterar ? [res] : (Array.isArray(res?.despesas) ? res.despesas : []);
 
@@ -4446,9 +4786,12 @@ function renderAiExpense(slot, opts) {
     return contexto;
   }
 
+  // as pré-visualizações da fatura fictícia (object URLs)
+  const largarFaturas = () => { st.fatUrls.forEach(u => URL.revokeObjectURL(u)); st.fatUrls = []; };
   const voltar = () => {
     pararVoz(true);
     tirarAudio();
+    largarFaturas();
     if (st.preview) URL.revokeObjectURL(st.preview);
     if (st.feitas) return terminar();
     (opts.onBack || opts.onClose)();
@@ -4665,7 +5008,9 @@ function renderAiExpense(slot, opts) {
     (res.pessoas || []).forEach(junta);
     // quem aparece a pagar ou na divisão mas faltou em «pessoas»
     for (const d of despesasDe(res)) {
-      [...(d.pagadores || []), ...(d.participantes || [])].forEach(p => {
+      const dosItens = (Array.isArray(d.itens) ? d.itens : [])
+        .flatMap(i => (Array.isArray(i?.pessoas) ? i.pessoas : []).map(nome => ({ nome })));
+      [...(d.pagadores || []), ...(d.participantes || []), ...dosItens].forEach(p => {
         if (!aiMatchMember(p?.nome, nomes.map(n => ({ name: n })))) junta(p?.nome);
       });
     }
@@ -4696,6 +5041,16 @@ function renderAiExpense(slot, opts) {
       return { group: ctx.group, members: ctx.members, meId: ctx.myMember?.id };
     }
     return { group: { currency: "EUR", use_weights: false, categories: null }, members: st.alvo.pessoas, meId: "novo:0" };
+  }
+  const nomeGrupo = () => inGroup ? opts.ctx.group.name
+    : st.criado ? st.criado.ctx.group.name
+    : st.alvo?.tipo === "existente" ? st.alvo.ctx.group.name : (st.alvo?.nome || "").trim();
+  // a fatura fictícia da despesa (com os nomes de agora); null se não der
+  async function gerarFatura(plan) {
+    if (!aiTemFatura(plan)) return null;
+    const { group, members } = alvoAtual();
+    try { return await aiFaturaFicticia(plan, members, group, nomeGrupo()); }
+    catch (e) { console.warn("fatura fictícia:", e); return null; }
   }
 
   // ------------------------------------------------------------- gravar
@@ -4778,8 +5133,10 @@ function renderAiExpense(slot, opts) {
           draw();
         }
       : () => terminar(prep.ctx);
+    const pre = prefillDe(plan, prep.idMap, !varias);
+    if (!pre.receiptFile) pre.receiptFile = await gerarFatura(plan);
     renderExpenseForm(slot, prep.ctx, null, back, {
-      prefill: prefillDe(plan, prep.idMap, !varias),
+      prefill: pre,
       autoSave,
       backLabel: "Voltar",
       onSaved,
@@ -4803,16 +5160,19 @@ function renderAiExpense(slot, opts) {
     }
     const { ctx } = prep;
     const gravadas = [], falhas = [];
+    let semFatura = 0;
     const pagos = {}, quotas = {};
     const agora = Date.now();
     for (const [n, i] of idx.entries()) {
       const pre = prefillDe(st.plans[i], prep.idMap, false);
+      pre.receiptFile = await gerarFatura(st.plans[i]);
       // o índice anti-duplicado do servidor: afasta o carimbo de criação de
       // duas despesas iguais no mesmo lote (como na importação)
       const igual = idx.slice(0, n).some(j => st.plans[j].desc === pre.desc && st.plans[j].totalCents === pre.totalCents);
       const r = await aiInsertExpense(ctx, pre, igual ? new Date(agora - (n + 1) * 61000).toISOString() : null);
       if (r.erro) { falhas.push({ i, erro: r.erro }); continue; }
       gravadas.push(i);
+      if (r.semFatura) semFatura++;
       for (const row of r.payerRows) pagos[row.member_id] = (pagos[row.member_id] || 0) + toCents(row.amount);
       for (const row of r.shareRows) quotas[row.member_id] = (quotas[row.member_id] || 0) + toCents(row.amount);
     }
@@ -4827,7 +5187,8 @@ function renderAiExpense(slot, opts) {
     st.feitas += gravadas.length;
     st.ocupado = false;
     if (!falhas.length) {
-      toast(gravadas.length === 1 ? "Despesa adicionada" : `${gravadas.length} despesas adicionadas`);
+      if (semFatura) toast(`${gravadas.length === 1 ? "Despesa adicionada" : `${gravadas.length} despesas adicionadas`}, mas ${semFatura === 1 ? "uma fatura fictícia não ficou anexada" : `${semFatura} faturas fictícias não ficaram anexadas`}`, true);
+      else toast(gravadas.length === 1 ? "Despesa adicionada" : `${gravadas.length} despesas adicionadas`);
       return terminar(ctx);
     }
     // o que falhou fica no resumo para se editar à parte
@@ -4851,9 +5212,13 @@ function renderAiExpense(slot, opts) {
     if (!("time" in depois)) depois.time = antes.time;
     return aiPlanDiff(antes, depois, members, group.currency, meId);
   }
-  function guardarAlteracao(autoSave) {
+  async function guardarAlteracao(autoSave) {
     const { pre } = diffAlterar();
     if (st.file && receiptFileOk(st.file)) pre.receiptFile = st.file;
+    else if (!alterar.receipt_path || isFaturaIa(alterar.receipt_path)) {
+      const f = await gerarFatura(st.plans[0]);
+      if (f) pre.receiptFile = f;
+    }
     renderExpenseForm(slot, opts.ctx, alterar, () => draw(), {
       prefill: pre, autoSave, backLabel: "Voltar",
     });
@@ -4985,6 +5350,7 @@ function renderAiExpense(slot, opts) {
   }
 
   function drawResumo() {
+    largarFaturas();
     const { group, members, meId } = alvoAtual();
     const plans = st.plans;
     const varias = plans.length > 1;
@@ -4997,6 +5363,7 @@ function renderAiExpense(slot, opts) {
         <span class="xv-name">${esc(nameOf(id))}</span>
         ${cents == null ? "" : `<span class="xv-amt">${fmtMoney(cents, cur)}</span>`}</li>`;
     const modoTxt = plan => plan.mode === "own" ? "cada um pagou a sua parte"
+      : plan.porItens ? "pelo que cada um consumiu"
       : plan.mode === "exact" ? "valores definidos"
       : plan.mode === "weights" ? "por proporção"
       : plan.participants.length === members.length ? "partes iguais, entre todos" : `partes iguais, entre ${plan.participants.length}`;
@@ -5006,11 +5373,34 @@ function renderAiExpense(slot, opts) {
         + (cat ? ` · ${esc(`${cat.icon} ${cat.label}`)}` : "");
     };
     const avisosHtml = arr => arr.length ? `<ul class="ai-avisos">${arr.map(a => `<li>${esc(a)}</li>`).join("")}</ul>` : "";
+    const lista = arr => arr.length <= 1 ? arr.join("") : `${arr.slice(0, -1).join(", ")} e ${arr[arr.length - 1]}`;
+    const quemItem = it => (it.ids.length === 1 ? nameOf(it.ids[0])
+      : it.todos ? (it.ids.length === 2 ? "a meias" : "todos")
+      : lista(it.ids.map(nameOf))) + (it.resto ? " · o que faltava para o total" : "");
+    const itensHtml = plan => !plan.itens?.length ? "" : `
+        <h3 class="xv-h">${plan.porItens ? "O que cada um consumiu" : "Itens"}</h3>
+        <ul class="xv-list ai-itens">${plan.itens.map(it => `
+          <li class="xv-li"><span class="ai-item-t"><strong>${esc(it.desc)}</strong><small>${esc(quemItem(it))}</small></span>
+            <span class="xv-amt">${fmtMoney(it.cents, cur)}</span></li>`).join("")}${plan.ajuste ? `
+          <li class="xv-li"><span class="ai-item-t"><strong>${plan.ajuste > 0 ? "Diferença para o total" : "Desconto"}</strong><small>na proporção do que cada um consumiu</small></span>
+            <span class="xv-amt">${plan.ajuste > 0 ? "+" : "−"}${fmtMoney(Math.abs(plan.ajuste), cur)}</span></li>` : ""}
+        </ul>`;
+    // a fatura fictícia: não quando segue a fotografia (ou, ao alterar, quando
+    // a despesa já tem uma fatura a sério)
+    const vaiFatura = plan => aiTemFatura(plan) && !(st.file && !varias)
+      && !(alterar?.receipt_path && !isFaturaIa(alterar.receipt_path));
+    const faturaHtml = (plan, i) => !vaiFatura(plan) ? "" : `
+        <details class="ai-fat" data-fat="${i}">
+          <summary>${uiIco("receipt")}<span>${varias ? `Fatura fictícia · ${plan.itens.length} ${plan.itens.length === 1 ? "item" : "itens"}`
+            : alterar ? "Fica anexada uma fatura fictícia com os itens" : "Fica anexada uma fatura fictícia com estes itens"}</span>
+            <span class="ai-fat-ver" aria-hidden="true"></span></summary>
+          <div class="ai-fat-img"><span class="muted">A montar a fatura…</span></div>
+        </details>`;
     const detalhe = plan => {
       const shares = aiPlanShares(plan, members);
       return `${plan.mode === "own" ? "" : `
         <h3 class="xv-h">Quem pagou</h3>
-        <ul class="xv-list">${plan.payers.map(id => pessoa(id, plan.payerAmounts[id])).join("")}</ul>`}
+        <ul class="xv-list">${plan.payers.map(id => pessoa(id, plan.payerAmounts[id])).join("")}</ul>`}${itensHtml(plan)}
         <h3 class="xv-h">Como se divide <span class="muted">· ${esc(modoTxt(plan))}</span></h3>
         <ul class="xv-list">${plan.participants.map(id => pessoa(id, plan.mode === "own" ? null : shares[id])).join("")}</ul>`;
     };
@@ -5075,7 +5465,8 @@ function renderAiExpense(slot, opts) {
             <span class="ai-diff-v"><s>${esc(l.a)}</s><span class="ai-diff-arr">→</span><strong>${esc(l.d)}</strong></span></li>`).join("")}</ul>`
           : `<p class="muted">A IA não encontrou nada para mudar. Corrige o pedido em baixo ou recomeça.</p>`}
         ${st.file ? `<p class="ai-nota muted">${uiIco("clip")} A ${st.file.type === "application/pdf" ? "fatura em PDF" : "fotografia"} passa a ser a fatura da despesa.</p>` : ""}
-        ${detalhe(plan)}`;
+        ${detalhe(plan)}
+        ${faturaHtml(plan, 0)}`;
       foot = `
         <button class="secondary" id="ai-editar" ${st.ocupado ? "disabled" : ""}>${uiIco("edit")} Editar</button>
         <button class="xp-cta" id="ai-ok" ${st.ocupado || (!linhas.length && !st.file) ? "disabled" : ""}>Guardar alterações</button>`;
@@ -5089,7 +5480,7 @@ function renderAiExpense(slot, opts) {
         ${grupoHtml}
         ${avisosHtml([...geral, ...plan.avisos, ...plan.duvidas])}
         ${detalhe(plan)}
-        ${st.file ? `<p class="ai-nota muted">${uiIco("clip")} A ${st.file.type === "application/pdf" ? "fatura em PDF" : "fotografia"} fica anexada à despesa.</p>` : ""}`;
+        ${st.file ? `<p class="ai-nota muted">${uiIco("clip")} A ${st.file.type === "application/pdf" ? "fatura em PDF" : "fotografia"} fica anexada à despesa.</p>` : faturaHtml(plan, 0)}`;
       const criar = !inGroup && st.alvo.tipo === "novo" && !st.criado;
       foot = `
         <button class="secondary" id="ai-editar" ${st.ocupado ? "disabled" : ""}>${uiIco("edit")} Editar</button>
@@ -5125,6 +5516,7 @@ function renderAiExpense(slot, opts) {
             <p class="ai-card-l">${esc(pagou)}</p>
             <p class="ai-card-l muted">${esc(div)}</p>
             ${avisosHtml([...plan.avisos, ...plan.duvidas])}
+            ${faturaHtml(plan, i)}
             <button type="button" class="link-btn" data-editar="${i}">${uiIco("edit")} Editar esta${ok ? "" : " (para a poder registar)"}</button>
           </li>`;
       };
@@ -5174,6 +5566,18 @@ function renderAiExpense(slot, opts) {
       slot.querySelectorAll("[data-editar]").forEach(b => b.onclick = () => seguir(false, +b.dataset.editar));
       slot.querySelectorAll("[data-incl]").forEach(cb => cb.onchange = () => { st.incl[+cb.dataset.incl] = cb.checked; draw(); });
     }
+    slot.querySelectorAll("details[data-fat]").forEach(d => d.addEventListener("toggle", async () => {
+      if (!d.open || d.dataset.pronta) return;
+      d.dataset.pronta = "1";
+      const plan = st.plans[+d.dataset.fat];
+      const f = await gerarFatura(plan);
+      const $c = d.querySelector(".ai-fat-img");
+      if (!$c?.isConnected) return;
+      if (!f) { $c.innerHTML = `<span class="muted">Não foi possível montar a fatura.</span>`; return; }
+      const url = URL.createObjectURL(f);
+      st.fatUrls.push(url);
+      $c.innerHTML = `<img src="${url}" alt="Fatura fictícia: ${esc(plan.desc || "despesa")}" />`;
+    }));
     slot.querySelector("#ai-grupo-novo")?.addEventListener("click", () => { alvoNovo(st.res, null); replan(); draw(); });
     const $gn = slot.querySelector("#ai-grupo-nome");
     if ($gn) $gn.oninput = () => { st.alvo.nome = $gn.value; };
@@ -5193,6 +5597,9 @@ function renderAiExpense(slot, opts) {
             ...d,
             pagadores: (d.pagadores || []).map(ren),
             participantes: (d.participantes || []).map(ren),
+            ...(Array.isArray(d.itens) ? { itens: d.itens.map(i => ({
+              ...i, pessoas: (i?.pessoas || []).map(n => (typeof n === "string" && aiNorm(n) === aiNorm(p.name) ? novo : n)),
+            })) } : {}),
           })),
         };
         const known = (contexto?.book || []).find(b => b.normName === aiNorm(novo));

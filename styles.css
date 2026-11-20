@@ -3225,3 +3225,33 @@ button.outline.ai-home-btn .ico { color: var(--gold-accent); }
 .ai-exemplos.chips { flex-direction: row; flex-wrap: wrap; }
 .ai-exemplos.chips .ai-ex { flex: none; }
 .xv-ai .ico { color: var(--gold-accent); }
+
+/* despesa com IA: itens por pessoa e a fatura fictícia que fica anexada */
+.ai-item-t { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.ai-item-t strong { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-item-t small { color: var(--muted); font-size: .8rem; }
+.ai-fat {
+  margin: .9rem 0 .2rem;
+  border-radius: var(--radius-s);
+  background: var(--primary-soft);
+}
+.ai-card .ai-fat { margin: .55rem 0 0 calc(20px + .65rem); }
+.ai-fat summary {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  padding: .65rem .8rem;
+  cursor: pointer;
+  list-style: none;
+  font-size: .88rem;
+  font-weight: 600;
+  color: var(--primary-ink);
+}
+.ai-fat summary::-webkit-details-marker { display: none; }
+.ai-fat summary .ico { width: 18px; height: 18px; flex: none; }
+.ai-fat summary span:first-of-type { flex: 1; min-width: 0; }
+.ai-fat-ver { flex: none; font-weight: 750; }
+.ai-fat-ver::after { content: "Ver"; }
+.ai-fat[open] .ai-fat-ver::after { content: "Esconder"; }
+.ai-fat-img { padding: 0 .6rem .7rem; text-align: center; }
+.ai-fat-img img { display: block; width: 100%; max-width: 420px; height: auto; margin: 0 auto; }

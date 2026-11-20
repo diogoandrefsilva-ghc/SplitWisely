@@ -26,6 +26,12 @@
 // O áudio conta ~32 tokens por segundo (dentro dos tokens de entrada); o
 // registo guarda-os também à parte, em `detalhe.tokens_audio`.
 //
+// Itens («eu comi o bitoque de 12, a Ana a francesinha de 14, o vinho a
+// meias»): cada despesa pode trazer "itens", uma linha por coisa com o preço
+// e quem a consumiu, e divisao "itens". A IA não faz as contas da divisão —
+// a app calcula a parte de cada um a partir dos itens e monta com eles uma
+// fatura fictícia que fica anexada à despesa.
+//
 // As PESSOAS identificam-se sempre pelo NOME (nunca por ids): a app faz a
 // correspondência com os membros, e um nome que não bata com nenhum passa a
 // membro novo no ecrã de confirmação.
@@ -103,8 +109,9 @@ const DESPESA = `{"descricao": string,
    "categoria": string|null,
    "pagamento": "alguem"|"cada_um",
    "pagadores": [{"nome": string, "valor": number|null}],
-   "divisao": "normal"|"iguais"|"valores",
+   "divisao": "normal"|"iguais"|"valores"|"itens",
    "participantes": [{"nome": string, "valor": number|null}],
+   "itens": [{"descricao": string, "valor": number|null, "pessoas": [string]}],
    "duvidas": [string]}`;
 // Com mensagem de voz, a resposta traz também "transcricao" (fica de fora da
 // despesa: a app tira-a antes de usar a resposta).
@@ -159,7 +166,8 @@ ${p.membros.map((n) => `  · ${n}`).join("\n")}
   80 € e gasolina 45 €", uma lista com uma por linha, "paguei o hotel (300)
   e a Ana o supermercado (62)" — devolve uma por despesa, pela ordem do
   texto. Não partas uma despesa em várias (o jantar com entradas, pratos e
-  bebidas é UMA despesa; as linhas de um talão são UMA despesa). O que for
+  bebidas é UMA despesa; as linhas de um talão são UMA despesa — o que cada
+  um comeu ou comprou vai para "itens" dessa despesa). O que for
   dito uma vez para todas ("dividido por todos", "ontem") vale para cada uma.
   Máximo 20.
 - "duvidas" (fora de "despesas"): dúvidas gerais, que não são de uma despesa
@@ -191,8 +199,9 @@ ${pessoasRegra}${variasRegra}${alterar ? `
 - "descricao": curta e clara, em português, como se escreveria na app
   (ex.: "Jantar no Sushi Lab", "Gasolina", "Supermercado Continente").
 - "valor": o total da despesa em ${p.moeda} (número, ponto decimal). Se o
-  texto der valores por pessoa ("10 € cada, éramos 4"), soma. null se não
-  houver forma de saber.
+  texto der valores por pessoa ("10 € cada, éramos 4"), soma. Com "itens",
+  o total que for dito (ou o do talão); se só se disserem os itens, null (a
+  app soma-os). null se não houver forma de saber.
 - "data": a data da despesa. "ontem", "sábado passado", "dia 3" resolvem-se
   a partir de hoje (${p.hoje}). null se não se disser nada (a app usa hoje).
 - "hora": só se for dita ou estiver no talão; senão null.
@@ -207,12 +216,30 @@ ${p.cats.map((c) => `  · ${c.id} — ${c.label}`).join("\n")}
 - "divisao": "normal" quando não se diz nada de especial sobre a divisão
   (a app aplica a divisão habitual${grupoModo ? "" : ` do grupo: ${p.divisaoNormal}`});
   "iguais" quando se diz que é em partes iguais entre certas pessoas;
-  "valores" quando há valores concretos por pessoa ("eu 20, o João 30").
+  "valores" quando há valores concretos por pessoa ("eu 20, o João 30");
+  "itens" quando se diz o que cada um consumiu ou comprou ("eu comi o
+  bitoque de 12, a Ana a francesinha de 14, o vinho foi a meias"): cada
+  um paga o que é seu, e a app faz as contas a partir de "itens".
 - "participantes": quem entra na divisão. Em "normal"${grupoModo ? "" : " com o grupo todo"}
   podes listar ${grupoModo ? "todas as pessoas" : "todos os membros, ou [] para o grupo inteiro"}.
   Se alguém fica de fora ("menos a Ana", "a Rita não comeu"), não o
   incluas e usa "iguais". Em "valores", põe o valor de cada um (têm de
-  somar o total); nos outros modos valor = null.
+  somar o total); nos outros modos valor = null. Em "itens", todos os
+  que consumiram alguma coisa, com valor = null.
+- "itens": as coisas da despesa, UMA por entrada, quando quem consumiu o
+  quê muda a divisão (ou quando a pessoa enumera o que comprou, com o
+  preço de cada coisa). "valor" é o preço da linha tal como foi dito ou
+  está no talão ("2 imperiais a 1,50" → 3) — não faças contas de divisão,
+  a app fá-las. "pessoas" é quem consumiu essa coisa (nomes${grupoModo ? ' de "pessoas"' : " da lista"});
+  [] quando é partilhada por todos os participantes. Se uma coisa foi de
+  várias pessoas em quantidades diferentes, uma linha por pessoa ("duas
+  imperiais minhas e uma do Rui" → "Imperial ×2" só ${p.eu} e "Imperial"
+  só o Rui). "O resto" ou "o que falta" para dividir → uma linha "Resto"
+  com valor null (a app calcula-o a partir do total).${p.temImagem ? `
+  Com o talão e o texto a dizer quem comeu o quê, as linhas e os preços
+  vêm do talão e as pessoas do texto; o que o texto não atribuir a ninguém
+  fica com pessoas [].` : ""}
+  Sem nada disto, [] (não copies as linhas de um talão só por copiar).
 - "duvidas" (de cada despesa): frases curtas (máx. 3) sobre o que ficou por
   perceber ou o que assumiste sem certeza. [] se estiver tudo claro.
 - Não inventes valores: na dúvida, null e uma linha em "duvidas".
@@ -459,6 +486,7 @@ Deno.serve(async (req) => {
       ...detalhe,
       ...(audio ? { tokens_audio: tokensAudio(usage) } : {}),
       despesas: lista.length,
+      itens: lista.reduce((a: number, d: any) => a + (Array.isArray(d?.itens) ? d.itens.length : 0), 0),
       valor: lista.reduce((a: number, d: any) => a + (typeof d?.valor === "number" ? d.valor : 0), 0),
     }, usage);
     return json({ resultado: parsed, modelo });
