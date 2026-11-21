@@ -24,7 +24,12 @@
 // fosse o texto e devolve também `transcricao` (o que ouviu), que a app põe
 // na caixa de texto — assim as correções seguintes já vão só com texto.
 // O áudio conta ~32 tokens por segundo (dentro dos tokens de entrada); o
-// registo guarda-os também à parte, em `detalhe.tokens_audio`.
+// registo guarda-os também à parte, em `detalhe.tokens_audio`, com os
+// segundos que isso dá (`seg_ouvidos`) ao lado dos gravados (`audio_seg`) e
+// da duração que o telemóvel descodificou (`audio_dur`). Se a IA ouviu bem
+// menos do que se gravou, a resposta traz um aviso à cabeça das dúvidas.
+// A app manda a gravação em WAV (16 kHz, mono); em WebM o Gemini chegou a
+// ouvir só 26 s de 39.
 //
 // Itens («eu comi o bitoque de 12, a Ana a francesinha de 14, o vinho a
 // meias»): cada despesa pode trazer "itens", uma linha por coisa com o preço
@@ -111,7 +116,7 @@ const DESPESA = `{"descricao": string,
    "pagadores": [{"nome": string, "valor": number|null}],
    "divisao": "normal"|"iguais"|"valores"|"itens",
    "participantes": [{"nome": string, "valor": number|null}],
-   "itens": [{"descricao": string, "valor": number|null, "pessoas": [string]}],
+   "itens": [{"descricao": string, "quantidade": number|null, "preco_unitario": number|null, "valor": number|null, "pessoas": [string]}],
    "duvidas": [string]}`;
 // Com mensagem de voz, a resposta traz também "transcricao" (fica de fora da
 // despesa: a app tira-a antes de usar a resposta).
@@ -226,16 +231,27 @@ ${p.cats.map((c) => `  · ${c.id} — ${c.label}`).join("\n")}
   incluas e usa "iguais". Em "valores", põe o valor de cada um (têm de
   somar o total); nos outros modos valor = null. Em "itens", todos os
   que consumiram alguma coisa, com valor = null.
-- "itens": as coisas da despesa, UMA por entrada, quando quem consumiu o
-  quê muda a divisão (ou quando a pessoa enumera o que comprou, com o
-  preço de cada coisa). "valor" é o preço da linha tal como foi dito ou
-  está no talão ("2 imperiais a 1,50" → 3) — não faças contas de divisão,
-  a app fá-las. "pessoas" é quem consumiu essa coisa (nomes${grupoModo ? ' de "pessoas"' : " da lista"});
-  [] quando é partilhada por todos os participantes. Se uma coisa foi de
-  várias pessoas em quantidades diferentes, uma linha por pessoa ("duas
-  imperiais minhas e uma do Rui" → "Imperial ×2" só ${p.eu} e "Imperial"
-  só o Rui). "O resto" ou "o que falta" para dividir → uma linha "Resto"
-  com valor null (a app calcula-o a partir do total).${p.temImagem ? `
+- "itens": as coisas da despesa, quando quem consumiu o quê muda a divisão
+  (ou quando a pessoa enumera o que comprou, com o preço de cada coisa).
+  NÃO deixes nenhuma de fora: cafés, sobremesas, águas, tudo o que for dito.
+  · Cada pessoa com as SUAS unidades tem a sua linha, mesmo que seja a
+    mesma coisa e a mesma quantidade ("duas canecas para mim e duas para o
+    Rui" → "Caneca de cerveja", quantidade 2, só ${p.eu}; e "Caneca de
+    cerveja", quantidade 2, só o Rui; "um café para mim e outro para a Ana"
+    → duas linhas "Café"). Uma linha com várias pessoas é só para o
+    que foi mesmo partilhado (uma garrafa de vinho, uma entrada, o couvert).
+  · "descricao": a coisa, sem a quantidade. "quantidade": quantas unidades
+    (null se não se disser).
+  · Preço por unidade ("cafés a 0,80", "canecas a 3,50 cada") → em
+    "preco_unitario", com "valor" null: a app multiplica. Preço da linha
+    ("as duas canecas foram 7") → em "valor". Um preço de várias linhas
+    juntas ("as quatro canecas foram 14") → reparte-o pelas linhas na
+    proporção das unidades. Fora isto, não faças contas: a divisão é a app
+    que a faz.
+  · "pessoas": quem consumiu essa coisa (nomes${grupoModo ? ' de "pessoas"' : " da lista"}); [] quando é
+    partilhada por todos os participantes.
+  · "O resto" ou "o que falta" para dividir → uma linha "Resto" com valor e
+    preco_unitario null (a app calcula-o a partir do total).${p.temImagem ? `
   Com o talão e o texto a dizer quem comeu o quê, as linhas e os preços
   vêm do talão e as pessoas do texto; o que o texto não atribuir a ninguém
   fica com pessoas [].` : ""}
@@ -400,7 +416,10 @@ Deno.serve(async (req) => {
       modo, correcao: !!(anterior && correcao), imagem: !!image,
       ...(image ? { mime: limpa(b.mime, 40) } : {}),
       audio: !!audio,
-      ...(audio ? { audio_mime: audioMime, audio_seg: Number(b.audio_seg) || null } : {}),
+      ...(audio ? {
+        audio_mime: audioMime, audio_seg: Number(b.audio_seg) || null,
+        audio_dur: Number(b.audio_dur) || null, audio_bytes: Math.round(audio.length * 3 / 4),
+      } : {}),
       ditado: b.ditado === true,
       chars_texto: texto.length, membros: membros.length,
     };
@@ -482,9 +501,35 @@ Deno.serve(async (req) => {
     }
     if (modo !== "alterar") parsed.despesas = parsed.despesas.filter((d: unknown) => d && typeof d === "object").slice(0, 20);
     const lista = modo === "alterar" ? [parsed] : parsed.despesas;
+
+    // «2 canecas a 1,75» chega com preco_unitario e valor null: preenche-se o
+    // valor da linha aqui (quantidade × preço), para a app antiga — que só lê
+    // "valor" — não o tomar por «o resto». A app nova multiplica à mesma.
+    for (const d of lista) {
+      for (const it of Array.isArray(d?.itens) ? d.itens : []) {
+        const pu = Number(it?.preco_unitario);
+        if (it && (it.valor === null || it.valor === undefined) && it.preco_unitario != null && isFinite(pu)) {
+          const q = Number(it.quantidade) > 0 ? Number(it.quantidade) : 1;
+          it.valor = Math.round(q * pu * 100) / 100;
+        }
+      }
+    }
+
+    // O Gemini conta 32 tokens por segundo de áudio: se ouviu bem menos do que
+    // foi gravado, o fim (ou o princípio) ficou de fora — e o que lá se disse
+    // falta na despesa. Diz-se isso à cabeça, para a pessoa conferir.
+    const segOuvidos = audio && usage ? Math.round((tokensAudio(usage) / 32) * 10) / 10 : null;
+    const segGravados = Number(b.audio_seg) || null;
+    const cortado = !!(segOuvidos && segGravados && segGravados - segOuvidos >= 3 && segOuvidos < segGravados * 0.85);
+    if (cortado) {
+      const aviso = `A IA só ouviu cerca de ${Math.round(segOuvidos!)} s dos ${segGravados} s da gravação: o que disseste no fim pode ter ficado de fora. Confere os itens e, se faltar alguma coisa, diz o quê em «Corrigir».`;
+      const alvo = parsed as { duvidas?: unknown };
+      alvo.duvidas = [aviso, ...(Array.isArray(alvo.duvidas) ? alvo.duvidas : [])];
+    }
+
     await registarIaUso("ok", quem, modelo, Date.now() - inicio, {
       ...detalhe,
-      ...(audio ? { tokens_audio: tokensAudio(usage) } : {}),
+      ...(audio ? { tokens_audio: tokensAudio(usage), seg_ouvidos: segOuvidos, cortado } : {}),
       despesas: lista.length,
       itens: lista.reduce((a: number, d: any) => a + (Array.isArray(d?.itens) ? d.itens.length : 0), 0),
       valor: lista.reduce((a: number, d: any) => a + (typeof d?.valor === "number" ? d.valor : 0), 0),

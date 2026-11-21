@@ -4131,8 +4131,8 @@ async function aiFileToBase64(file) {
 //               correções e o «Recomeçar» seguem depois só com texto.
 // Cada uma só aparece se o browser a suportar (o microfone do teclado do
 // telemóvel funciona sempre, como ditado).
-const AI_AUDIO_MAX_S = 60;
-const AI_AUDIO_MAX_BYTES = 3 * 1024 * 1024;
+const AI_AUDIO_MAX_S = 90;
+const AI_AUDIO_MAX_BYTES = 3.2 * 1024 * 1024; // 90 s em WAV são ~2,9 MB; a função aceita ~3,3 MB
 const aiDitadoApi = () => window.SpeechRecognition || window.webkitSpeechRecognition || null;
 const aiPodeGravar = () => !!(navigator.mediaDevices?.getUserMedia && window.MediaRecorder);
 // Chrome/Android gravam webm (opus), o Safari mp4 (AAC): o Gemini aceita os dois
@@ -4143,6 +4143,65 @@ function aiAudioMime() {
   return "";
 }
 const fmtSeg = s => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+
+// A gravação segue para o Gemini em WAV (16 kHz, mono, 16 bits), um dos
+// formatos de áudio que a Google diz aceitar. Em WebM — o que o Chrome e o
+// Safari gravam — o Gemini chegou a ouvir só 26 s de 39 s gravados, e o que
+// se disse no fim (os cafés) perdia-se. Descodificar aqui dá também a
+// duração verdadeira da gravação, para se perceber se o corte foi já no
+// telemóvel. 16 kHz é o que o Gemini usa por dentro: ~32 kB por segundo.
+// Devolve { blob, dur } ou null (o browser não a sabe descodificar: segue a
+// gravação original, como antes).
+async function aiAudioParaWav(blob) {
+  const Off = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+  if (!Off) return null;
+  try {
+    const dados = await blob.arrayBuffer();
+    // a 16 kHz o próprio browser reamostra; se não deixar, faz-se à mão
+    let ctx;
+    try { ctx = new Off(1, 1, 16000); } catch (_) { ctx = new Off(1, 1, 44100); }
+    const audio = await new Promise((ok, ko) => {
+      const p = ctx.decodeAudioData(dados, ok, ko); // o Safari antigo só tem callbacks
+      if (p?.then) p.then(ok, ko);
+    });
+    const n = audio.length, chs = audio.numberOfChannels;
+    if (!n) return null;
+    let mono = audio.getChannelData(0);
+    if (chs > 1) {
+      mono = new Float32Array(n);
+      for (let c = 0; c < chs; c++) {
+        const d = audio.getChannelData(c);
+        for (let i = 0; i < n; i++) mono[i] += d[i] / chs;
+      }
+    }
+    let pcm = mono, sr = audio.sampleRate;
+    if (sr > 16000) {
+      // média por janela: chega como filtro para voz
+      const f = sr / 16000, m = Math.floor(n / f);
+      pcm = new Float32Array(m);
+      for (let i = 0; i < m; i++) {
+        const a = Math.floor(i * f), b = Math.min(n, Math.floor((i + 1) * f));
+        let soma = 0;
+        for (let k = a; k < b; k++) soma += mono[k];
+        pcm[i] = soma / Math.max(1, b - a);
+      }
+      sr = 16000;
+    }
+    const dv = new DataView(new ArrayBuffer(44 + pcm.length * 2));
+    const txt = (o, t) => { for (let i = 0; i < t.length; i++) dv.setUint8(o + i, t.charCodeAt(i)); };
+    txt(0, "RIFF"); dv.setUint32(4, 36 + pcm.length * 2, true); txt(8, "WAVE");
+    txt(12, "fmt "); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+    dv.setUint32(24, sr, true); dv.setUint32(28, sr * 2, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+    txt(36, "data"); dv.setUint32(40, pcm.length * 2, true);
+    for (let i = 0; i < pcm.length; i++) {
+      const v = Math.max(-1, Math.min(1, pcm[i]));
+      dv.setInt16(44 + i * 2, v < 0 ? v * 0x8000 : v * 0x7fff, true);
+    }
+    return { blob: new Blob([dv], { type: "audio/wav" }), dur: n / audio.sampleRate };
+  } catch (_) {
+    return null;
+  }
+}
 
 async function aiInvoke(body) {
   const { data, error } = await sb.functions.invoke(AI_FN, { body });
@@ -4189,11 +4248,20 @@ function aiItens(raw, members, baseIds, totalCents, cur, desconhecidos) {
       if (!m) { if (nome) fora.push(String(nome)); continue; }
       if (!ids.includes(m.id)) ids.push(m.id);
     }
-    const desc = String(it.descricao || "").trim().slice(0, 80) || "Item";
+    // «2 canecas a 3,50»: quantidade × preço por unidade, que a app multiplica
+    // (ganha ao "valor" se a IA mandar os dois e não baterem)
+    const qtd = Number(it.quantidade) > 0 ? Math.round(Number(it.quantidade) * 100) / 100 : null;
+    const unit = cents(it.preco_unitario);
+    let linha = cents(it.valor);
+    if (unit != null && (qtd || linha == null)) linha = Math.round((qtd || 1) * unit);
+    // a quantidade mostra-se à parte («Caneca ×2»): tira-se da descrição
+    let desc = String(it.descricao || "").trim();
+    if (qtd) desc = desc.replace(/\s*[×x]\s*\d+([.,]\d+)?$/i, "");
+    desc = desc.slice(0, 80) || "Item";
     if (fora.length && !ids.length) {
       avisos.push(`«${desc}» era de ${fora.map(n => `«${n}»`).join(" e ")}, que não ${fora.length > 1 ? "são" : "é"} do grupo — ficou repartido por todos.`);
     } else fora.forEach(n => desconhecidos.add(n));
-    return { desc, cents: cents(it.valor), ids };
+    return { desc, cents: linha, ids, qtd, unit };
   });
 
   // «o resto»: o que falta para o total, repartido pelos itens sem preço
@@ -4284,7 +4352,8 @@ function aiPlan(r, members, group, meId) {
   else if (plan.date && plan.date !== new Date().toISOString().slice(0, 10)) plan.time = ""; // hora de agora não serve noutro dia
   if (it) {
     // o que vai para a fatura fictícia (e para o resumo)
-    plan.itens = it.itens.map(i => ({ desc: i.desc, cents: i.cents, ids: i.quem, todos: i.todos, resto: !!i.resto }));
+    plan.itens = it.itens.map(i => ({ desc: i.desc, cents: i.cents, ids: i.quem, todos: i.todos, resto: !!i.resto,
+      qtd: i.qtd, unit: i.unit }));
     plan.ajuste = it.ajuste;
     plan.porItens = it.porItens && !own;
     avisos.push(...it.avisos);
@@ -4378,6 +4447,8 @@ function aiPlanShares(plan, members) {
 const FAT_IA = "fatura-ia";
 const isFaturaIa = s => /(^|\/)fatura-ia[-.]/.test(String(s || ""));
 // só vale a pena com itens que expliquem alguma coisa
+// «Caneca de cerveja ×2»
+const aiItemNome = it => it.qtd > 1 ? `${it.desc} ×${String(it.qtd).replace(".", ",")}` : it.desc;
 const aiTemFatura = plan => !!plan?.itens?.length && (plan.porItens || plan.itens.length >= 2);
 
 async function aiFaturaFicticia(plan, members, group, nomeGrupo) {
@@ -4466,12 +4537,13 @@ async function aiFaturaFicticia(plan, members, group, nomeGrupo) {
   rotulo("Itens");
   espaco(2);
   for (const it of plan.itens) {
-    linha(it.desc, din(it.cents), 15);
+    linha(aiItemNome(it), din(it.cents), 15);
     const cada = it.ids.length > 1 && it.cents ? ` · ${din(Math.round(it.cents / it.ids.length))} cada` : "";
     const quem = it.ids.length === 1 ? nome(it.ids[0])
       : it.todos ? `${it.ids.length === 2 ? "a meias" : `entre todos (${it.ids.length})`}${cada}`
       : `${lista(it.ids.map(nome))}${cada}`;
-    sub(it.resto ? `${quem} · o que faltava para o total` : quem);
+    const preco = it.qtd > 1 && it.unit != null ? ` · ${String(it.qtd).replace(".", ",")} × ${din(it.unit)}` : "";
+    sub(`${quem}${preco}${it.resto ? " · o que faltava para o total" : ""}`);
     espaco(5);
   }
   if (plan.ajuste) {
@@ -4497,7 +4569,7 @@ async function aiFaturaFicticia(plan, members, group, nomeGrupo) {
         if (k < 0 || !it.cents) continue;
         const c = splitByWeights(it.cents, it.ids.map(() => 1))[k];
         soma += c;
-        partes.push(`${it.desc}${it.ids.length > 1 ? ` (1/${it.ids.length})` : ""} ${din(c)}`);
+        partes.push(`${aiItemNome(it)}${it.ids.length > 1 ? ` (1/${it.ids.length})` : ""} ${din(c)}`);
       }
       const resto = shares[id] - soma;
       if (resto && plan.ajuste) partes.push(`${plan.ajuste > 0 ? "diferença" : "desconto"} ${resto > 0 ? "+" : "−"}${din(Math.abs(resto))}`);
@@ -4813,6 +4885,7 @@ function renderAiExpense(slot, opts) {
       clearInterval(v.timer);
       v.stream?.getTracks().forEach(t => t.stop());
     }
+    if (!v.t1) v.t1 = Date.now();
     try { cancelar && v.tipo === "ditar" ? v.rec.abort() : v.rec.stop(); } catch (_) { /* já parou */ }
   }
 
@@ -4884,23 +4957,43 @@ function renderAiExpense(slot, opts) {
     catch (_) { rec = new MediaRecorder(stream); }
     const v = { tipo: "gravar", rec, stream, chunks: [], t0: Date.now(), lerDepois: false };
     rec.ondataavailable = (e) => { if (e.data?.size) v.chunks.push(e.data); };
-    rec.onstop = () => {
+    rec.onstop = async () => {
+      const seg = Math.round(((v.t1 || Date.now()) - v.t0) / 1000);
       clearInterval(v.timer);
       stream.getTracks().forEach(t => t.stop());
-      if (st.voz === v) st.voz = null;
+      // st.voz fica até a gravação estar pronta: um toque a meio só pede
+      // para a ler logo a seguir («Parar e ler com IA»)
+      const fim = () => { if (st.voz === v) st.voz = null; };
+      if (v.cancelada) return fim();
+      // há browsers que entregam o último pedaço depois do «stop»
+      await new Promise(r => setTimeout(r, 400));
+      if (v.cancelada) return fim();
+      const original = new Blob(v.chunks, { type: rec.mimeType || mime || "audio/webm" });
+      if (seg < 1 || !original.size) {
+        fim();
+        toast("A gravação ficou vazia — toca, fala, e toca outra vez para parar", true);
+        if (slot.isConnected && st.fase === "texto") draw();
+        return;
+      }
+      const wav = await aiAudioParaWav(original);
+      fim();
       if (v.cancelada) return;
-      const seg = Math.round((Date.now() - v.t0) / 1000);
-      const blob = new Blob(v.chunks, { type: rec.mimeType || mime || "audio/webm" });
-      if (seg < 1 || !blob.size) toast("A gravação ficou vazia — toca, fala, e toca outra vez para parar", true);
-      else if (blob.size > AI_AUDIO_MAX_BYTES) toast("A gravação ficou grande demais — tenta uma mais curta", true);
+      const blob = wav && wav.blob.size <= AI_AUDIO_MAX_BYTES ? wav.blob : original;
+      if (blob.size > AI_AUDIO_MAX_BYTES) toast("A gravação ficou grande demais — tenta uma mais curta", true);
       else {
         tirarAudio();
-        st.audio = { blob, seg, url: URL.createObjectURL(blob) };
+        st.audio = { blob, seg, dur: wav ? Math.round(wav.dur * 10) / 10 : null, url: URL.createObjectURL(blob) };
+        // a gravação perdeu um bocado já no telemóvel: diz-se antes de gastar a leitura
+        if (wav && seg - wav.dur >= 3 && wav.dur < seg * 0.85) {
+          v.lerDepois = false;
+          toast(`A gravação só ficou com ${Math.round(wav.dur)} s dos ${seg} s — ouve-a antes de ler`, true);
+        }
         if (v.lerDepois) return ler();
       }
       if (slot.isConnected && st.fase === "texto") draw();
     };
-    rec.start();
+    // em pedaços de 1 s: se o browser falhar o último, perde-se pouco
+    rec.start(1000);
     st.voz = v;
     v.timer = setInterval(() => {
       if (!slot.isConnected) return pararVoz(true);
@@ -4952,6 +5045,7 @@ function renderAiExpense(slot, opts) {
         body.audio = await aiBlobToBase64(st.audio.blob);
         body.audio_mime = st.audio.blob.type.split(";")[0] || "audio/webm";
         body.audio_seg = st.audio.seg;
+        if (st.audio.dur != null) body.audio_dur = st.audio.dur;
       }
       if (st.ditado) body.ditado = true;
       if (corrigir && st.res) { body.anterior = st.res; body.correcao = st.correcao.trim(); }
@@ -5282,7 +5376,7 @@ function renderAiExpense(slot, opts) {
       </div>`
       : voz === "gravar" ? `
       <button type="button" class="ai-anexo-btn ai-voz-btn on" id="ai-gravar">
-        <span class="ai-rec-dot"></span> A gravar <span id="ai-rec-t">${fmtSeg(Math.floor((Date.now() - st.voz.t0) / 1000))}</span> · toca para parar</button>`
+        <span class="ai-rec-dot"></span> A gravar <span id="ai-rec-t">${fmtSeg(Math.floor((Date.now() - st.voz.t0) / 1000))}</span>/${fmtSeg(AI_AUDIO_MAX_S)} · toca para parar</button>`
       : aiPodeGravar() ? `
       <button type="button" class="ai-anexo-btn ai-voz-btn" id="ai-gravar" ${voz ? "disabled" : ""}>${uiIco("wave")} Gravar mensagem de voz</button>` : "";
     slot.innerHTML = `
@@ -5376,11 +5470,13 @@ function renderAiExpense(slot, opts) {
     const lista = arr => arr.length <= 1 ? arr.join("") : `${arr.slice(0, -1).join(", ")} e ${arr[arr.length - 1]}`;
     const quemItem = it => (it.ids.length === 1 ? nameOf(it.ids[0])
       : it.todos ? (it.ids.length === 2 ? "a meias" : "todos")
-      : lista(it.ids.map(nameOf))) + (it.resto ? " · o que faltava para o total" : "");
+      : lista(it.ids.map(nameOf)))
+      + (it.qtd > 1 && it.unit != null ? ` · ${String(it.qtd).replace(".", ",")} × ${fmtMoney(it.unit, cur)}` : "")
+      + (it.resto ? " · o que faltava para o total" : "");
     const itensHtml = plan => !plan.itens?.length ? "" : `
         <h3 class="xv-h">${plan.porItens ? "O que cada um consumiu" : "Itens"}</h3>
         <ul class="xv-list ai-itens">${plan.itens.map(it => `
-          <li class="xv-li"><span class="ai-item-t"><strong>${esc(it.desc)}</strong><small>${esc(quemItem(it))}</small></span>
+          <li class="xv-li"><span class="ai-item-t"><strong>${esc(aiItemNome(it))}</strong><small>${esc(quemItem(it))}</small></span>
             <span class="xv-amt">${fmtMoney(it.cents, cur)}</span></li>`).join("")}${plan.ajuste ? `
           <li class="xv-li"><span class="ai-item-t"><strong>${plan.ajuste > 0 ? "Diferença para o total" : "Desconto"}</strong><small>na proporção do que cada um consumiu</small></span>
             <span class="xv-amt">${plan.ajuste > 0 ? "+" : "−"}${fmtMoney(Math.abs(plan.ajuste), cur)}</span></li>` : ""}
